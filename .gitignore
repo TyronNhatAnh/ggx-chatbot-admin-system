@@ -1,0 +1,87 @@
+
+# =============================================================================
+# SECRETS & ENVIRONMENT
+# =============================================================================
+.env
+.env.*
+!.env.example          # Keep the example template — it has no real secrets
+
+# =============================================================================
+# PYTHON
+# =============================================================================
+
+# Byte-compiled / optimised files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# pip
+pip-log.txt
+pip-delete-this-directory.txt
+
+# pytest / test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy type checker
+.mypy_cache/
+.dmypy.json
+
+# ruff / flake8 linters
+.ruff_cache/
+
+# =============================================================================
+# DOCKER
+# =============================================================================
+
+# Ignore local override files (keep docker-compose.yml in git)
+docker-compose.override.yml
+
+# =============================================================================
+# EDITORS & IDEs
+# =============================================================================
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# JetBrains (PyCharm, IntelliJ, etc.)
+.idea/
+*.iml
+
+# Vim / Emacs swap files
+*.swp
+*.swo
+*~
+
+# =============================================================================
+# macOS
+# =============================================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# =============================================================================
+# LOGS & TEMP FILES
+# =============================================================================
+*.log
+*.tmp
+*.bak
+tmp/
+temp/
+
