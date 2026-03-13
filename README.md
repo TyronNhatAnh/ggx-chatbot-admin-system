@@ -1,72 +1,180 @@
 # AI Admin Assistant
 
-Simple AI chatbot service for admin systems.
-
-Phase 1 goal:
-- Read-only assistant
-- Query order data
-- Explain system data
+A **read-only** AI chatbot service for admin systems, built with FastAPI and
+Google Gemini. Operators can ask questions about orders, drivers, and system
+analytics in plain English — the AI fetches real data through internal tools
+and returns factual answers.
 
 ---
 
-# Architecture
+## Architecture
 
-Admin UI
-   │
-   ▼
-AI Service (FastAPI)
-   │
-   ▼
-LLM (Gemini / OpenAI)
-   │
-   ▼
-Tools
-   │
-   ▼
-Order APIs
-
----
-
-# Setup
-
-Install dependencies:
-
-make install
-
----
-
-# Run
-
-Run server:
-
-make run
-
-Debug mode:
-
-make debug
-
----
-
-# API
-
-Swagger docs:
-
-http://localhost:8000/docs
-
----
-
-# Example request
-
+```
 POST /chat
-
-{
- "message": "order 123 status"
-}
+    │
+    ▼
+app/main.py              ← FastAPI entry point
+    │
+    ▼
+orchestrator/
+  ai_orchestrator.py     ← tool-calling loop (send → detect → execute → reply)
+  prompt_builder.py      ← system prompt (read-only rules)
+    │
+    ▼
+llm/
+  gemini_client.py       ← configures the Gemini GenerativeModel
+    │
+    ▼
+tools/
+  order_tools.py         ← get_order, search_orders, get_delayed_orders
+  driver_tools.py        ← get_driver, list_active_drivers
+  analytics_tools.py     ← get_order_summary, get_revenue_today
+```
 
 ---
 
-# Tools
+## Setup
 
-get_order(order_id)
+**1. Clone the repo and enter the directory**
 
-search_orders(status)
+```bash
+git clone <repo-url>
+cd ai-admin-assistant
+```
+
+**2. Create your `.env` file**
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and set your Gemini API key:
+
+```
+GEMINI_API_KEY=your-gemini-api-key-here
+```
+
+Get a free key at <https://aistudio.google.com/app/apikey>.
+
+**3. Install dependencies**
+
+```bash
+make install
+```
+
+---
+
+## Running the server
+
+**Production mode**
+
+```bash
+make run
+```
+
+**Development mode** (auto-reload on file save)
+
+```bash
+make debug
+```
+
+**Docker**
+
+```bash
+make docker-run
+```
+
+The server starts on `http://localhost:8000`.
+
+Interactive Swagger docs: `http://localhost:8000/docs`
+
+---
+
+## How tool calling works
+
+The AI **never guesses** data. Instead, Gemini is given a set of Python
+functions as "tools". When the user asks a question that requires data, Gemini
+decides which tool to call and with what arguments. The orchestrator executes
+the function locally and sends the result back to Gemini, which then produces
+the final response.
+
+```
+User:      "What is the status of order ORD-002?"
+    │
+    ▼
+Gemini:    [tool call] get_order(order_id="ORD-002")
+    │
+    ▼
+Orchestrator executes: get_order("ORD-002")
+    │  returns: {"id": "ORD-002", "status": "pending", ...}
+    │
+    ▼
+Gemini:    "Order ORD-002 is currently pending."
+    │
+    ▼
+User:      receives final answer
+```
+
+This loop repeats until Gemini produces a plain-text answer with no further
+tool calls. The system prompt enforces that the AI never modifies data.
+
+---
+
+## Available tools
+
+| Tool | Description |
+|---|---|
+| `get_order(order_id)` | Fetch a single order by ID |
+| `search_orders(status)` | Find all orders with a given status |
+| `get_delayed_orders()` | List all delayed orders |
+| `get_driver(driver_id)` | Fetch a single driver by ID |
+| `list_active_drivers()` | List all currently active drivers |
+| `get_order_summary()` | Order counts grouped by status |
+| `get_revenue_today()` | Revenue total from today's delivered orders |
+
+---
+
+## Example API requests
+
+**Query an order**
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What is the status of order ORD-002?"}'
+```
+
+```json
+{
+  "reply": "Order ORD-002 is currently pending. It is for Wireless Headphones ordered by Bob Tan, totalling $199.99.",
+  "tools_called": ["get_order"]
+}
+```
+
+**Find delayed orders**
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Are there any delayed orders?"}'
+```
+
+**Get a driver**
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Tell me about driver DRV-001"}'
+```
+
+---
+
+## Makefile commands
+
+| Command | Description |
+|---|---|
+| `make install` | Create virtualenv and install dependencies |
+| `make run` | Start the server |
+| `make debug` | Start the server with hot-reload |
+| `make docker-run` | Build and run with Docker Compose |
+| `make clean` | Remove the virtualenv |

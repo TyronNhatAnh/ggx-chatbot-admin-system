@@ -1,45 +1,13 @@
-# ---------------------------------------------------------------------------
-# Mock order database
-# In a real project, these functions would query a database or external API.
-# ---------------------------------------------------------------------------
+"""Order tools exposed to the Gemini AI model.
 
-MOCK_ORDERS = {
-    "ORD-001": {
-        "id": "ORD-001",
-        "status": "delivered",
-        "item": "Laptop Pro",
-        "customer": "Alice Wong",
-        "total": 1299.99,
-    },
-    "ORD-002": {
-        "id": "ORD-002",
-        "status": "pending",
-        "item": "Wireless Headphones",
-        "customer": "Bob Tan",
-        "total": 199.99,
-    },
-    "ORD-003": {
-        "id": "ORD-003",
-        "status": "cancelled",
-        "item": "Mechanical Keyboard",
-        "customer": "Charlie Lee",
-        "total": 149.99,
-    },
-    "ORD-004": {
-        "id": "ORD-004",
-        "status": "pending",
-        "item": "4K Monitor",
-        "customer": "Diana Chen",
-        "total": 599.99,
-    },
-    "ORD-005": {
-        "id": "ORD-005",
-        "status": "shipped",
-        "item": "USB-C Hub",
-        "customer": "Eve Lim",
-        "total": 59.99,
-    },
-}
+Each function is a thin wrapper around OrderServiceClient so that:
+- The AI layer receives clean, serialisable dicts.
+- No raw exceptions ever reach the orchestrator.
+- Tool signatures and docstrings are preserved so Gemini's auto-generated
+  JSON schemas remain unchanged.
+"""
+
+from app.services.order_service_client import get_order_client
 
 
 def get_order(order_id: str) -> dict:
@@ -52,28 +20,32 @@ def get_order(order_id: str) -> dict:
     Returns:
         A dictionary with order details, or an error message if not found.
     """
-    order = MOCK_ORDERS.get(order_id)
-    if order:
-        return order
-    return {"error": f"Order '{order_id}' not found."}
+    return get_order_client().get_order(order_id)
 
 
-def search_orders(status: str) -> list:
+def search_orders(status: str) -> dict:
     """
     Search for all orders that have a specific status.
 
     Args:
-        status: The order status to filter by. Allowed values: 'pending',
-                'delivered', 'cancelled', 'shipped'.
+        status: The order status code to filter by. Use the exact values
+                from the Order Service: 'Pending', 'Active', 'Completed',
+                'Incompleted', 'Cancelled', 'Return', 'WaitingForPayment',
+                'Transit'.
 
     Returns:
-        A list of orders matching the given status.
+        A dictionary with a list of matching orders and the total count.
     """
-    results = [
-        order
-        for order in MOCK_ORDERS.values()
-        if order["status"].lower() == status.lower()
-    ]
-    if not results:
-        return [{"message": f"No orders found with status '{status}'."}]
-    return results
+    return get_order_client().search_orders(status)
+
+
+def get_delayed_orders() -> dict:
+    """
+    Get all orders that are currently in transit (active delivery, may be delayed).
+
+    This queries orders with statusCd=Transit from the Order Service.
+
+    Returns:
+        A dictionary with a list of in-transit orders and the total count.
+    """
+    return get_order_client().get_delayed_orders()

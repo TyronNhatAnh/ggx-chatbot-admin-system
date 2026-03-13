@@ -20,6 +20,11 @@ run:
 debug:
 	. $(VENV)/bin/activate && uvicorn $(APP) --reload --host 0.0.0.0 --port $(PORT)
 
+# ===== DOCKER =====
+
+docker-run:
+	docker compose up --build
+
 # ===== CLEAN =====
 
 clean:
