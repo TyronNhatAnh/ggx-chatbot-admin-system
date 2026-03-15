@@ -2,13 +2,34 @@ import json
 import logging
 import time
 
-import google.generativeai as genai
+from google.genai import types
 
 from app.llm.gemini_client import create_gemini_model
 from app.tools import ALL_TOOL_FUNCTIONS, TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
 MAX_TOOL_LOOPS = 3
+
+
+def _response_parts(response: types.GenerateContentResponse) -> list[types.Part]:
+    """Extract parts from the first candidate safely."""
+    if not response.candidates:
+        return []
+    content = response.candidates[0].content
+    if not content or not content.parts:
+        return []
+    return list(content.parts)
+
+
+def _response_text(response: types.GenerateContentResponse) -> str:
+    """Extract plain text response with a safe fallback."""
+    if response.text:
+        return response.text
+    texts: list[str] = []
+    for part in _response_parts(response):
+        if part.text:
+            texts.append(part.text)
+    return "\n".join(texts).strip()
 
 
 class AIOrchestrator:
@@ -85,7 +106,7 @@ class AIOrchestrator:
             # Collect every function_call part from the current response turn
             function_calls = [
                 part.function_call
-                for part in response.parts
+                for part in _response_parts(response)
                 if getattr(part, "function_call", None) and part.function_call.name
             ]
 
@@ -107,7 +128,7 @@ class AIOrchestrator:
             tool_response_parts = []
             for fc in function_calls:
                 tool_name = fc.name
-                tool_args = dict(fc.args)
+                tool_args = dict(fc.args or {})
                 call_key = (tool_name, json.dumps(tool_args, sort_keys=True, default=str))
 
                 if call_key in seen_calls:
@@ -136,13 +157,10 @@ class AIOrchestrator:
 
                 tools_called.append(tool_name)
 
-                # Wrap the result in the format Gemini's API expects
                 tool_response_parts.append(
-                    genai.protos.Part(
-                        function_response=genai.protos.FunctionResponse(
-                            name=tool_name,
-                            response={"result": json.dumps(result, default=str)},
-                        )
+                    types.Part.from_function_response(
+                        name=tool_name,
+                        response={"result": json.dumps(result, default=str)},
                     )
                 )
 
@@ -160,4 +178,4 @@ class AIOrchestrator:
             response = chat_session.send_message(tool_response_parts)
             logger.info("[Step %d  ] Gemini responded  elapsed=%.3fs", loop, time.perf_counter() - t)
 
-        return response.text, tools_called
+        return _response_text(response), tools_called

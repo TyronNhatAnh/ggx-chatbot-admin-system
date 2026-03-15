@@ -4,8 +4,8 @@ Base URL : https://stag-api.gogox.co.kr/order
 Swagger  : https://stag-api.gogox.co.kr/order/swagger/index.html
 
 All requests are authenticated via a Bearer token obtained from the
-User Service through ``AuthTokenManager``.  The client is read-only —
-it only issues GET requests.
+User Service through ``AuthTokenManager`` when needed. The client is
+read-only from a business perspective — it only queries and calculates data.
 """
 
 import logging
@@ -44,8 +44,69 @@ class OrderServiceClient:
         self._http = httpx.Client(timeout=10.0)
 
     # ------------------------------------------------------------------
-    # Internal GET with automatic token refresh on 401
+    # Internal HTTP helpers with optional auth + retry-once for 401
     # ------------------------------------------------------------------
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict | None = None,
+        json_body: dict | None = None,
+        requires_auth: bool = True,
+    ) -> dict | list:
+        """Issue an HTTP request to ``{base_url}/api/v1{path}``.
+
+        If ``requires_auth`` is true, retries once after token refresh on 401.
+        Raises ``httpx.HTTPStatusError`` or ``httpx.RequestError`` on failure.
+        """
+        headers: dict[str, str] = {}
+        if requires_auth:
+            self._token_mgr.ensure_token()
+            headers = self._token_mgr.bearer_header
+
+        url = f"{self._base_url}{_API_PREFIX}{path}"
+        logger.info("[HTTP %s] %s  params=%s", method, url, params)
+        t = time.perf_counter()
+
+        response = self._http.request(
+            method,
+            url,
+            headers=headers,
+            params=params,
+            json=json_body,
+        )
+        logger.info(
+            "[HTTP %s] %s  status=%s  elapsed=%.3fs",
+            method,
+            url,
+            response.status_code,
+            time.perf_counter() - t,
+        )
+
+        if requires_auth and response.status_code == 401:
+            logger.warning("[HTTP %s] 401 on %s — invalidating token and retrying.", method, path)
+            self._token_mgr.invalidate()
+            self._token_mgr.ensure_token()
+            t = time.perf_counter()
+            response = self._http.request(
+                method,
+                url,
+                headers=self._token_mgr.bearer_header,
+                params=params,
+                json=json_body,
+            )
+            logger.info(
+                "[HTTP %s] retry %s  status=%s  elapsed=%.3fs",
+                method,
+                url,
+                response.status_code,
+                time.perf_counter() - t,
+            )
+
+        response.raise_for_status()
+        return response.json()
 
     def _get(self, path: str, params: dict | None = None) -> dict | list:
         """
@@ -54,36 +115,22 @@ class OrderServiceClient:
         Retries once after re-authentication on HTTP 401.
         Raises ``httpx.HTTPStatusError`` or ``httpx.RequestError`` on failure.
         """
-        self._token_mgr.ensure_token()
-        url = f"{self._base_url}{_API_PREFIX}{path}"
-        logger.info("[HTTP GET ] %s  params=%s", url, params)
-        t = time.perf_counter()
+        return self._request("GET", path, params=params, requires_auth=True)
 
-        response = self._http.get(
-            url, headers=self._token_mgr.bearer_header, params=params
+    def _post(
+        self,
+        path: str,
+        *,
+        json_body: dict | None = None,
+        requires_auth: bool = False,
+    ) -> dict | list:
+        """Issue a POST request to ``{base_url}/api/v1{path}``."""
+        return self._request(
+            "POST",
+            path,
+            json_body=json_body,
+            requires_auth=requires_auth,
         )
-        logger.info(
-            "[HTTP GET ] %s  status=%s  elapsed=%.3fs",
-            url, response.status_code, time.perf_counter() - t,
-        )
-
-        if response.status_code == 401:
-            logger.warning(
-                "[HTTP GET ] 401 on %s — invalidating token and retrying.", path
-            )
-            self._token_mgr.invalidate()
-            self._token_mgr.ensure_token()
-            t = time.perf_counter()
-            response = self._http.get(
-                url, headers=self._token_mgr.bearer_header, params=params
-            )
-            logger.info(
-                "[HTTP GET ] retry %s  status=%s  elapsed=%.3fs",
-                url, response.status_code, time.perf_counter() - t,
-            )
-
-        response.raise_for_status()
-        return response.json()
 
     @staticmethod
     def _slim_place(place: object) -> object:
@@ -142,12 +189,20 @@ class OrderServiceClient:
 
         driver = o.get("driver")
         payment = o.get("paymentInfo") or {}
+        raw_rows = o.get("priceList") or o.get("fees") or o.get("priceFees") or []
+        price_breakdown: list[dict] = []
+        if isinstance(raw_rows, list):
+            for row in raw_rows[:12]:
+                slim = OrderServiceClient._normalize_price_row(row)
+                if slim:
+                    price_breakdown.append(slim)
         return {
             "orderId": o.get("id") or o.get("orderId"),
             "status": o.get("statusCd"),
             "createdAt": o.get("createdAt"),
             "appointmentAt": o.get("appointmentAt"),
             "price": o.get("calculationPrice"),
+            "priceBreakdown": price_breakdown,
             "driverFee": o.get("driverFee") or o.get("driver_price") or o.get("driverAmount"),
             "fromPlace": OrderServiceClient._slim_place(o.get("fromPlace")),
             "toPlace": OrderServiceClient._slim_place(o.get("toPlace")),
@@ -161,6 +216,86 @@ class OrderServiceClient:
                 "amount": payment.get("amount"),
             } if payment else None,
         }
+
+    @staticmethod
+    def _normalize_price_row(row: dict) -> dict | None:
+        if not isinstance(row, dict):
+            return None
+        label = (
+            row.get("label")
+            or row.get("name")
+            or row.get("title")
+            or row.get("type")
+            or row.get("feeType")
+        )
+        amount = (
+            row.get("amount")
+            or row.get("price")
+            or row.get("value")
+            or row.get("fee")
+            or row.get("total")
+        )
+        normalized = {"label": label, "amount": amount}
+        if normalized["label"] is None and normalized["amount"] is None:
+            return None
+        return normalized
+
+    @staticmethod
+    def _slim_price_result(data: dict | list | object) -> dict:
+        """Normalize estimate/calc-price payloads into a compact stable shape."""
+        if not isinstance(data, dict):
+            return {"error": "ORDER_SERVICE_ERROR", "detail": "Invalid price payload format"}
+
+        body = data.get("order") if isinstance(data.get("order"), dict) else data
+        calculation = body.get("calculationPrice") if isinstance(body, dict) else None
+
+        base_price = (
+            body.get("basePrice")
+            or body.get("price")
+            or body.get("total")
+            or body.get("amount")
+            or (calculation.get("total") if isinstance(calculation, dict) else None)
+        )
+
+        raw_rows = (
+            body.get("breakdown")
+            or body.get("priceList")
+            or body.get("fees")
+            or body.get("priceFees")
+            or []
+        )
+        breakdown: list[dict] = []
+        if isinstance(raw_rows, list):
+            for row in raw_rows[:12]:
+                slim = OrderServiceClient._normalize_price_row(row)
+                if slim:
+                    breakdown.append(slim)
+
+        result: dict = {
+            "basePrice": base_price,
+            "breakdown": breakdown,
+        }
+
+        if isinstance(data.get("driverInfo"), dict):
+            driver = data["driverInfo"]
+            result["driver"] = {
+                "driverId": driver.get("driverId") or driver.get("id"),
+                "name": driver.get("driverName") or driver.get("name"),
+            }
+
+        if body.get("currency"):
+            result["currency"] = body.get("currency")
+
+        return result
+
+    @staticmethod
+    def _unwrap_success_payload(payload: dict | list | object) -> dict | list | object:
+        """Unwrap {success,data,errors} envelopes while preserving failures."""
+        if not isinstance(payload, dict):
+            return payload
+        if not payload.get("success", True):
+            return {"error": "ORDER_SERVICE_ERROR", "detail": payload.get("errors")}
+        return payload.get("data", payload)
 
     # ------------------------------------------------------------------
     # Public API methods (read-only)
@@ -283,6 +418,70 @@ class OrderServiceClient:
             logger.error(
                 "get_delayed_orders unexpected error — %s: %s", type(exc).__name__, exc
             )
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
+    # ------------------------------------------------------------------
+    # Price estimation API methods (read-only business operations)
+    # ------------------------------------------------------------------
+
+    def estimate_guest(self, payload: dict) -> dict:
+        """POST /api/v1/guest/estimate."""
+        return self._call_price_endpoint("/guest/estimate", payload=payload, requires_auth=False)
+
+    def estimate_authenticated(self, payload: dict) -> dict:
+        """POST /api/v1/estimate."""
+        return self._call_price_endpoint("/estimate", payload=payload, requires_auth=True)
+
+    def check_driver_price(self, payload: dict) -> dict:
+        """POST /api/v1/guest/check-price-driver."""
+        return self._call_price_endpoint(
+            "/guest/check-price-driver",
+            payload=payload,
+            requires_auth=False,
+        )
+
+    def calc_guest_order_price(self, order_id: str, user_id: int | None = None) -> dict:
+        """POST /api/v1/guest/orders/calc-price/{orderId}."""
+        if user_id is None:
+            return {
+                "error": "REQUEST_INVALID",
+                "detail": "user_id is required for /guest/orders/calc-price/{orderId}",
+            }
+        return self._call_price_endpoint(
+            f"/guest/orders/calc-price/{order_id}",
+            payload={"userID": user_id, "userId": user_id},
+            requires_auth=False,
+        )
+
+    def estimate_guest_home_moving(self, payload: dict) -> dict:
+        """POST /api/v1/guest/home-moving/estimate."""
+        return self._call_price_endpoint(
+            "/guest/home-moving/estimate",
+            payload=payload,
+            requires_auth=False,
+        )
+
+    def _call_price_endpoint(self, path: str, payload: dict, requires_auth: bool) -> dict:
+        """Shared wrapper for estimate/check-price endpoints."""
+        try:
+            raw = self._post(path, json_body=payload, requires_auth=requires_auth)
+            data = self._unwrap_success_payload(raw)
+            if isinstance(data, dict) and data.get("error"):
+                return data
+            return self._slim_price_result(data)
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "price endpoint %s HTTP %s — body: %s",
+                path,
+                exc.response.status_code,
+                exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("price endpoint %s network error — %s", path, exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error("price endpoint %s unexpected error — %s: %s", path, type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
 

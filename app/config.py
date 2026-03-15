@@ -29,6 +29,16 @@ class Settings(BaseSettings):
     user_service_type_cd: int = 1          # 1 = standard admin/operator account
     user_service_auth_mode: str = "MULTI_AUTH"
 
+    # ---------------------------------------------------------------------------
+    # System Discovery — paths to external repos used by the explorer module.
+    # Optional; only required when running scripts/run_discovery.py.
+    # ---------------------------------------------------------------------------
+    fe_repo_path: str = ""
+    be_repo_path: str = ""
+    fe_branch: str = "main"
+    be_branch: str = "main"
+    discovery_output_dir: str = "docs/discovery"
+
     class Config:
         env_file = ".env"
 

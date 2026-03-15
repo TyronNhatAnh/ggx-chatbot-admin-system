@@ -1,0 +1,920 @@
+{
+  "feature": "check_price",
+  "use_cases": [
+    {
+      "id": "UC-1",
+      "title": "Guest checks estimate before placing order",
+      "actor": "Guest user",
+      "trigger": "User wants a delivery quote for a new order",
+      "preconditions": [
+        "Waypoints (origin/destination) are provided"
+      ],
+      "happy_path": [
+        "Client sends estimate request to POST /guest/estimate",
+        "Request validation runs (e.g., appointment time, waypoints, coupon rules)",
+        "Pricing service calculates estimate based on request parameters",
+        "Response with price breakdown is returned to client"
+      ],
+      "edge_cases": [
+        "Invalid waypoint address (e.g., special characters)",
+        "Invalid appointment time (too soon for order type)",
+        "Attempt to use a coupon (not allowed for guest)",
+        "Attempt to use a coupon on an A2B order (not allowed)",
+        "Missing required fields (e.g., vehicle type, waypoints)"
+      ],
+      "business_value": "Allows guest users to compare prices and make informed decisions before committing to an order, improving conversion.",
+      "api_paths": [
+        "POST /guest/estimate"
+      ],
+      "evidence_refs": [
+        {
+          "file": "internal/api/http/v1/order_handler.go",
+          "symbol": "EstimateGuest"
+        },
+        {
+          "file": "internal/api/http/v1/order_handler.go",
+          "symbol": "Estimate"
+        },
+        {
+          "file": "internal/api/http/v1/order_handler.go",
+          "symbol": "IsOrderValid"
+        },
+        {
+          "file": "internal/api/http/v1/order_handler.go",
+          "symbol": "validWaypointAddressRequest"
+        },
+        {
+          "file": "internal/api/http/v1/order_handler.go",
+          "symbol": "validCouponRequest"
+        }
+      ]
+    },
+    {
+      "id": "UC-2",
+      "title": "Authenticated user checks estimate before placing order",
+      "actor": "Authenticated user",
+      "trigger": "User wants a delivery quote for a new order",
+      "preconditions": [
+        "User is logged in",
+        "Waypoints (origin/destination) are provided"
+      ],
+      "happy_path": [
+        "Client sends estimate request to POST /estimate with Authorization token",
+        "User ID is extracted from token",
+        "Request validation runs (e.g., appointment time, waypoints, coupon rules)",
+        "Pricing service calculates estimate based on request parameters and user context",
+        "Response with price breakdown is returned to client"
+      ],
+      "edge_cases": [
+        "Invalid waypoint address (e.g., special characters)",
+        "Invalid appointment time (too soon for order type)",
+        "Attempt to use a coupon on an A2B order (not allowed)",
+        "Missing required fields (e.g., vehicle type, waypoints)",
+        "Invalid or expired authentication token"
+      ],
+      "business_value": "Provides logged-in users with price transparency, potentially with personalized pricing or coupon application, enhancing user experience and trust.",
+      "api_paths": [
+        "POST /estimate"
+      ],
+      "evidence_refs": [
+        {
+          "file": "internal/api/http/v1/order_handler.go",
+          "symbol": "EstimateAuth"
+        },
+        {
+          "file": "internal/api/http/v1/order_handler.go",
+          "symbol": "Estimate"
+        },
+        {
+          "file": "internal/api/http/v1/order_handler.go",
+          "symbol": "IsOrderValid"
+        },
+        {
+          "file": "internal/api/http/v1/order_handler.go",
+          "symbol": "validWaypointAddressRequest"
+        },
+        {
+          "file": "internal/api/http/v1/order_handler.go",
+          "symbol": "validCouponRequest"
+        }
+      ]
+    },
+    {
+      "id": "UC-3",
+      "title": "Guest checks driver-specific price",
+      "actor": "Guest user (or system acting on behalf of guest)",
+      "trigger": "User wants to check the price for a specific driver",
+      "preconditions": [
+        "A valid DriverId is provided",
+        "Waypoints are provided"
+      ],
+      "happy_path": [
+        "Client sends request to POST /guest/check-price-driver",
+        "Request validation runs",
+        "Driver information is retrieved using DriverId",
+        "Pricing service calculates estimate based on request parameters and driver information",
+        "Response with driver-specific price breakdown is returned to client"
+      ],
+      "edge_cases": [
+        "Invalid or non-existent DriverId",
+        "Missing required fields (e.g., waypoints)",
+        "Internal service error during driver lookup or price calculation"
+      ],
+      "business_value": "Enables specialized pricing scenarios, such as direct driver assignments or fleet-specific pricing, supporting diverse business models.",
+      "api_paths": [
+        "POST /guest/check-price-driver"
+      ],
+      "evidence_refs": [
+        {
+          "file": "internal/api/http/v1/order_handler.go",
+          "symbol": "CheckPriceForForDa"
+        }
+      ]
+    },
+    {
+      "id": "UC-4",
+      "title": "Guest checks home-moving estimate",
+      "actor": "Guest user",
+      "trigger": "User wants a price estimate for a home-moving service",
+      "preconditions": [
+        "Waypoints and home-moving specific details (e.g., goods, services) are provided"
+      ],
+      "happy_path": [
+        "Client sends request to POST /guest/home-moving/estimate",
+        "Request validation runs (details UNKNOWN as handler not provided)",
+        "Home moving pricing service calculates estimate",
+        "Response with price breakdown is returned to client"
+      ],
+      "edge_cases": [
+        "Invalid input for home-moving details (UNKNOWN as handler not provided)",
+        "Missing required fields"
+      ],
+      "business_value": "Provides specialized pricing for complex home-moving orders, catering to a distinct market segment.",
+      "api_paths": [
+        "POST /guest/home-moving/estimate"
+      ],
+      "evidence_refs": [
+        {
+          "file": "internal/api/http/v1/routes.go",
+          "symbol": "HomeMovingEstimateGuest"
+        },
+        {
+          "file": "src/lib/apis/order.ts",
+          "symbol": "OrderAPIs.estimate"
+        }
+      ]
+    },
+    {
+      "id": "UC-5",
+      "title": "Guest checks price for an existing order",
+      "actor": "Guest user",
+      "trigger": "User wants to re-calculate or confirm the price for an already created order",
+      "preconditions": [
+        "A valid orderId is provided"
+      ],
+      "happy_path": [
+        "Client sends request to POST /guest/orders/calc-price/:orderId",
+        "orderId is extracted and validated",
+        "Service retrieves order details and calculates price based on current order state",
+        "Response with price breakdown is returned to client"
+      ],
+      "edge_cases": [
+        "Invalid or non-existent orderId",
+        "Internal service error during order lookup or price calculation"
+      ],
+      "business_value": "Allows for dynamic price checks on existing orders, potentially after modifications or for reconciliation, improving transparency.",
+      "api_paths": [
+        "POST /guest/orders/calc-price/:orderId"
+      ],
+      "evidence_refs": [
+        {
+          "file": "internal/api/http/v1/order_new_handler.go",
+          "symbol": "GetCalcPriceOrderRequestGuest"
+        },
+        {
+          "file": "internal/api/http/v1/order_new_handler.go",
+          "symbol": "handleGetCalcPriceOrderRequest"
+        },
+        {
+          "file": "internal/api/http/v1/order_new_handler.go",
+          "symbol": "getOrderIdAndUser"
+        }
+      ]
+    }
+  ],
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/guest/estimate",
+      "handler_file": "internal/api/http/v1/order_handler.go",
+      "handler_function": "EstimateGuest",
+      "auth_required": false,
+      "service_chain": [
+        "h.Estimate(c, 0)",
+        "h.orderService.EstimateHandler.Handle(c.Request.Context(), &req)"
+      ],
+      "request_schema": {
+        "userId": {
+          "type": "int64",
+          "required": false,
+          "description": "Set to 0 for guest flow"
+        },
+        "organizationId": {
+          "type": "int64",
+          "required": false,
+          "description": "Organization ID if applicable"
+        },
+        "branchId": {
+          "type": "int64",
+          "required": false,
+          "description": "Branch ID if applicable"
+        },
+        "isAdmin": {
+          "type": "boolean",
+          "required": false,
+          "description": "Flag for admin requests"
+        },
+        "platform": {
+          "type": "int",
+          "required": false,
+          "description": "Client platform (e.g., Android, iOS)"
+        },
+        "orderType": {
+          "type": "string",
+          "required": true,
+          "description": "Type of order (e.g., Quick, Delivery, HomeMoving)"
+        },
+        "appointmentAt": {
+          "type": "string",
+          "format": "date-time",
+          "required": false,
+          "description": "Desired appointment time, defaults to now + buffer"
+        },
+        "vehiclePoolId": {
+          "type": "int64",
+          "required": false,
+          "description": "ID of the vehicle pool, defaults to DefaultVehiclePoolId"
+        },
+        "pay": {
+          "type": "string",
+          "required": false,
+          "description": "Payment method, defaults to DefaultPay"
+        },
+        "waypoints": {
+          "type": "[]WaypointReq",
+          "required": true,
+          "description": "List of pickup/dropoff locations"
+        },
+        "coupon": {
+          "type": "string",
+          "required": false,
+          "description": "Coupon code"
+        },
+        "couponId": {
+          "type": "string",
+          "required": false,
+          "description": "Coupon ID"
+        },
+        "isA2B": {
+          "type": "boolean",
+          "required": false,
+          "description": "Flag for A2B (fixed amount) orders"
+        },
+        "driverId": {
+          "type": "int64",
+          "required": false,
+          "description": "Driver ID (not used in guest estimate, but part of struct)"
+        }
+      },
+      "response_schema": {
+        "basePrice": {
+          "type": "float64",
+          "description": "Total estimated price in local currency"
+        },
+        "breakdown": {
+          "type": "[]PriceFee",
+          "description": "Detailed breakdown of fees"
+        }
+      },
+      "business_rules": [
+        "Guest flow uses userId=0.",
+        "Default values are applied for appointment time (now + buffer), vehicle pool, and payment if not provided.",
+        "Appointment time is validated based on order type (Quick: 15min, Delivery/CA: 30min minimum from now).",
+        "Waypoints must have two entries if isA2B is true.",
+        "Waypoint addresses are validated against special characters.",
+        "Coupons are not allowed for guest users (userId=0).",
+        "Coupons are not allowed for A2B orders."
+      ],
+      "error_cases": [
+        {
+          "code": "RequestInvalid",
+          "http_status": 400,
+          "condition": "Invalid appointmentAt (e.g., too soon)"
+        },
+        {
+          "code": "RequestInvalid",
+          "http_status": 400,
+          "condition": "Invalid number of waypoints for A2B order"
+        },
+        {
+          "code": "RequestInvalid",
+          "http_status": 400,
+          "condition": "Missing branchId or organizationId for admin requests"
+        },
+        {
+          "code": "RequestInvalid",
+          "http_status": 400,
+          "condition": "Invalid characters in waypoint address"
+        },
+        {
+          "code": "RequestInvalid",
+          "http_status": 400,
+          "condition": "Coupon not allowed for guest user"
+        },
+        {
+          "code": "RequestInvalid",
+          "http_status": 400,
+          "condition": "Coupon not allowed for A2B order"
+        },
+        {
+          "code": "SystemError",
+          "http_status": 500,
+          "condition": "Internal service error during estimation"
+        }
+      ],
+      "external_dependencies": [],
+      "read_only_safe": true,
+      "evidence_refs": [
+        {
+          "file": "internal/api/http/v1/order_handler.go",
+          "symbol": "EstimateGuest"
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/estimate",
+      "handler_file": "internal/api/http/v1/order_handler.go",
+      "handler_function": "EstimateAuth",
+      "auth_required": true,
+      "service_chain": [
+        "httpcommon.GetUserId(c)",
+        "h.Estimate(c, id)",
+        "h.orderService.EstimateHandler.Handle(c.Request.Context(), &req)"
+      ],
+      "request_schema": {
+        "userId": {
+          "type": "int64",
+          "required": true,
+          "description": "Extracted from Authorization token"
+        },
+        "organizationId": {
+          "type": "int64",
+          "required": false,
+          "description": "Organization ID if applicable"
+        },
+        "branchId": {
+          "type": "int64",
+          "required": false,
+          "description": "Branch ID if applicable"
+        },
+        "isAdmin": {
+          "type": "boolean",
+          "required": false,
+          "description": "Flag for admin requests"
+        },
+        "platform": {
+          "type": "int",
+          "required": false,
+          "description": "Client platform (e.g., Android, iOS)"
+        },
+        "orderType": {
+          "type": "string",
+          "required": true,
+          "description": "Type of order (e.g., Quick, Delivery, HomeMoving)"
+        },
+        "appointmentAt": {
+          "type": "string",
+          "format": "date-time",
+          "required": false,
+          "description": "Desired appointment time, defaults to now + buffer"
+        },
+        "vehiclePoolId": {
+          "type": "int64",
+          "required": false,
+          "description": "ID of the vehicle pool, defaults to DefaultVehiclePoolId"
+        },
+        "pay": {
+          "type": "string",
+          "required": false,
+          "description": "Payment method, defaults to DefaultPay"
+        },
+        "waypoints": {
+          "type": "[]WaypointReq",
+          "required": true,
+          "description": "List of pickup/dropoff locations"
+        },
+        "coupon": {
+          "type": "string",
+          "required": false,
+          "description": "Coupon code"
+        },
+        "couponId": {
+          "type": "string",
+          "required": false,
+          "description": "Coupon ID"
+        },
+        "isA2B": {
+          "type": "boolean",
+          "required": false,
+          "description": "Flag for A2B (fixed amount) orders"
+        },
+        "driverId": {
+          "type": "int64",
+          "required": false,
+          "description": "Driver ID (not used in general estimate, but part of struct)"
+        }
+      },
+      "response_schema": {
+        "basePrice": {
+          "type": "float64",
+          "description": "Total estimated price in local currency"
+        },
+        "breakdown": {
+          "type": "[]PriceFee",
+          "description": "Detailed breakdown of fees"
+        }
+      },
+      "business_rules": [
+        "User ID is extracted from the authentication token.",
+        "Default values are applied for appointment time (now + buffer), vehicle pool, and payment if not provided.",
+        "Appointment time is validated based on order type (Quick: 15min, Delivery/CA: 30min minimum from now).",
+        "Waypoints must have two entries if isA2B is true.",
+        "Waypoint addresses are validated against special characters.",
+        "Coupons are allowed for authenticated users, but not for A2B orders."
+      ],
+      "error_cases": [
+        {
+          "code": "SystemError",
+          "http_status": 500,
+          "condition": "Failed to get userId from token"
+        },
+        {
+          "code": "RequestInvalid",
+          "http_status": 400,
+          "condition": "Invalid appointmentAt (e.g., too soon)"
+        },
+        {
+          "code": "RequestInvalid",
+          "http_status": 400,
+          "condition": "Invalid number of waypoints for A2B order"
+        },
+        {
+          "code": "RequestInvalid",
+          "http_status": 400,
+          "condition": "Missing branchId or organizationId for admin requests"
+        },
+        {
+          "code": "RequestInvalid",
+          "http_status": 400,
+          "condition": "Invalid characters in waypoint address"
+        },
+        {
+          "code": "RequestInvalid",
+          "http_status": 400,
+          "condition": "Coupon not allowed for A2B order"
+        },
+        {
+          "code": "SystemError",
+          "http_status": 500,
+          "condition": "Internal service error during estimation"
+        }
+      ],
+      "external_dependencies": [],
+      "read_only_safe": true,
+      "evidence_refs": [
+        {
+          "file": "internal/api/http/v1/order_handler.go",
+          "symbol": "EstimateAuth"
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/guest/check-price-driver",
+      "handler_file": "internal/api/http/v1/order_handler.go",
+      "handler_function": "CheckPriceForForDa",
+      "auth_required": false,
+      "service_chain": [
+        "validation.CheckValidateHTTP(c, &req)",
+        "h.baseService.DriverClient.GetDriverById(c, &driverGrpc.GetDriverByIdsRequest{Id: req.DriverId})",
+        "h.orderService.CheckDriverPriceHandler.Handle(c.Request.Context(), &req, driverInfo)"
+      ],
+      "request_schema": {
+        "driverId": {
+          "type": "int64",
+          "required": true,
+          "description": "ID of the driver for whom to check price"
+        },
+        "waypoints": {
+          "type": "[]WaypointReq",
+          "required": true,
+          "description": "List of pickup/dropoff locations"
+        },
+        "orderType": {
+          "type": "string",
+          "required": false,
+          "description": "Type of order (e.g., Quick, Delivery)"
+        },
+        "appointmentAt": {
+          "type": "string",
+          "format": "date-time",
+          "required": false,
+          "description": "Desired appointment time"
+        },
+        "vehiclePoolId": {
+          "type": "int64",
+          "required": false,
+          "description": "ID of the vehicle pool"
+        },
+        "pay": {
+          "type": "string",
+          "required": false,
+          "description": "Payment method"
+        },
+        "coupon": {
+          "type": "string",
+          "required": false,
+          "description": "Coupon code"
+        },
+        "couponId": {
+          "type": "string",
+          "required": false,
+          "description": "Coupon ID"
+        },
+        "isA2B": {
+          "type": "boolean",
+          "required": false,
+          "description": "Flag for A2B orders"
+        },
+        "platform": {
+          "type": "int",
+          "required": false,
+          "description": "Client platform"
+        },
+        "organizationId": {
+          "type": "int64",
+          "required": false,
+          "description": "Organization ID"
+        },
+        "branchId": {
+          "type": "int64",
+          "required": false,
+          "description": "Branch ID"
+        },
+        "isAdmin": {
+          "type": "boolean",
+          "required": false,
+          "description": "Flag for admin requests"
+        }
+      },
+      "response_schema": {
+        "order": {
+          "type": "ResultOrder",
+          "description": "Estimated order details including price breakdown"
+        },
+        "driverInfo": {
+          "type": "UNKNOWN",
+          "description": "Driver information used for pricing"
+        }
+      },
+      "business_rules": [
+        "A valid DriverId is mandatory.",
+        "Driver information is fetched from the Driver Service to inform pricing.",
+        "Price calculation is specific to the provided driver."
+      ],
+      "error_cases": [
+        {
+          "code": "RequestInvalid",
+          "http_status": 400,
+          "condition": "Invalid or non-existent DriverId (DRIVER_INVALID)"
+        },
+        {
+          "code": "SystemError",
+          "http_status": 500,
+          "condition": "Internal service error during driver lookup or price calculation"
+        }
+      ],
+      "external_dependencies": [
+        {
+          "name": "DriverClient.GetDriverById",
+          "type": "gRPC",
+          "purpose": "Validate driver and retrieve driver details"
+        }
+      ],
+      "read_only_safe": true,
+      "evidence_refs": [
+        {
+          "file": "internal/api/http/v1/order_handler.go",
+          "symbol": "CheckPriceForForDa"
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/guest/orders/calc-price/:orderId",
+      "handler_file": "internal/api/http/v1/order_new_handler.go",
+      "handler_function": "GetCalcPriceOrderRequestGuest",
+      "auth_required": false,
+      "service_chain": [
+        "validation.CheckValidateHTTP(c, &req)",
+        "h.getOrderIdAndUser(c, req.UserID)",
+        "h.orderNewService.GetCalcPriceOrderRequest(c.Request.Context(), orderRequestID, int64(user.Id))"
+      ],
+      "request_schema": {
+        "orderId": {
+          "type": "int64",
+          "required": true,
+          "description": "ID of the existing order (from path parameter)"
+        },
+        "userId": {
+          "type": "int64",
+          "required": false,
+          "description": "Set to 0 for guest flow, used in internal service call"
+        }
+      },
+      "response_schema": {
+        "basePrice": {
+          "type": "int64",
+          "description": "Total calculated price for the order"
+        },
+        "breakdown": {
+          "type": "[]PriceFee",
+          "description": "Detailed breakdown of fees for the order"
+        }
+      },
+      "business_rules": [
+        "Calculates the price for an already existing order.",
+        "Order ID is extracted from the URL path.",
+        "For guest flow, userId is 0 when passed to internal service."
+      ],
+      "error_cases": [
+        {
+          "code": "RequestInvalid",
+          "http_status": 400,
+          "condition": "Invalid orderId (e.g., not a number)"
+        },
+        {
+          "code": "RequestInvalid",
+          "http_status": 400,
+          "condition": "Order does not exist or is invalid"
+        },
+        {
+          "code": "SystemError",
+          "http_status": 500,
+          "condition": "Internal service error during price calculation"
+        }
+      ],
+      "external_dependencies": [
+        {
+          "name": "UserClient.GetUsers",
+          "type": "gRPC",
+          "purpose": "Attempt to retrieve user info (for guest, userId will be 0)"
+        }
+      ],
+      "read_only_safe": true,
+      "evidence_refs": [
+        {
+          "file": "internal/api/http/v1/order_new_handler.go",
+          "symbol": "GetCalcPriceOrderRequestGuest"
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/guest/home-moving/estimate",
+      "handler_file": "internal/api/http/v1/routes.go",
+      "handler_function": "HomeMovingEstimateGuest",
+      "auth_required": false,
+      "service_chain": [
+        "UNKNOWN (handler implementation not provided)"
+      ],
+      "request_schema": {
+        "orderType": {
+          "type": "string",
+          "required": true,
+          "description": "Must be 'HOME_MOVING'"
+        },
+        "waypoints": {
+          "type": "[]WaypointReq",
+          "required": true,
+          "description": "List of pickup/dropoff locations"
+        },
+        "goods": {
+          "type": "[]HomeMovingGoods",
+          "required": false,
+          "description": "List of goods for home moving (specific to home moving)"
+        },
+        "vehicleTypeId": {
+          "type": "int",
+          "required": true,
+          "description": "Type of vehicle for home moving"
+        },
+        "appointmentAt": {
+          "type": "string",
+          "format": "date-time",
+          "required": false,
+          "description": "Desired appointment time"
+        },
+        "platform": {
+          "type": "int",
+          "required": false,
+          "description": "Client platform"
+        }
+      },
+      "response_schema": {
+        "basePrice": {
+          "type": "float64",
+          "description": "Total estimated price for home moving"
+        },
+        "breakdown": {
+          "type": "[]PriceFee",
+          "description": "Detailed breakdown of fees"
+        }
+      },
+      "business_rules": [
+        "Specific pricing logic for home moving orders.",
+        "UNKNOWN (handler implementation not provided for detailed rules)."
+      ],
+      "error_cases": [
+        {
+          "code": "UNKNOWN",
+          "http_status": "UNKNOWN",
+          "condition": "UNKNOWN (handler implementation not provided)"
+        }
+      ],
+      "external_dependencies": [
+        {
+          "name": "UNKNOWN",
+          "type": "UNKNOWN",
+          "purpose": "UNKNOWN (handler implementation not provided)"
+        }
+      ],
+      "read_only_safe": true,
+      "evidence_refs": [
+        {
+          "file": "internal/api/http/v1/routes.go",
+          "symbol": "HomeMovingEstimateGuest"
+        }
+      ]
+    }
+  ],
+  "shared_types": {
+    "Place": {
+      "lat": "float64",
+      "lng": "float64",
+      "address": "string"
+    },
+    "PriceFee": {
+      "label": "string",
+      "amount": "int64"
+    },
+    "WaypointReq": {
+      "lon": "float64",
+      "lat": "float64",
+      "address1": "string",
+      "region": "int64",
+      "goods": "[]GoodsReq",
+      "services": "[]string"
+    },
+    "GoodsReq": {
+      "name": "string",
+      "quantity": "int",
+      "type": "string"
+    },
+    "ResultOrder": {
+      "calculationPrice": "CalculationPrice",
+      "priceList": "[]PriceFee"
+    },
+    "CalculationPrice": {
+      "total": "float64"
+    },
+    "CheckPriceDriverResponse": {
+      "order": "ResultOrder",
+      "driverInfo": "UNKNOWN"
+    },
+    "CalcPriceOrderResponse": {
+      "basePrice": "int64",
+      "breakdown": "[]PriceFee"
+    }
+  },
+  "fe_types": {
+    "EstimateRequest": {
+      "vehicleTypeId": "number",
+      "fromPlace": "Place",
+      "toPlace": "Place",
+      "waypoints": "Place[]",
+      "goods_weight": "number",
+      "goods_type": "string",
+      "orderType": "string",
+      "coupon": "string",
+      "couponId": "string",
+      "driverId": "number",
+      "isA2B": "boolean",
+      "platform": "number",
+      "appointmentAt": "string",
+      "pay": "string",
+      "organizationId": "number",
+      "branchId": "number",
+      "isAdmin": "boolean"
+    },
+    "EstimateResponse": {
+      "basePrice": "number",
+      "breakdown": "PriceFee[]"
+    },
+    "CheckPriceRequest": {
+      "driverId": "number",
+      "waypoints": "Place[]",
+      "orderType": "string",
+      "appointmentAt": "string",
+      "vehicleTypeId": "number",
+      "pay": "string",
+      "coupon": "string",
+      "couponId": "string",
+      "isA2B": "boolean",
+      "platform": "number",
+      "organizationId": "number",
+      "branchId": "number",
+      "isAdmin": "boolean"
+    },
+    "PriceBreakdown": {
+      "label": "string",
+      "amount": "number"
+    },
+    "VehicleType": {
+      "id": "number",
+      "name": "string"
+    }
+  },
+  "cross_cutting_observations": [
+    "Guest and authenticated estimate flows (`/guest/estimate`, `/estimate`) share the same core internal `Estimate()` method, with the primary difference being the source of the `userId` (0 for guest, token for authenticated).",
+    "The `driverId` parameter in `/guest/check-price-driver` is crucial for driver-specific pricing, potentially overriding or complementing `vehicleTypeId` logic.",
+    "Coupon usage is strictly controlled: not allowed for guest users and explicitly disallowed for A2B (fixed amount) orders.",
+    "Appointment time validation is dynamic, adjusting minimum lead time based on the `orderType` (e.g., Quick, Delivery).",
+    "Waypoint addresses undergo validation to prevent special characters, ensuring data integrity.",
+    "The home-moving estimate (`/guest/home-moving/estimate`) uses a distinct endpoint, implying specialized pricing logic and potentially different request parameters, although the handler implementation is not provided.",
+    "The `/guest/orders/calc-price/:orderId` endpoint is designed for re-calculating prices for *existing* orders, contrasting with the pre-order estimation flows."
+  ],
+  "logic_evidence": [
+    {
+      "file": "internal/api/http/v1/order_handler.go",
+      "symbol": "EstimateGuest",
+      "why_it_matters": "Entry point for guest users to get a price estimate."
+    },
+    {
+      "file": "internal/api/http/v1/order_handler.go",
+      "symbol": "EstimateAuth",
+      "why_it_matters": "Entry point for authenticated users to get a price estimate."
+    },
+    {
+      "file": "internal/api/http/v1/order_handler.go",
+      "symbol": "Estimate",
+      "why_it_matters": "Core internal method for price estimation, called by both guest and authenticated flows."
+    },
+    {
+      "file": "internal/api/http/v1/order_handler.go",
+      "symbol": "IsOrderValid",
+      "why_it_matters": "Centralized validation logic for various order parameters, including appointment time, waypoints, and admin-specific fields."
+    },
+    {
+      "file": "internal/api/http/v1/order_handler.go",
+      "symbol": "validWaypointAddressRequest",
+      "why_it_matters": "Specific validation for waypoint addresses to prevent invalid characters."
+    },
+    {
+      "file": "internal/api/http/v1/order_handler.go",
+      "symbol": "validCouponRequest",
+      "why_it_matters": "Specific validation for coupon usage, restricting it for guest users and A2B orders."
+    },
+    {
+      "file": "internal/api/http/v1/order_handler.go",
+      "symbol": "CheckPriceForForDa",
+      "why_it_matters": "Entry point for checking prices specific to a given driver, involving external driver service lookup."
+    },
+    {
+      "file": "internal/api/http/v1/order_new_handler.go",
+      "symbol": "GetCalcPriceOrderRequestGuest",
+      "why_it_matters": "Entry point for guest users to calculate the price of an existing order."
+    },
+    {
+      "file": "internal/api/http/v1/order_new_handler.go",
+      "symbol": "handleGetCalcPriceOrderRequest",
+      "why_it_matters": "Core internal method for calculating the price of an existing order, called by guest flow."
+    },
+    {
+      "file": "internal/api/http/v1/routes.go",
+      "symbol": "HomeMovingEstimateGuest",
+      "why_it_matters": "Route definition for home-moving price estimation, indicating a distinct business flow."
+    }
+  ]
+}

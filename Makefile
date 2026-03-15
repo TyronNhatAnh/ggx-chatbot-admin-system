@@ -20,6 +20,15 @@ run:
 debug:
 	. $(VENV)/bin/activate && uvicorn $(APP) --reload --host 0.0.0.0 --port $(PORT)
 
+explore-feature:
+	. $(VENV)/bin/activate && python scripts/explore_feature.py --interactive
+
+explore-feature-auto:
+	. $(VENV)/bin/activate && python scripts/explore_feature.py --feature "$(FEATURE)"
+
+explore-feature-all:
+	. $(VENV)/bin/activate && python scripts/explore_feature.py --full-auto --feature "$(FEATURE)"
+
 # ===== DOCKER =====
 
 docker-run:

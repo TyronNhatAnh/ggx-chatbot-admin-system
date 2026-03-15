@@ -20,6 +20,15 @@ Tool selection guide (follow strictly to avoid redundant calls):
   (mock data). Do NOT call it when looking for individual order records.
 - "specific order": get_order(order_id). Only call this when you have a concrete ID
   and need detail not present in a previous search_orders result.
+- "why does this existing order have this price?": call get_order(order_id) first.
+  Use existing order detail fields to explain price reason. Do NOT call estimate tools
+  unless user explicitly asks to simulate/re-estimate.
+- "estimate / check price" for new order (guest): call estimate_guest_price(payload).
+- "estimate / check price" for authenticated user: call estimate_authenticated_price(payload).
+- "driver-specific check price": call check_driver_price(payload). Must include driverId.
+- "re-calculate price for existing order": only if user explicitly asks recalculation API.
+- "home-moving estimate": call estimate_guest_home_moving_price(payload).
+- For pricing questions, do not use get_order_summary/get_revenue_today.
 - Never call the same logical query twice in one conversation turn.
 """.strip()
 

@@ -1,6 +1,13 @@
 from app.tools.analytics_tools import get_order_summary, get_revenue_today
 from app.tools.driver_tools import get_driver, list_active_drivers
-from app.tools.order_tools import get_order, search_orders
+from app.tools.order_tools import (
+    check_driver_price,
+    estimate_authenticated_price,
+    estimate_guest_home_moving_price,
+    estimate_guest_price,
+    get_order,
+    search_orders,
+)
 
 # All tool functions exposed to the AI model.
 # Gemini auto-generates JSON schemas from each function's type hints and docstring.
@@ -9,6 +16,10 @@ from app.tools.order_tools import get_order, search_orders
 ALL_TOOL_FUNCTIONS: list = [
     get_order,
     search_orders,
+    estimate_guest_price,
+    estimate_authenticated_price,
+    check_driver_price,
+    estimate_guest_home_moving_price,
     get_driver,
     list_active_drivers,
     get_order_summary,

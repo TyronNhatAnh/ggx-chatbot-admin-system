@@ -1,8 +1,8 @@
 # AI Admin Assistant
 
-A **read-only** AI chatbot service for admin systems, built with FastAPI and
+A read-only AI chatbot service for admin systems, built with FastAPI and
 Google Gemini. Operators can ask questions about orders, drivers, and system
-analytics in plain English — the AI fetches real data through internal tools
+analytics in plain English. The AI fetches real data through internal tools
 and returns factual answers.
 
 ---
@@ -22,7 +22,7 @@ orchestrator/
     │
     ▼
 llm/
-  gemini_client.py       ← configures the Gemini GenerativeModel
+  gemini_client.py       ← configures Gemini chat sessions (google.genai)
     │
     ▼
 tools/
@@ -61,6 +61,70 @@ Get a free key at <https://aistudio.google.com/app/apikey>.
 ```bash
 make install
 ```
+
+## Discovery And Feature Exploration
+
+This repository has two different analysis workflows. They solve different jobs:
+
+1. System discovery (broad inventory and mapping)
+
+- Script: scripts/run_discovery.py
+- Output: docs/discovery/*.json and docs/discovery/code_context/*.context.md
+- Use this when:
+  - onboarding a new FE/BE repo
+  - APIs changed a lot and baseline mapping is stale
+  - you need broad FE -> BE coverage before choosing features
+
+2. Feature exploration (deep requirement/spec for one feature)
+
+- Script: scripts/explore_feature.py
+- Input: explorer/feature_specs/<feature>.yaml
+- Output: docs/features/<feature>/index.json and requirement.md
+- Use this when:
+  - you already know the feature scope
+  - you need detailed use cases, endpoint contracts, and business rules
+
+Current recommended path:
+
+1. Run run_discovery only when baseline mapping is missing or outdated.
+2. For day-to-day feature analysis, run explore_feature only.
+
+### Strict Evidence Policy (Default)
+
+Feature exploration enforces strict evidence only:
+
+- No inference or assumptions in generated requirement/spec output.
+- Every use case and endpoint must include evidence refs to matched source files.
+- Missing evidence must be labeled as UNKNOWN/evidence_gap.
+- Invalid output is rejected and written to error artifacts, not to final docs.
+
+Run feature exploration:
+
+```bash
+. .venv/bin/activate
+python scripts/explore_feature.py --spec explorer/feature_specs/check_price.yaml
+```
+
+Simplest workflows:
+
+```bash
+# 1) Interactive menu: choose existing spec or describe new feature
+python scripts/explore_feature.py --interactive
+
+# 2) One-line feature text: auto-create spec and run
+python scripts/explore_feature.py --feature "check price for guest and home moving"
+
+# 3) One-shot full auto (recommended for minimal manual steps):
+#    - runs discovery scan-all
+#    - auto-builds and Gemini-enriches feature spec
+#    - runs explore and writes docs/features/<feature>/...
+python scripts/explore_feature.py --full-auto --feature "login base"
+```
+
+Use template for new features:
+
+- Spec template: explorer/feature_specs/_template.yaml
+- Authoring guide: docs/features/README.md
 
 ---
 

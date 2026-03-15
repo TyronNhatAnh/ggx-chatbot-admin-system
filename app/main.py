@@ -30,11 +30,17 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Initialise the orchestrator once at startup.
-# It loads the Gemini model and registers all tools.
-logger.info("[Startup] Initialising AIOrchestrator...")
-orchestrator = AIOrchestrator()
-logger.info("[Startup] AIOrchestrator ready.")
+_orchestrator: AIOrchestrator | None = None
+
+
+def get_orchestrator() -> AIOrchestrator:
+    """Return a singleton orchestrator instance, lazily created on first use."""
+    global _orchestrator  # noqa: PLW0603
+    if _orchestrator is None:
+        logger.info("[Startup] Initialising AIOrchestrator...")
+        _orchestrator = AIOrchestrator()
+        logger.info("[Startup] AIOrchestrator ready.")
+    return _orchestrator
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +91,7 @@ async def chat(request: ChatRequest):
     preview = request.message[:120].replace("\n", " ")
     logger.info("[Chat    ] message: \"%s%s\"", preview, "..." if len(request.message) > 120 else "")
     try:
-        reply, tools_called = orchestrator.chat(request.message)
+        reply, tools_called = get_orchestrator().chat(request.message)
         logger.info("[Chat    ] done  tools_called=%s", tools_called)
         return ChatResponse(reply=reply, tools_called=tools_called)
     except ValueError as exc:

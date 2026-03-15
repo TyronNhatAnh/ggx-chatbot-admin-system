@@ -1,12 +1,36 @@
-import google.generativeai as genai
+from dataclasses import dataclass
+
+from google import genai
+from google.genai import types
 
 from app.config import settings
 from app.orchestrator.prompt_builder import build_system_prompt
 
 
-def create_gemini_model(tools: list) -> genai.GenerativeModel:
+@dataclass
+class GeminiChatFactory:
+    """Build fresh chat sessions with shared model configuration."""
+
+    client: genai.Client
+    model_name: str
+    tools: list
+    system_instruction: str
+
+    def start_chat(self, enable_automatic_function_calling: bool = False):
+        """Create a new chat session with deterministic function-calling behavior."""
+        config = types.GenerateContentConfig(
+            system_instruction=self.system_instruction,
+            tools=self.tools,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                disable=not enable_automatic_function_calling
+            ),
+        )
+        return self.client.chats.create(model=self.model_name, config=config)
+
+
+def create_gemini_model(tools: list) -> GeminiChatFactory:
     """
-    Configure and return a Gemini GenerativeModel with the given tools.
+    Configure and return a Gemini chat factory with the given tools.
 
     Passing Python functions directly lets the SDK auto-generate the JSON
     schema from each function's type hints and docstring — no manual schema
@@ -16,11 +40,12 @@ def create_gemini_model(tools: list) -> genai.GenerativeModel:
         tools: List of Python callables to register as tools for the model.
 
     Returns:
-        A configured GenerativeModel instance ready to start chat sessions.
+        A configured GeminiChatFactory ready to start chat sessions.
     """
-    genai.configure(api_key=settings.gemini_api_key)
+    client = genai.Client(api_key=settings.gemini_api_key)
 
-    return genai.GenerativeModel(
+    return GeminiChatFactory(
+        client=client,
         model_name=settings.model_name,
         tools=tools,
         system_instruction=build_system_prompt(),

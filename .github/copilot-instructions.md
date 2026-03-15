@@ -72,3 +72,4 @@ applyTo: "**/*.py"
 - Do not redesign the entire stack.
 - Do not add mock-only features to production paths.
 - Do not add broad prompt text that increases token usage without clear value.
+- Strict evidence only 

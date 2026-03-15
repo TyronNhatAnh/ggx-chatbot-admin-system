@@ -7,6 +7,14 @@ Build a production-ready read-only logistics AI assistant by using a staged disc
 3. Consolidate business logic and requirements into docs.
 4. Expand tool layer and assistant coverage for full logistics operations.
 
+## Strategy Decision (Current)
+- Primary track: optimize one FE/BE pair first (`web2` + `order`) for speed, quality, and deterministic output.
+- Expansion track: add multi-repo support immediately after single-pair quality gate passes.
+- Why this order:
+  - lower implementation risk and easier debugging
+  - faster feedback loop for prompt/spec/discovery quality
+  - avoids over-generalizing before baseline contracts are stable
+
 ## Scope Baseline
 - Source A: AI Admin Assistant (this repo)
 - Source B: Web2 FE + BE systems (legacy/current production flows)
@@ -26,8 +34,41 @@ Build a production-ready read-only logistics AI assistant by using a staged disc
 ## Phase 1 - Discovery Foundation (Started)
 - [x] Initial function-first analysis approach established (check-price style flow)
 - [x] Created service-level discovery notes in docs
-- [ ] Define one canonical template for every discovered API (endpoint, caller, payload, business rule, dependencies)
-- [ ] Define naming standard for docs output files
+- [x] Define one canonical template for every discovered API (endpoint, caller, payload, business rule, dependencies)
+- [x] Define naming standard for docs output files
+- [x] Add feature exploration template (`explorer/feature_specs/_template.yaml`)
+- [x] Add feature exploration guide (`docs/features/README.md`)
+- [x] Enforce strict evidence-only generation for feature requirement/spec outputs
+
+## Phase 1A - Single Pair Hardening (Now)
+- Scope: only one FE + one BE repo (`web2` + `order`)
+- [ ] Freeze canonical golden feature specs for top journeys in this pair (check_price, tracking, cancel)
+- [ ] Tighten `be_files` / `fe_files` globs to minimize noise and token volume
+- [ ] Validate evidence quality: no UNKNOWN on in-scope handlers unless true code gap
+- [ ] Baseline latency and output size for repeated explore runs
+- [ ] Finalize docs output contract and cleanup behavior for error artifacts
+
+Exit criteria:
+- [ ] 3 priority features generate stable docs twice in a row with no manual fixes
+- [ ] Discovery outputs are reproducible for same commit and same spec
+- [ ] Team agrees output readability is sufficient for business review
+
+## Phase 1B - Multi-Repo Foundation (Next)
+- Target services to onboard:
+  - admin (java spring)
+  - user / driver / common / notification (golang)
+  - ruby integration services (2)
+  - DA / CA apps (2)
+- [ ] Add multi-repo config support (list of FE repos, list of BE repos)
+- [ ] Add namespaced discovery outputs per repo (avoid overwrite collisions)
+- [ ] Extend flow mapping to include source repo identifiers
+- [ ] Add merge step for cross-repo endpoint inventory and flow mappings
+- [ ] Update feature spec format to optionally include repo namespace per file glob
+
+Exit criteria:
+- [ ] At least 3 BE services + 2 FE apps scanned in one orchestrated run
+- [ ] No artifact overwrite across repos
+- [ ] Cross-service feature can cite evidence from multiple repos in one requirement
 
 ## Phase 2 - Web2 FE Scan Checklist
 - [ ] Inventory all FE modules/pages related to logistics domain
@@ -90,7 +131,8 @@ Build a production-ready read-only logistics AI assistant by using a staged disc
 - [ ] Rollout checklist complete (staging test + monitoring + fallback)
 
 ## Immediate Next Actions (Recommended)
-- [ ] Finalize a single FE/BE API mapping doc template in docs
-- [ ] Start FE API extraction for top 3 business journeys
+- [ ] Finish Phase 1A first: top 3 features in single pair and stabilize outputs
+- [ ] Draft multi-repo config schema and artifact naming convention before coding
+- [ ] Implement Phase 1B in small increments (config -> scan -> map -> explore)
 - [ ] Replace mock analytics with real read-only aggregation source
 - [ ] Add minimal auth + rate limit for `/chat`
