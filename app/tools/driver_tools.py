@@ -44,15 +44,7 @@ MOCK_DRIVERS: dict[str, dict] = {
 
 
 def get_driver(driver_id: str) -> dict:
-    """
-    Get the details of a specific driver by their ID.
-
-    Args:
-        driver_id: The unique driver identifier (e.g. 'DRV-001').
-
-    Returns:
-        A dictionary with driver details, or an error message if not found.
-    """
+    """Fetch details for one driver by ID (e.g. 'DRV-001')."""
     driver = MOCK_DRIVERS.get(driver_id.upper())
     if driver:
         return driver
@@ -60,11 +52,6 @@ def get_driver(driver_id: str) -> dict:
 
 
 def list_active_drivers() -> dict:
-    """
-    List all drivers who are currently active and on duty.
-
-    Returns:
-        A dictionary with a list of active drivers and the total count.
-    """
+    """List all currently active (on-duty) drivers."""
     active = [d for d in MOCK_DRIVERS.values() if d["status"] == "active"]
     return {"active_drivers": active, "count": len(active)}

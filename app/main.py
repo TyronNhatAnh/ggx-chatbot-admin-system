@@ -2,6 +2,7 @@ import logging
 import time
 
 from google.api_core.exceptions import ResourceExhausted
+from google.genai.errors import APIError
 from fastapi import FastAPI, HTTPException, Request
 
 from app.orchestrator.ai_orchestrator import AIOrchestrator
@@ -31,6 +32,23 @@ app = FastAPI(
 )
 
 _orchestrator: AIOrchestrator | None = None
+
+
+def _is_gemini_quota_error(exc: Exception) -> bool:
+    """Detect quota/rate-limit style errors from Gemini SDK variants."""
+    if isinstance(exc, ResourceExhausted):
+        return True
+    if isinstance(exc, APIError):
+        status = (exc.status or "").upper()
+        return exc.code == 429 or status == "RESOURCE_EXHAUSTED"
+    text = str(exc).upper()
+    return "429" in text and "RESOURCE_EXHAUSTED" in text
+
+
+def _quota_error_message(exc: Exception) -> str:
+    if isinstance(exc, APIError) and exc.message:
+        return f"Gemini quota exceeded: {exc.message}"
+    return "Gemini quota exceeded. Please retry later or switch to a model/quota tier with higher limits."
 
 
 def get_orchestrator() -> AIOrchestrator:
@@ -89,20 +107,26 @@ async def chat(request: ChatRequest):
     7. Return final answer.
     """
     preview = request.message[:120].replace("\n", " ")
-    logger.info("[Chat    ] message: \"%s%s\"", preview, "..." if len(request.message) > 120 else "")
+    logger.info(
+        "[Chat    ] message: \"%s%s\"  conversation_id=%s",
+        preview,
+        "..." if len(request.message) > 120 else "",
+        request.conversation_id or "<new>",
+    )
     try:
-        reply, tools_called = get_orchestrator().chat(request.message)
-        logger.info("[Chat    ] done  tools_called=%s", tools_called)
-        return ChatResponse(reply=reply, tools_called=tools_called)
+        reply, tools_called, conversation_id = get_orchestrator().chat(
+            request.message,
+            request.conversation_id,
+        )
+        logger.info("[Chat    ] done  tools_called=%s  conversation_id=%s", tools_called, conversation_id)
+        return ChatResponse(reply=reply, tools_called=tools_called, conversation_id=conversation_id)
     except ValueError as exc:
         logger.error("[Chat    ] ValueError: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
-    except ResourceExhausted as exc:
-        logger.warning("[Chat    ] Gemini quota exhausted: %s", exc)
-        raise HTTPException(
-            status_code=429,
-            detail="Gemini quota exceeded. Please retry later or switch to a model/quota tier with higher limits.",
-        )
     except Exception as exc:
+        if _is_gemini_quota_error(exc):
+            logger.warning("[Chat    ] Gemini quota exhausted: %s", exc)
+            raise HTTPException(status_code=429, detail=_quota_error_message(exc))
+
         logger.error("[Chat    ] Unexpected error: %s: %s", type(exc).__name__, exc)
         raise HTTPException(status_code=500, detail="Internal server error")

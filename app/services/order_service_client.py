@@ -154,6 +154,17 @@ class OrderServiceClient:
         }
 
     @staticmethod
+    def _first_dict(value: object) -> dict | None:
+        """Return a dict payload from either dict or list[dict] shapes."""
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    return item
+        return None
+
+    @staticmethod
     def _slim_driver(driver: dict | None) -> dict | None:
         if not driver:
             return None
@@ -163,22 +174,167 @@ class OrderServiceClient:
         }
 
     @staticmethod
+    def _slim_vehicle(vehicle: object) -> dict | None:
+        """Normalize vehicle payload for direct user-facing answers."""
+        if not isinstance(vehicle, dict):
+            return None
+
+        normalized = {
+            "vehiclePoolId": vehicle.get("vehiclePoolId") or vehicle.get("id"),
+            "name": vehicle.get("vehiclePoolName") or vehicle.get("name"),
+            "title": vehicle.get("vehiclePoolTitle") or vehicle.get("title"),
+        }
+        if all(value is None or value == "" for value in normalized.values()):
+            return None
+        return normalized
+
+    @staticmethod
+    def _slim_payment(order: dict) -> dict | None:
+        """Build a stable payment summary from order-level and payment rows."""
+        if not isinstance(order, dict):
+            return None
+
+        payment = (
+            OrderServiceClient._first_dict(order.get("paymentInfo"))
+            or OrderServiceClient._first_dict(order.get("orderPaymentInfo"))
+            or {}
+        )
+
+        method = (
+            order.get("payCDTitle")
+            or order.get("payCdTitle")
+            or payment.get("payCdTitle")
+            or payment.get("payCDTitle")
+            or order.get("payCd")
+            or payment.get("payCd")
+            or payment.get("method")
+        )
+
+        normalized = {
+            "method": method,
+            "status": payment.get("status") or payment.get("action"),
+            "amount": payment.get("amount") or order.get("calculationPrice", {}).get("total"),
+        }
+        if all(value is None or value == "" for value in normalized.values()):
+            return None
+        return normalized
+
+    @staticmethod
+    def _slim_goods_item(item: object) -> dict | None:
+        """Normalize a single goods item into a compact, stable shape."""
+        if not isinstance(item, dict):
+            return None
+
+        name = item.get("name") or item.get("title") or item.get("fullName")
+        quantity = item.get("quantity")
+        remark = item.get("remark")
+
+        # Ignore placeholder rows like {"name": "", "quantity": 0}.
+        if (name is None or name == "") and (quantity is None or quantity == 0):
+            return None
+
+        normalized = {
+            "name": name,
+            "quantity": quantity,
+            "remark": remark,
+        }
+        if all(value is None or value == "" for value in normalized.values()):
+            return None
+        return normalized
+
+    @staticmethod
+    def _slim_goods_infos(goods_infos: object) -> list[dict]:
+        """Extract goods from list payloads that already contain goodsInfos."""
+        if not isinstance(goods_infos, list):
+            return []
+
+        goods: list[dict] = []
+        seen: set[tuple[object, object, object]] = set()
+        for item in goods_infos[:10]:
+            slim_item = OrderServiceClient._slim_goods_item(item)
+            if not slim_item:
+                continue
+            key = (slim_item.get("name"), slim_item.get("quantity"), slim_item.get("remark"))
+            if key in seen:
+                continue
+            seen.add(key)
+            goods.append(slim_item)
+
+        return goods
+
+    @staticmethod
+    def _slim_goods(waypoints: object, applied_extra: object) -> list[dict]:
+        """Extract goods from waypoint goods and applied extras (fallback)."""
+        goods: list[dict] = []
+
+        if isinstance(waypoints, list):
+            for wp in waypoints[:10]:
+                if not isinstance(wp, dict):
+                    continue
+                waypoint_goods = wp.get("goods")
+                if not isinstance(waypoint_goods, list):
+                    continue
+                for raw_item in waypoint_goods[:10]:
+                    slim_item = OrderServiceClient._slim_goods_item(raw_item)
+                    if slim_item:
+                        goods.append(slim_item)
+
+        # Fallback for cases where waypoint goods are empty but applied extra carries goods info.
+        if not goods and isinstance(applied_extra, list):
+            for extra in applied_extra[:10]:
+                if not isinstance(extra, dict):
+                    continue
+                slim_item = OrderServiceClient._slim_goods_item(extra)
+                if slim_item:
+                    goods.append(slim_item)
+
+        deduped: list[dict] = []
+        seen: set[tuple[object, object, object]] = set()
+        for item in goods:
+            key = (item.get("name"), item.get("quantity"), item.get("remark"))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+
+        return deduped
+
+    @staticmethod
+    def _extract_price_total(price_obj: object) -> object:
+        """Extract numeric total from a calculationPrice dict; return scalars as-is."""
+        if isinstance(price_obj, dict):
+            return (
+                price_obj.get("total")
+                if price_obj.get("total") is not None
+                else price_obj.get("subTotal") if price_obj.get("subTotal") is not None
+                else price_obj.get("amount")
+            )
+        return price_obj
+
+    @staticmethod
     def _slim_order(o: dict) -> dict:
         """Slim fields for list results — enough for Gemini to answer location/driver/price
         questions without needing a follow-up get_order call."""
-        driver = o.get("driver")
+        driver = OrderServiceClient._first_dict(o.get("driver"))
+        raw_price = o.get("calculationPrice") if o.get("calculationPrice") is not None else (
+            o.get("price") if o.get("price") is not None else
+            o.get("totalPrice") if o.get("totalPrice") is not None else
+            o.get("amount")
+        )
         return {
             "orderId": o.get("orderId") or o.get("id"),
             "status": o.get("statusCd") or o.get("status"),
             "createdAt": o.get("createdAt"),
-            "price": o.get("calculationPrice") or o.get("price") or o.get("totalPrice") or o.get("amount"),
-            "driverFee": o.get("driverFee") or o.get("driver_price") or o.get("driverAmount"),
+            "price": OrderServiceClient._extract_price_total(raw_price),
+            "driverFee": o.get("driverFee") if o.get("driverFee") is not None else (
+                o.get("driver_price") if o.get("driver_price") is not None else o.get("driverAmount")
+            ),
             "fromPlace": OrderServiceClient._slim_place(o.get("fromPlace")),
             "toPlace": OrderServiceClient._slim_place(o.get("toPlace")),
-            "driver": {
-                "driverId": driver.get("driverId") or driver.get("id"),
-                "name": driver.get("driverName") or driver.get("name") or driver.get("username"),
-            } if driver else None,
+            "driver": OrderServiceClient._slim_driver(driver),
+            "vehicle": OrderServiceClient._slim_vehicle(o.get("vehicle")),
+            "goods": OrderServiceClient._slim_goods_infos(o.get("goodsInfos")),
+            "payment": OrderServiceClient._slim_payment(o),
         }
 
     @staticmethod
@@ -187,8 +343,7 @@ class OrderServiceClient:
         if not isinstance(o, dict):
             return {"error": "ORDER_SERVICE_ERROR", "detail": "Invalid order payload format"}
 
-        driver = o.get("driver")
-        payment = o.get("paymentInfo") or {}
+        driver = OrderServiceClient._first_dict(o.get("driver"))
         raw_rows = o.get("priceList") or o.get("fees") or o.get("priceFees") or []
         price_breakdown: list[dict] = []
         if isinstance(raw_rows, list):
@@ -201,40 +356,35 @@ class OrderServiceClient:
             "status": o.get("statusCd"),
             "createdAt": o.get("createdAt"),
             "appointmentAt": o.get("appointmentAt"),
-            "price": o.get("calculationPrice"),
+            "price": OrderServiceClient._extract_price_total(o.get("calculationPrice")),
             "priceBreakdown": price_breakdown,
             "driverFee": o.get("driverFee") or o.get("driver_price") or o.get("driverAmount"),
             "fromPlace": OrderServiceClient._slim_place(o.get("fromPlace")),
             "toPlace": OrderServiceClient._slim_place(o.get("toPlace")),
-            "driver": {
-                "driverId": driver.get("driverId") or driver.get("id"),
-                "name": driver.get("driverName") or driver.get("name") or driver.get("username"),
-            } if driver else None,
-            "payment": {
-                "method": payment.get("payCd") or payment.get("method"),
-                "status": payment.get("status"),
-                "amount": payment.get("amount"),
-            } if payment else None,
+            "driver": OrderServiceClient._slim_driver(driver),
+            "vehicle": OrderServiceClient._slim_vehicle(o.get("vehicle")),
+            "goods": OrderServiceClient._slim_goods(
+                o.get("waypoints"),
+                o.get("appliedExtra"),
+            ),
+            "payment": OrderServiceClient._slim_payment(o),
         }
 
     @staticmethod
     def _normalize_price_row(row: dict) -> dict | None:
         if not isinstance(row, dict):
             return None
-        label = (
-            row.get("label")
-            or row.get("name")
-            or row.get("title")
-            or row.get("type")
-            or row.get("feeType")
+        # Use explicit None checks so zero-amount rows (discounts, free items) are preserved.
+        _missing = object()
+        label = next(
+            (row[k] for k in ("label", "name", "title", "type", "feeType") if row.get(k) is not None),
+            None,
         )
-        amount = (
-            row.get("amount")
-            or row.get("price")
-            or row.get("value")
-            or row.get("fee")
-            or row.get("total")
+        amount = next(
+            (row[k] for k in ("amount", "price", "value", "fee", "total") if row.get(k) is not None),
+            _missing,
         )
+        amount = None if amount is _missing else amount
         normalized = {"label": label, "amount": amount}
         if normalized["label"] is None and normalized["amount"] is None:
             return None
