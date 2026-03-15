@@ -8,6 +8,7 @@ single login serves every tool call within the same process lifetime.
 """
 
 import logging
+import time
 
 import httpx
 
@@ -16,6 +17,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _LOGIN_PATH = "/api/v1/auth/login"
+TOKEN_TTL_SECONDS = 3500  # ~58 min; tokens are usually valid for 1 hour
 
 
 class AuthTokenManager:
@@ -35,19 +37,21 @@ class AuthTokenManager:
         self._type_cd: int = settings.user_service_type_cd
         self._auth_mode: str = settings.user_service_auth_mode
         self._access_token: str | None = None
+        self._token_expiry: float = 0.0  # unix epoch; 0.0 = no valid token
 
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
 
     def ensure_token(self) -> None:
-        """Fetch a new token from the User Service if one is not cached."""
-        if not self._access_token:
+        """Fetch a new token if one is not cached or has expired."""
+        if not self._access_token or time.time() >= self._token_expiry:
             self._login()
 
     def invalidate(self) -> None:
         """Drop the cached token so the next call to ``ensure_token`` re-logs in."""
         self._access_token = None
+        self._token_expiry = 0.0
 
     @property
     def bearer_header(self) -> dict[str, str]:
@@ -61,9 +65,10 @@ class AuthTokenManager:
     def _login(self) -> None:
         url = f"{self._base_url}{_LOGIN_PATH}"
         logger.info(
-            "AuthTokenManager: POST %s  phoneNumber=%s typeCd=%s mode=%s",
+            "[Auth    ] POST %s  phoneNumber=%s typeCd=%s mode=%s",
             url, self._phone_number, self._type_cd, self._auth_mode,
         )
+        t = time.perf_counter()
         try:
             response = httpx.post(
                 url,
@@ -77,8 +82,10 @@ class AuthTokenManager:
                 timeout=10.0,
             )
             logger.info(
-                "AuthTokenManager: login response HTTP %s — body keys: %s",
-                response.status_code, list(response.json().keys()) if response.content else "<empty>",
+                "[Auth    ] login response HTTP %s  elapsed=%.3fs  body keys: %s",
+                response.status_code,
+                time.perf_counter() - t,
+                list(response.json().keys()) if response.content else "<empty>",
             )
             response.raise_for_status()
             payload = response.json()
@@ -92,7 +99,7 @@ class AuthTokenManager:
             )
             if not token:
                 logger.error(
-                    "AuthTokenManager: could not find token in login response. "
+                    "[Auth    ] could not find token in login response. "
                     "success=%s data keys=%s full payload=%s",
                     payload.get("success"), list(data.keys()), payload,
                 )
@@ -100,15 +107,16 @@ class AuthTokenManager:
                     f"No token field found in login response.data. Available keys: {list(data.keys())}"
                 )
             self._access_token = token
-            logger.info("AuthTokenManager: login successful — token cached.")
+            self._token_expiry = time.time() + TOKEN_TTL_SECONDS
+            logger.info("[Auth    ] login successful — token cached, TTL=%ds.", TOKEN_TTL_SECONDS)
         except httpx.HTTPStatusError as exc:
             logger.error(
-                "AuthTokenManager: login HTTP error %s — response body: %s",
-                exc.response.status_code, exc.response.text,
+                "[Auth    ] login HTTP error %s  elapsed=%.3fs — response body: %s",
+                exc.response.status_code, time.perf_counter() - t, exc.response.text,
             )
             raise
         except httpx.RequestError as exc:
-            logger.error("AuthTokenManager: login network error — %s", exc)
+            logger.error("[Auth    ] login network error  elapsed=%.3fs — %s", time.perf_counter() - t, exc)
             raise
         except KeyError:
             raise

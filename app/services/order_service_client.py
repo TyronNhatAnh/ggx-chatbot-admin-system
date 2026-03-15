@@ -9,6 +9,7 @@ it only issues GET requests.
 """
 
 import logging
+import time
 
 import httpx
 
@@ -39,6 +40,8 @@ class OrderServiceClient:
     def __init__(self) -> None:
         self._base_url: str = settings.order_service_base_url.rstrip("/")
         self._token_mgr = get_token_manager()
+        # Persistent session — reuses TCP connections across tool calls.
+        self._http = httpx.Client(timeout=10.0)
 
     # ------------------------------------------------------------------
     # Internal GET with automatic token refresh on 401
@@ -53,28 +56,111 @@ class OrderServiceClient:
         """
         self._token_mgr.ensure_token()
         url = f"{self._base_url}{_API_PREFIX}{path}"
-        logger.info("OrderServiceClient: GET %s  params=%s", url, params)
+        logger.info("[HTTP GET ] %s  params=%s", url, params)
+        t = time.perf_counter()
 
-        response = httpx.get(
-            url, headers=self._token_mgr.bearer_header, params=params, timeout=10.0
+        response = self._http.get(
+            url, headers=self._token_mgr.bearer_header, params=params
         )
-        logger.info("OrderServiceClient: response HTTP %s for %s", response.status_code, url)
+        logger.info(
+            "[HTTP GET ] %s  status=%s  elapsed=%.3fs",
+            url, response.status_code, time.perf_counter() - t,
+        )
 
         if response.status_code == 401:
             logger.warning(
-                "OrderServiceClient: 401 on %s — refreshing token and retrying.", path
+                "[HTTP GET ] 401 on %s — invalidating token and retrying.", path
             )
             self._token_mgr.invalidate()
             self._token_mgr.ensure_token()
-            response = httpx.get(
-                url, headers=self._token_mgr.bearer_header, params=params, timeout=10.0
+            t = time.perf_counter()
+            response = self._http.get(
+                url, headers=self._token_mgr.bearer_header, params=params
             )
             logger.info(
-                "OrderServiceClient: retry response HTTP %s for %s", response.status_code, url
+                "[HTTP GET ] retry %s  status=%s  elapsed=%.3fs",
+                url, response.status_code, time.perf_counter() - t,
             )
 
         response.raise_for_status()
         return response.json()
+
+    @staticmethod
+    def _slim_place(place: object) -> object:
+        """Keep place payload small to reduce LLM token usage."""
+        if place is None:
+            return None
+        if isinstance(place, str):
+            return place
+        if not isinstance(place, dict):
+            return str(place)
+
+        return {
+            "name": (
+                place.get("name")
+                or place.get("displayName")
+                or place.get("title")
+                or place.get("fullAddress")
+                or place.get("address")
+            ),
+            "address": place.get("fullAddress") or place.get("address"),
+        }
+
+    @staticmethod
+    def _slim_driver(driver: dict | None) -> dict | None:
+        if not driver:
+            return None
+        return {
+            "driverId": driver.get("driverId") or driver.get("id"),
+            "name": driver.get("driverName") or driver.get("name") or driver.get("username"),
+        }
+
+    @staticmethod
+    def _slim_order(o: dict) -> dict:
+        """Slim fields for list results — enough for Gemini to answer location/driver/price
+        questions without needing a follow-up get_order call."""
+        driver = o.get("driver")
+        return {
+            "orderId": o.get("orderId") or o.get("id"),
+            "status": o.get("statusCd") or o.get("status"),
+            "createdAt": o.get("createdAt"),
+            "price": o.get("calculationPrice") or o.get("price") or o.get("totalPrice") or o.get("amount"),
+            "driverFee": o.get("driverFee") or o.get("driver_price") or o.get("driverAmount"),
+            "fromPlace": OrderServiceClient._slim_place(o.get("fromPlace")),
+            "toPlace": OrderServiceClient._slim_place(o.get("toPlace")),
+            "driver": {
+                "driverId": driver.get("driverId") or driver.get("id"),
+                "name": driver.get("driverName") or driver.get("name") or driver.get("username"),
+            } if driver else None,
+        }
+
+    @staticmethod
+    def _slim_order_detail(o: dict) -> dict:
+        """Slim fields for a single order detail — keeps essential info only."""
+        if not isinstance(o, dict):
+            return {"error": "ORDER_SERVICE_ERROR", "detail": "Invalid order payload format"}
+
+        driver = o.get("driver")
+        payment = o.get("paymentInfo") or {}
+        return {
+            "orderId": o.get("id") or o.get("orderId"),
+            "status": o.get("statusCd"),
+            "createdAt": o.get("createdAt"),
+            "appointmentAt": o.get("appointmentAt"),
+            "price": o.get("calculationPrice"),
+            "driverFee": o.get("driverFee") or o.get("driver_price") or o.get("driverAmount"),
+            "fromPlace": OrderServiceClient._slim_place(o.get("fromPlace")),
+            "toPlace": OrderServiceClient._slim_place(o.get("toPlace")),
+            "driver": {
+                "driverId": driver.get("driverId") or driver.get("id"),
+                "name": driver.get("driverName") or driver.get("name") or driver.get("username"),
+            } if driver else None,
+            "payment": {
+                "method": payment.get("payCd") or payment.get("method"),
+                "status": payment.get("status"),
+                "amount": payment.get("amount"),
+            } if payment else None,
+        }
 
     # ------------------------------------------------------------------
     # Public API methods (read-only)
@@ -93,7 +179,16 @@ class OrderServiceClient:
                 if not payload.get("success", True):
                     logger.error("get_order: success=false for order_id=%s — %s", order_id, payload.get("errors"))
                     return {"error": "ORDER_SERVICE_ERROR", "detail": payload.get("errors")}
-                return payload.get("data") or payload
+                data = payload.get("data") or payload
+                if isinstance(data, dict):
+                    return self._slim_order_detail(data)
+                if isinstance(data, list) and data:
+                    first = data[0]
+                    if isinstance(first, dict):
+                        return self._slim_order_detail(first)
+                    if isinstance(first, list) and first:
+                        return self._slim_order_detail(first[0])
+                return {"error": "ORDER_NOT_FOUND", "order_id": order_id}
             return payload
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
@@ -124,7 +219,7 @@ class OrderServiceClient:
         Returns {"orders": [...], "count": N}.
         """
         try:
-            payload = self._get("/orders", params={"statusCd": status})
+            payload = self._get("/orders", params={"statusCd": status, "pageSize": 10})
             if isinstance(payload, dict):
                 if not payload.get("success", True):
                     logger.error("search_orders: success=false statusCd=%s — %s", status, payload.get("errors"))
@@ -133,11 +228,12 @@ class OrderServiceClient:
             else:
                 data = payload
             if isinstance(data, list):
-                return {"orders": data, "count": len(data)}
+                orders = data[:10]
+                return {"orders": [self._slim_order(o) for o in orders], "count": len(data)}
             # data is a wrapper dict e.g. {"orders": [...], "total": N}
-            orders = data.get("data") or data.get("orders") or []
+            orders = (data.get("data") or data.get("orders") or [])[:10]
             count = data.get("total") or data.get("count") or len(orders)
-            return {"orders": orders, "count": count}
+            return {"orders": [self._slim_order(o) for o in orders], "count": count}
         except httpx.HTTPStatusError as exc:
             logger.error(
                 "search_orders HTTP %s for statusCd=%s — body: %s",
@@ -163,7 +259,7 @@ class OrderServiceClient:
         Returns {"delayed_orders": [...], "count": N}.
         """
         try:
-            payload = self._get("/orders", params={"statusCd": "Transit"})
+            payload = self._get("/orders", params={"statusCd": "Transit", "pageSize": 10})
             if isinstance(payload, dict):
                 if not payload.get("success", True):
                     logger.error("get_delayed_orders: success=false — %s", payload.get("errors"))
@@ -171,8 +267,9 @@ class OrderServiceClient:
                 data = payload.get("data", payload)
             else:
                 data = payload
-            orders = data if isinstance(data, list) else (data.get("data") or data.get("orders") or [])
-            return {"delayed_orders": orders, "count": len(orders)}
+            raw = data if isinstance(data, list) else (data.get("data") or data.get("orders") or [])
+            orders = raw[:10]
+            return {"delayed_orders": [self._slim_order(o) for o in orders], "count": len(raw)}
         except httpx.HTTPStatusError as exc:
             logger.error(
                 "get_delayed_orders HTTP %s — body: %s",

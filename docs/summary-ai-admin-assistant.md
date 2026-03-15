@@ -1,136 +1,105 @@
-# AI Admin Assistant Codebase Summary
+# AI Admin Assistant Codebase Summary (Current State)
 
 ## 1. System Overview
-This repository is a read-only AI admin assistant service built with FastAPI and Google Gemini.
+This repository is a read-only AI admin assistant service built with FastAPI and Gemini tool-calling.
 
-It provides a chat endpoint that answers logistics-related operational questions by calling internal tools for:
-- Order lookup and filtering
-- Driver lookup and listing
-- Basic analytics summaries
+Main capability:
+- Accept natural-language admin questions via `/chat`
+- Use tool-calling to query logistics data
+- Return concise factual responses with a list of tools used
 
-Current implementation is demo/MVP style:
-- Uses in-memory mock datasets and hardcoded analytics values
-- No database integration
-- No state persisted across restarts
+Current direction is no longer pure demo-only. The order query path is already integrated to real backend APIs (User Service + Order Service), while some tools are still mock.
 
-## 2. Core Features Implemented
+## 2. Current Runtime Flow
+1. API receives chat message.
+2. Orchestrator sends message to Gemini model with registered tools.
+3. Gemini requests tool calls.
+4. Tool layer executes wrappers.
+5. Service layer calls external APIs with token auth and normalized payloads.
+6. Orchestrator sends tool results back to Gemini and returns final answer.
 
-### Read-Only AI Assistant Behavior
-The system prompt enforces strict read-only behavior:
-- No create/update/delete actions
-- Must use tools for factual data retrieval
-- Must not guess missing data
-- Must report tool errors clearly
+Important protections in current flow:
+- Max tool loop limit (`MAX_TOOL_LOOPS = 3`)
+- Duplicate tool-call detection in one conversation turn
+- Structured failure fallback when loop becomes repetitive
 
-### Tool-Calling Orchestration
-The orchestrator runs a function-calling loop:
-1. Receive user message
-2. Send to Gemini model configured with tools
-3. Detect requested function calls
-4. Execute local Python tool functions
-5. Send function outputs back to Gemini
-6. Repeat until final text answer is generated
-
-### Exposed API Endpoints
+## 3. Implemented APIs
 - `GET /health`
   - Liveness check
-  - Returns: `{ "status": "ok" }`
+  - Returns `{ "status": "ok" }`
 
 - `POST /chat`
-  - Accepts: `{ "message": "..." }`
-  - Returns: `{ "reply": "...", "tools_called": ["..."] }`
+  - Input: `{ "message": "..." }`
+  - Output: `{ "reply": "...", "tools_called": ["..."] }`
+  - Validation: message min/max length enforced
+  - Error mapping includes Gemini quota exhaustion -> HTTP 429
 
-## 3. Tool Capabilities
+## 4. Tooling Status (Actual)
 
-### Order Tools
+### Tools currently exposed to Gemini
 - `get_order(order_id)`
-  - Returns a single order by ID
-  - Returns error payload if not found
-
 - `search_orders(status)`
-  - Returns list of orders by status and count
-
-- `get_delayed_orders()`
-  - Returns delayed orders and count
-
-### Driver Tools
 - `get_driver(driver_id)`
-  - Returns a single driver by ID (case-insensitive)
-  - Returns error payload if not found
-
 - `list_active_drivers()`
-  - Returns active drivers and count
-
-### Analytics Tools
 - `get_order_summary()`
-  - Returns order totals by status
-
 - `get_revenue_today()`
-  - Returns today's revenue summary
 
-## 4. Data and Domain State
-There is no persistent domain model layer in this repo.
+Note:
+- `get_delayed_orders()` still exists in code but is intentionally not registered to Gemini because it duplicates `search_orders(status='Transit')` logic.
 
-Current sources of truth:
-- `MOCK_ORDERS` dictionary in order tools
-- `MOCK_DRIVERS` dictionary in driver tools
-- Hardcoded aggregate values in analytics tools
+### Tool categories
+- Order tools: real API-backed (read-only)
+- Driver tools: mock in-memory dataset
+- Analytics tools: mock aggregate values
 
-Implications:
-- Data resets on process restart
-- No shared consistency between multiple running instances
-- Not suitable for production analytics without real data source integration
+## 5. Service Integration State
 
-## 5. Architecture Components
-- `app/main.py`
-  - FastAPI app and route definitions
+### Auth token manager
+- Login endpoint integration implemented (`/api/v1/auth/login`)
+- In-memory token cache with TTL
+- Re-login only when token missing/expired or invalidated by 401
 
-- `app/orchestrator/ai_orchestrator.py`
-  - Chat loop and tool execution lifecycle
+### Order service client
+- Uses persistent `httpx.Client` connection reuse
+- Handles 401 retry once with token refresh
+- Returns structured error contracts:
+  - `ORDER_NOT_FOUND`
+  - `NETWORK_ERROR`
+  - `ORDER_SERVICE_ERROR`
+  - `UNEXPECTED_ERROR`
+- Payload slimming is implemented to reduce LLM token load (`fromPlace`, `toPlace`, `driver`, payment fields)
 
-- `app/orchestrator/prompt_builder.py`
-  - System prompt with read-only constraints
+## 6. Performance and Reliability Snapshot
+Observed improvements compared to earlier runs:
+- Reduced duplicate tool calls
+- Reduced multi-round tool-calling loops
+- Lower end-to-end response time for common query patterns
 
-- `app/llm/gemini_client.py`
-  - Gemini model creation and tool registration
+Remaining practical bottlenecks:
+- First request after process startup still includes login latency (expected behavior)
+- Gemini latency/quota still dominates tail latency in free-tier or constrained quota scenarios
 
-- `app/tools/*`
-  - Business-facing retrieval tools exposed to model
+## 7. Discovery and Documentation Context
+This source already contains discovery artifacts for broader logistics domain understanding:
+- Scan summary for this assistant service
+- Scan summary for Order Service domain and APIs
 
-- `app/schemas/chat_schema.py`
-  - Request/response contracts for `/chat`
+These docs support the larger plan:
+- Start from targeted function analysis (e.g., check-price/estimate paths)
+- Expand to full Web2 FE + BE API mapping
+- Consolidate requirements and business logic before scaling to full logistics system coverage
 
-- `app/config.py`
-  - Environment-backed settings
+## 8. Gaps and Risks (Current)
+- `/chat` endpoint still has no caller authentication/authorization
+- No request-level rate limiting
+- No automated test suite yet
+- Driver and analytics tools still rely on mock data
+- No persistent conversation state between requests
+- Observability is log-based only (no metrics/traces dashboard)
 
-## 6. Configuration and Runtime
-Environment variables:
-- `GEMINI_API_KEY` (required)
-- `MODEL_NAME` (optional; default exists in app config)
-
-Dependencies:
-- FastAPI, Uvicorn, Pydantic, pydantic-settings
-- google-generativeai
-- python-dotenv
-
-Run options:
-- Local via Makefile (`make run`, `make debug`)
-- Docker image via Dockerfile
-- Docker Compose for local containerized dev
-
-## 7. Current Gaps and Limitations
-Not currently implemented:
-- Authentication and authorization
-- Rate limiting and abuse protection
-- Database/repository layer
-- Test suite
-- Structured observability (metrics/tracing)
-- Multi-turn conversation memory between requests
-
-## 8. Recommended Next Improvements
-1. Add API authentication and rate limiting for `/chat`.
-2. Replace mock datasets with real storage/services.
-3. Add unit tests for tools and integration tests for `/chat` loop.
-4. Improve API error mapping with explicit status codes and error schema.
-5. Add request IDs, structured logs, and basic metrics.
-6. Derive analytics from the same order data source to avoid drift.
+## 9. Recommended Next Steps
+1. Add auth + rate limit for `/chat`.
+2. Replace mock driver and analytics tools with real backend data sources.
+3. Add integration tests for orchestrator tool loop and error mapping.
+4. Add request correlation ID and metrics (tool time, Gemini time, total time).
+5. Create formal API mapping docs for Web2 FE + BE flows and bind each flow to tool coverage.
