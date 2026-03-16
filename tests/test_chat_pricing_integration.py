@@ -70,7 +70,7 @@ class ChatPricingIntegrationTests(unittest.TestCase):
     def test_chat_returns_get_order_for_existing_order_price_reason(self) -> None:
         stub = _StubOrchestrator(
             "Order price includes base fee and surcharge components.",
-            ["get_order"],
+            ["get_order_detail"],
         )
         with patch("app.main.get_orchestrator", return_value=stub):
             response = self.client.post(
@@ -81,7 +81,7 @@ class ChatPricingIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["tools_called"], ["get_order"])
+        self.assertEqual(body["tools_called"], ["get_order_detail"])
         self.assertEqual(body["conversation_id"], "test-conv-1")
 
     def test_chat_returns_pricing_tool_for_home_moving_estimate(self) -> None:
@@ -113,7 +113,7 @@ class ChatPricingIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 429)
 
     def test_chat_requires_api_key_when_auth_enabled(self) -> None:
-        stub = _StubOrchestrator("ok", ["get_order"])
+        stub = _StubOrchestrator("ok", ["get_order_detail"])
         with patch("app.main.get_orchestrator", return_value=stub):
             response = self.client.post(
                 "/chat",
@@ -126,7 +126,7 @@ class ChatPricingIntegrationTests(unittest.TestCase):
         main.settings.chat_rate_limit_requests = 2
         main.settings.chat_rate_limit_window_seconds = 60
 
-        stub = _StubOrchestrator("ok", ["get_order"])
+        stub = _StubOrchestrator("ok", ["get_order_detail"])
         with patch("app.main.get_orchestrator", return_value=stub):
             first = self.client.post(
                 "/chat",
@@ -150,7 +150,7 @@ class ChatPricingIntegrationTests(unittest.TestCase):
         self.assertIn("Retry-After", third.headers)
 
     def test_chat_echoes_request_id_header(self) -> None:
-        stub = _StubOrchestrator("ok", ["get_order"])
+        stub = _StubOrchestrator("ok", ["get_order_detail"])
         with patch("app.main.get_orchestrator", return_value=stub):
             response = self.client.post(
                 "/chat",

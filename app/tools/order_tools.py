@@ -10,15 +10,15 @@ Each function is a thin wrapper around OrderServiceClient so that:
 from app.services.order_service_client import get_order_client
 
 
-def get_order(order_id: str) -> dict:
-    """Fetch detail for one order by ID. Use when order-level fields are needed (e.g. goods, priceBreakdown, payment)."""
-    return get_order_client().get_order(order_id)
+def get_order_detail(order_id: str) -> dict:
+    """Fetch full B2C detail for one order by ID (GET /orders/:orderId). Use for priceBreakdown, goods, payment, waypoints."""
+    return get_order_client().get_order_detail(order_id)
 
 
-def search_orders(status: str) -> dict:
-    """List orders by status. status: Pending|Active|Completed|Incompleted|Cancelled|Return|WaitingForPayment|Transit.
+def get_orders(status: str) -> dict:
+    """List orders by status (GET /orders). status: Pending|Active|Completed|Incompleted|Cancelled|Return|WaitingForPayment|Transit.
     Result includes orderId, price, driverFee, fromPlace, toPlace, driver — sufficient for most queries."""
-    return get_order_client().search_orders(status)
+    return get_order_client().get_orders(status)
 
 
 def get_delayed_orders() -> dict:
@@ -44,8 +44,28 @@ def estimate_authenticated_price(payload: dict) -> dict:
 
 
 def check_driver_price(payload: dict) -> dict:
-    """Estimate price for a specific driver. payload must include driverId."""
+    """Estimate price for a specific driver. payload must include driverId (POST /guest/check-price-driver)."""
     return get_order_client().check_driver_price(payload)
+
+
+def get_order_payment_status(order_id: str) -> dict:
+    """Check payment/branchPay status of an order (GET /orders/:orderId/status). Use when user asks about payment status."""
+    return get_order_client().get_order_payment_status(order_id)
+
+
+def get_order_cancel_fee(order_id: str) -> dict:
+    """Get cancellation fee preview for an order (GET /orders/:orderId/cancel-fee)."""
+    return get_order_client().get_order_cancel_fee(order_id)
+
+
+def get_order_statistics() -> dict:
+    """Get per-user order statistics dashboard (GET /orders/statistics). Not an admin aggregate."""
+    return get_order_client().get_order_statistics()
+
+
+def get_coupons() -> dict:
+    """Get the list of coupons for the current user (GET /coupons)."""
+    return get_order_client().get_coupons()
 
 
 def calc_guest_order_price(order_id: str, user_id: int | None = None) -> dict:

@@ -189,6 +189,27 @@ class OrderServiceClient:
         return normalized
 
     @staticmethod
+    def _slim_calculation_price(price: object) -> dict | None:
+        """Keep key pricing components used in user-facing explanations."""
+        if not isinstance(price, dict):
+            return None
+
+        keys = (
+            "baseFee",
+            "couponDiscount",
+            "clientBonus",
+            "consignment",
+            "express",
+            "preVatFee",
+            "vatAmount",
+            "cashBackFee",
+            "cancellationFee",
+            "total",
+        )
+        slim = {k: price.get(k) for k in keys if k in price}
+        return slim or None
+
+    @staticmethod
     def _slim_payment(order: dict) -> dict | None:
         """Build a stable payment summary from order-level and payment rows."""
         if not isinstance(order, dict):
@@ -218,6 +239,77 @@ class OrderServiceClient:
         if all(value is None or value == "" for value in normalized.values()):
             return None
         return normalized
+
+    @staticmethod
+    def _slim_payment_rows(order: dict, limit: int = 3) -> list[dict]:
+        """Expose compact payment rows for payment troubleshooting questions."""
+        if not isinstance(order, dict):
+            return []
+
+        rows = order.get("paymentInfo") or order.get("orderPaymentInfo") or []
+        if not isinstance(rows, list):
+            return []
+
+        normalized: list[dict] = []
+        for row in rows[:limit]:
+            if not isinstance(row, dict):
+                continue
+            item = {
+                "action": row.get("action"),
+                "status": row.get("status"),
+                "amount": row.get("amount"),
+                "paymentType": row.get("paymentType"),
+                "orderPaymentId": row.get("orderPaymentId") or row.get("orderId"),
+                "approveNo": row.get("approveNo"),
+                "receiptUrl": row.get("receiptUrl"),
+                "errorCode": row.get("errorCode"),
+                "errorMessage": row.get("errorMessage"),
+            }
+            if any(v not in (None, "") for v in item.values()):
+                normalized.append(item)
+        return normalized
+
+    @staticmethod
+    def _slim_order_owner(owner: object) -> dict | None:
+        if not isinstance(owner, dict):
+            return None
+        normalized = {
+            "organizationId": owner.get("OrganizationID") or owner.get("organizationId"),
+            "branchId": owner.get("BranchID") or owner.get("branchId"),
+            "userId": owner.get("UserID") or owner.get("userId"),
+            "name": owner.get("Name") or owner.get("name"),
+            "contactNo": owner.get("ContactNo") or owner.get("contactNo"),
+            "organizationName": owner.get("OrganizationName") or owner.get("organizationName"),
+            "branchName": owner.get("BranchName") or owner.get("branchName"),
+        }
+        if all(v in (None, "") for v in normalized.values()):
+            return None
+        return normalized
+
+    @staticmethod
+    def _slim_waypoints(waypoints: object, limit: int = 4) -> list[dict]:
+        if not isinstance(waypoints, list):
+            return []
+        result: list[dict] = []
+        for wp in waypoints[:limit]:
+            if not isinstance(wp, dict):
+                continue
+            item = {
+                "arrangement": wp.get("arrangement"),
+                "status": wp.get("statusCd") or wp.get("status"),
+                "requestedAt": wp.get("requestedAt"),
+                "reachedAt": wp.get("reachedAt"),
+                "name": wp.get("name"),
+                "mobileNo": wp.get("mobileNo"),
+                "address1": wp.get("address1"),
+                "address2": wp.get("address2"),
+                "lat": wp.get("lat"),
+                "lon": wp.get("lon"),
+                "distance": wp.get("distance"),
+            }
+            if any(v not in (None, "") for v in item.values()):
+                result.append(item)
+        return result
 
     @staticmethod
     def _slim_goods_item(item: object) -> dict | None:
@@ -324,13 +416,19 @@ class OrderServiceClient:
         return {
             "orderId": o.get("orderId") or o.get("id"),
             "status": o.get("statusCd") or o.get("status"),
+            "payCd": o.get("payCd"),
+            "payMethod": o.get("payCDTitle") or o.get("payCdTitle"),
             "createdAt": o.get("createdAt"),
+            "appointmentAt": o.get("appointmentAt"),
             "price": OrderServiceClient._extract_price_total(raw_price),
+            "calculationPrice": OrderServiceClient._slim_calculation_price(o.get("calculationPrice")),
             "driverFee": o.get("driverFee") if o.get("driverFee") is not None else (
                 o.get("driver_price") if o.get("driver_price") is not None else o.get("driverAmount")
             ),
             "fromPlace": OrderServiceClient._slim_place(o.get("fromPlace")),
             "toPlace": OrderServiceClient._slim_place(o.get("toPlace")),
+            "fromAddress": o.get("fromAddress"),
+            "toAddress": o.get("toAddress"),
             "driver": OrderServiceClient._slim_driver(driver),
             "vehicle": OrderServiceClient._slim_vehicle(o.get("vehicle")),
             "goods": OrderServiceClient._slim_goods_infos(o.get("goodsInfos")),
@@ -351,23 +449,63 @@ class OrderServiceClient:
                 slim = OrderServiceClient._normalize_price_row(row)
                 if slim:
                     price_breakdown.append(slim)
+
+        # If priceList-style breakdown is empty, expand calculationPrice fields
+        # (baseFee, couponDiscount, vatAmount, total, etc.) as structured breakdown rows.
+        calc = o.get("calculationPrice")
+        if not price_breakdown and isinstance(calc, dict):
+            _CALC_LABELS = {
+                "baseFee": "Base fee",
+                "express": "Express surcharge",
+                "consignment": "Consignment fee",
+                "vatAmount": "VAT",
+                "couponDiscount": "Coupon discount",
+                "clientBonus": "Client bonus",
+                "cashBackFee": "Cashback",
+                "cancellationFee": "Cancellation fee",
+                "preVatFee": "Pre-VAT fee",
+                "total": "Total",
+            }
+            for key, label in _CALC_LABELS.items():
+                val = calc.get(key)
+                if val is not None and val != 0:
+                    price_breakdown.append({"label": label, "amount": val})
+
         return {
             "orderId": o.get("id") or o.get("orderId"),
             "status": o.get("statusCd"),
+            "payCd": o.get("payCd"),
+            "payMethod": o.get("payCDTitle") or o.get("payCdTitle"),
+            "orderType": o.get("orderType"),
+            "isExpress": o.get("isExpress"),
             "createdAt": o.get("createdAt"),
+            "updatedAt": o.get("updatedAt"),
             "appointmentAt": o.get("appointmentAt"),
+            "completedAt": o.get("completedAt"),
+            "cancelledAt": o.get("cancelledAt"),
+            "notes": o.get("notes") or o.get("remark"),
+            "waypointCount": o.get("waypointCount"),
             "price": OrderServiceClient._extract_price_total(o.get("calculationPrice")),
+            "calculationPrice": OrderServiceClient._slim_calculation_price(o.get("calculationPrice")),
             "priceBreakdown": price_breakdown,
             "driverFee": o.get("driverFee") or o.get("driver_price") or o.get("driverAmount"),
             "fromPlace": OrderServiceClient._slim_place(o.get("fromPlace")),
             "toPlace": OrderServiceClient._slim_place(o.get("toPlace")),
+            "fromAddress": o.get("fromAddress"),
+            "toAddress": o.get("toAddress"),
+            "fromAddressDetail": o.get("fromAddressDetail"),
+            "toAddressDetail": o.get("toAddressDetail"),
             "driver": OrderServiceClient._slim_driver(driver),
             "vehicle": OrderServiceClient._slim_vehicle(o.get("vehicle")),
+            "orderOwner": OrderServiceClient._slim_order_owner(o.get("orderOwner")),
             "goods": OrderServiceClient._slim_goods(
                 o.get("waypoints"),
                 o.get("appliedExtra"),
             ),
+            "waypoints": OrderServiceClient._slim_waypoints(o.get("waypoints")),
+            "orderFlags": o.get("orderFlags") if isinstance(o.get("orderFlags"), list) else [],
             "payment": OrderServiceClient._slim_payment(o),
+            "paymentInfo": OrderServiceClient._slim_payment_rows(o),
         }
 
     @staticmethod
@@ -451,7 +589,7 @@ class OrderServiceClient:
     # Public API methods (read-only)
     # ------------------------------------------------------------------
 
-    def get_order(self, order_id: str) -> dict:
+    def get_order_detail(self, order_id: str) -> dict:
         """
         Fetch B2C detail for a single order.
 
@@ -493,7 +631,7 @@ class OrderServiceClient:
             )
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
-    def search_orders(self, status: str) -> dict:
+    def get_orders(self, status: str) -> dict:
         """
         List orders filtered by status code.
 
@@ -568,6 +706,120 @@ class OrderServiceClient:
             logger.error(
                 "get_delayed_orders unexpected error — %s: %s", type(exc).__name__, exc
             )
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
+    def get_order_payment_status(self, order_id: str) -> dict:
+        """
+        Check payment/branchPay status of an order.
+
+        Endpoint: GET /api/v1/orders/{orderId}/status
+        Used for orders where branchPay is active (statusCd=7).
+        """
+        try:
+            payload = self._get(f"/orders/{order_id}/status")
+            data = self._unwrap_success_payload(payload)
+            if isinstance(data, dict) and data.get("error"):
+                return data
+            return data if isinstance(data, dict) else {"raw": data}
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return {"error": "ORDER_NOT_FOUND", "order_id": order_id}
+            logger.error(
+                "get_order_payment_status HTTP %s for order_id=%s — body: %s",
+                exc.response.status_code, order_id, exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("get_order_payment_status network error for order_id=%s — %s", order_id, exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "get_order_payment_status unexpected error for order_id=%s — %s: %s",
+                order_id, type(exc).__name__, exc,
+            )
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
+    def get_order_cancel_fee(self, order_id: str) -> dict:
+        """
+        Get the cancellation fee preview for an order.
+
+        Endpoint: GET /api/v1/orders/{orderId}/cancel-fee
+        """
+        try:
+            payload = self._get(f"/orders/{order_id}/cancel-fee")
+            data = self._unwrap_success_payload(payload)
+            if isinstance(data, dict) and data.get("error"):
+                return data
+            return data if isinstance(data, dict) else {"raw": data}
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return {"error": "ORDER_NOT_FOUND", "order_id": order_id}
+            logger.error(
+                "get_order_cancel_fee HTTP %s for order_id=%s — body: %s",
+                exc.response.status_code, order_id, exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("get_order_cancel_fee network error for order_id=%s — %s", order_id, exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "get_order_cancel_fee unexpected error for order_id=%s — %s: %s",
+                order_id, type(exc).__name__, exc,
+            )
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
+    def get_order_statistics(self) -> dict:
+        """
+        Get the per-user order statistics dashboard.
+
+        Endpoint: GET /api/v1/orders/statistics
+        """
+        try:
+            payload = self._get("/orders/statistics")
+            data = self._unwrap_success_payload(payload)
+            if isinstance(data, dict) and data.get("error"):
+                return data
+            return data if isinstance(data, dict) else {"raw": data}
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "get_order_statistics HTTP %s — body: %s",
+                exc.response.status_code, exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("get_order_statistics network error — %s", exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error("get_order_statistics unexpected error — %s: %s", type(exc).__name__, exc)
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
+    def get_coupons(self) -> dict:
+        """
+        Get the list of coupons for the current user.
+
+        Endpoint: GET /api/v1/coupons
+        """
+        try:
+            payload = self._get("/coupons")
+            data = self._unwrap_success_payload(payload)
+            if isinstance(data, dict) and data.get("error"):
+                return data
+            if isinstance(data, list):
+                return {"coupons": data, "count": len(data)}
+            coupons = data.get("data") or data.get("coupons") or [] if isinstance(data, dict) else []
+            return {"coupons": coupons, "count": len(coupons)}
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "get_coupons HTTP %s — body: %s",
+                exc.response.status_code, exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("get_coupons network error — %s", exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error("get_coupons unexpected error — %s: %s", type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
     # ------------------------------------------------------------------

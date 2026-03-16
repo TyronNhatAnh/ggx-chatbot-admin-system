@@ -123,6 +123,14 @@ def _get_cached_order(state: ConversationState, order_id: str) -> dict | None:
     return record.order
 
 
+def _is_detail_order_payload(order: dict[str, Any] | None) -> bool:
+    """True when cached payload is detailed enough for get_order_detail responses."""
+    if not isinstance(order, dict):
+        return False
+    # get_order_detail always returns this key (possibly empty list).
+    return "priceBreakdown" in order
+
+
 def _build_contextual_message(message: str, state: ConversationState) -> str:
     if not state.turns:
         return message
@@ -349,9 +357,9 @@ class AIOrchestrator:
 
                 seen_calls.add(call_key)
 
-                # Serve get_order from per-turn cache if search_orders already
+                # Serve get_order_detail from per-turn cache if get_orders already
                 # fetched this order — avoids a redundant HTTP round-trip.
-                if tool_name == "get_order":
+                if tool_name == "get_order_detail":
                     requested_order_id = _normalize_order_id(str(tool_args.get("order_id", "")))
                     if requested_order_id:
                         state.last_focus_order_id = requested_order_id
@@ -359,9 +367,9 @@ class AIOrchestrator:
                     cached_order = order_cache.get(requested_order_id)
                     if cached_order is None and requested_order_id:
                         cached_order = _get_cached_order(state, requested_order_id)
-                    if cached_order is not None:
+                    if _is_detail_order_payload(cached_order):
                         logger.info(
-                            "[Tool     ] → get_order(%s)  CACHE HIT — skipping HTTP call",
+                            "[Tool     ] → get_order_detail(%s)  CACHE HIT — skipping HTTP call",
                             requested_order_id or tool_args.get("order_id"),
                         )
                         tools_called.append(tool_name)
@@ -396,10 +404,10 @@ class AIOrchestrator:
                     list(result.keys()) if isinstance(result, dict) else type(result).__name__,
                 )
 
-                # Populate per-turn cache from search_orders results.
+                # Populate per-turn cache from get_orders results.
                 # Also annotate the result so Gemini knows driverFee + location
-                # are already included — no get_order call is needed.
-                if tool_name == "search_orders" and isinstance(result, dict):
+                # are already included — no get_order_detail call is needed.
+                if tool_name == "get_orders" and isinstance(result, dict):
                     for order in result.get("orders", []):
                         if isinstance(order, dict):
                             oid = _normalize_order_id(str(order.get("orderId") or ""))
@@ -413,11 +421,11 @@ class AIOrchestrator:
                         "_note": (
                             "Each order already contains price, driverFee, fromPlace, toPlace, driver, vehicle, goods (when available), and payment summary (when available). "
                             "Use these fields directly for location/driver fee/vehicle/goods/payment questions. "
-                            "If any requested field is missing or empty for the target order, call get_order(order_id) to fetch full detail."
+                            "If any requested field is missing or empty for the target order, call get_order_detail(order_id) to fetch full detail."
                         ),
                     }
 
-                if tool_name == "get_order" and isinstance(result, dict):
+                if tool_name == "get_order_detail" and isinstance(result, dict):
                     requested_order_id = _normalize_order_id(str(tool_args.get("order_id", "")))
                     actual_order_id = _normalize_order_id(str(result.get("orderId") or requested_order_id))
                     if actual_order_id:
