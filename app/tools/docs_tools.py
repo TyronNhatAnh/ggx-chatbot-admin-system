@@ -33,13 +33,57 @@ _LEGACY_CONTEXT_DIR = _DISCOVERY_ROOT / "code_context"
 _LEGACY_ENDPOINTS_FILE = _DISCOVERY_ROOT / "be_endpoints.json"
 _FLOW_MAPPINGS_FILE = _DISCOVERY_ROOT / "flow_mappings.json"
 
+# Directories not representing backend services
+_NON_SERVICE_DIRS = frozenset({"web2"})
+
+
+def _discover_service_dirs() -> list[pathlib.Path]:
+    """Find all service discovery directories (each has be_endpoints.json or code_context/)."""
+    if not _DISCOVERY_ROOT.is_dir():
+        return []
+    dirs = []
+    for p in sorted(_DISCOVERY_ROOT.iterdir()):
+        if not p.is_dir() or p.name in _NON_SERVICE_DIRS or p.name.startswith("."):
+            continue
+        if (p / "be_endpoints.json").exists() or (p / "code_context").is_dir():
+            dirs.append(p)
+    return dirs
+
+
+def _all_context_dirs() -> list[pathlib.Path]:
+    """Return all code_context directories across services."""
+    dirs = []
+    for svc_dir in _discover_service_dirs():
+        ctx = svc_dir / "code_context"
+        if ctx.is_dir():
+            dirs.append(ctx)
+    # Legacy fallback
+    if not dirs and _LEGACY_CONTEXT_DIR.is_dir():
+        dirs.append(_LEGACY_CONTEXT_DIR)
+    return dirs
+
+
+def _all_endpoint_files() -> list[pathlib.Path]:
+    """Return all be_endpoints.json files across services."""
+    files = []
+    for svc_dir in _discover_service_dirs():
+        ep = svc_dir / "be_endpoints.json"
+        if ep.exists():
+            files.append(ep)
+    # Legacy fallback
+    if not files and _LEGACY_ENDPOINTS_FILE.exists():
+        files.append(_LEGACY_ENDPOINTS_FILE)
+    return files
+
 
 def _context_dir() -> pathlib.Path:
+    """Primary context dir (backward compat — returns first available)."""
     preferred = _ORDER_SERVICE_DIR / "code_context"
     return preferred if preferred.is_dir() else _LEGACY_CONTEXT_DIR
 
 
 def _endpoints_file() -> pathlib.Path:
+    """Primary endpoints file (backward compat)."""
     preferred = _ORDER_SERVICE_DIR / "be_endpoints.json"
     return preferred if preferred.exists() else _LEGACY_ENDPOINTS_FILE
 
@@ -95,13 +139,11 @@ def _list_features() -> list[str]:
 
 
 def _list_handler_names() -> list[str]:
-    context_dir = _context_dir()
-    if not context_dir.is_dir():
-        return []
-    return sorted(
-        p.stem.replace(".context", "")
-        for p in context_dir.glob("*.context.md")
-    )
+    names: set[str] = set()
+    for ctx_dir in _all_context_dirs():
+        for p in ctx_dir.glob("*.context.md"):
+            names.add(p.stem.replace(".context", ""))
+    return sorted(names)
 
 
 # ---------------------------------------------------------------------------
@@ -113,22 +155,27 @@ def list_available_docs() -> dict:
     Returns feature requirement docs, handler context files, and endpoint count.
     Call this first to discover what is available before loading heavy content.
     """
-    endpoint_index = _endpoints_file()
-    context_dir = _context_dir()
+    service_dirs = _discover_service_dirs()
+    services_info = {}
+    for svc_dir in service_dirs:
+        svc_name = svc_dir.name
+        ep_file = svc_dir / "be_endpoints.json"
+        ctx_dir = svc_dir / "code_context"
+        services_info[svc_name] = {
+            "endpoints_available": ep_file.exists(),
+            "handler_contexts_available": ctx_dir.is_dir(),
+            "handler_count": len(list(ctx_dir.glob("*.context.md"))) if ctx_dir.is_dir() else 0,
+        }
+
     return {
         "feature_requirements": _list_features(),
         "handler_contexts": _list_handler_names(),
+        "services": services_info,
         "endpoints_index": {
-            "file": str(endpoint_index.relative_to(_DOCS_ROOT)).replace("\\", "/"),
-            "available": endpoint_index.exists(),
-            "tip": "Use search_endpoints(keyword) to query this index.",
-        },
-        "handler_context_index": {
-            "dir": str(context_dir.relative_to(_DOCS_ROOT)).replace("\\", "/"),
-            "available": context_dir.is_dir(),
+            "tip": "Use search_endpoints(keyword) to query across all services.",
         },
         "sources": {
-            "backend_service": "order-services",
+            "backend_services": [d.name for d in service_dirs],
             "frontend_app": "web2",
         },
     }
@@ -141,45 +188,49 @@ def list_available_docs() -> dict:
 def search_endpoints(keyword: str) -> dict:
     """Search the backend endpoint index for routes matching a keyword.
     Searches across HTTP method, path, controller name, and function name.
+    Aggregates results from all indexed services.
     Use when the user asks which API path or handler is responsible for an action.
     Returns matching endpoint entries (method, path, controller, function, service_calls).
     """
     if not keyword or not keyword.strip():
         return {"error": "MISSING_KEYWORD", "message": "Provide a non-empty search keyword."}
 
-    endpoints_file = _endpoints_file()
-
-    if not endpoints_file.exists():
+    ep_files = _all_endpoint_files()
+    if not ep_files:
         return {"error": "INDEX_NOT_FOUND", "message": "Endpoint index not built yet. Run discovery first."}
 
-    try:
-        endpoints: list[dict] = json.loads(endpoints_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return {"error": "READ_ERROR", "message": str(exc)}
-
     term = keyword.strip().lower()
-    matches = [
-        ep for ep in endpoints
-        if term in ep.get("path", "").lower()
-        or term in ep.get("method", "").lower()
-        or term in ep.get("controller", "").lower()
-        or term in ep.get("controller_method", ep.get("function", "")).lower()
-    ]
-
     fe_apis = _fe_active_apis()
+    all_matches: list[dict] = []
+    sources: list[str] = []
 
-    def _annotate(ep: dict) -> dict:
-        # flow_mappings stores paths without /api/v1; be_endpoints includes it
-        path_short = ep.get("path", "").replace("/api/v1", "", 1)
-        key = f"{ep.get('method', '')} {path_short}"
-        return {**ep, "fe_active": key in fe_apis}
+    for ep_file in ep_files:
+        try:
+            endpoints: list[dict] = json.loads(ep_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        source = ep_file.parent.name
+        sources.append(source)
+
+        matches = [
+            ep for ep in endpoints
+            if term in ep.get("path", "").lower()
+            or term in ep.get("method", "").lower()
+            or term in ep.get("controller", "").lower()
+            or term in ep.get("controller_method", ep.get("function", "")).lower()
+        ]
+
+        for ep in matches:
+            path_short = ep.get("path", "").replace("/api/v1", "", 1)
+            key = f"{ep.get('method', '')} {path_short}"
+            all_matches.append({**ep, "service": source, "fe_active": key in fe_apis})
 
     return {
         "keyword": keyword,
-        "source": "order-services",
-        "index_file": str(endpoints_file.relative_to(_DOCS_ROOT)).replace("\\", "/"),
-        "total_matches": len(matches),
-        "results": [_annotate(ep) for ep in matches],
+        "sources": sources,
+        "total_matches": len(all_matches),
+        "results": all_matches,
     }
 
 
@@ -190,12 +241,11 @@ def search_endpoints(keyword: str) -> dict:
 def get_handler_context(handler_name: str) -> dict:
     """Read the raw handler context doc for a specific backend handler function.
     Contains: endpoint path, handler code snippet, detected service calls.
+    Searches across all indexed services.
     Use for technical questions about how a specific handler or endpoint works.
     Call list_available_docs() first to see valid handler names.
     handler_name examples: EstimateGuest, GetOrderDetail, CancelOrderB2C
     """
-    context_dir = _context_dir()
-
     safe = handler_name.strip() if handler_name else ""
     if not _is_safe_segment(safe):
         return {
@@ -204,27 +254,27 @@ def get_handler_context(handler_name: str) -> dict:
             "available_handlers": _list_handler_names(),
         }
 
-    doc_path = context_dir / f"{safe}.context.md"
-    if _safe_resolve(doc_path, context_dir) is None:
-        return {"error": "INVALID_HANDLER_NAME", "message": "Handler name is out of bounds."}
-
-    if not doc_path.exists():
-        return {
-            "error": "HANDLER_NOT_FOUND",
-            "message": f"No context doc found for handler '{safe}'.",
-            "available_handlers": _list_handler_names(),
-        }
-
-    try:
-        content = doc_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return {"error": "READ_ERROR", "message": str(exc)}
+    # Search all context directories for this handler
+    for ctx_dir in _all_context_dirs():
+        doc_path = ctx_dir / f"{safe}.context.md"
+        if _safe_resolve(doc_path, ctx_dir) is None:
+            continue
+        if doc_path.exists():
+            try:
+                content = doc_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                return {"error": "READ_ERROR", "message": str(exc)}
+            return {
+                "handler": safe,
+                "source": ctx_dir.parent.name,
+                "context_file": str(doc_path.relative_to(_DOCS_ROOT)).replace("\\", "/"),
+                "content": content,
+            }
 
     return {
-        "handler": safe,
-        "source": "order-services",
-        "context_file": str(doc_path.relative_to(_DOCS_ROOT)).replace("\\", "/"),
-        "content": content,
+        "error": "HANDLER_NOT_FOUND",
+        "message": f"No context doc found for handler '{safe}'.",
+        "available_handlers": _list_handler_names(),
     }
 
 

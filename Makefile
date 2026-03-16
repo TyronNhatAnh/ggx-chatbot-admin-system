@@ -37,6 +37,25 @@ scan-all:
 discover:
 	. $(VENV)/bin/activate && python scripts/run_discovery.py scan-all
 
+# ===== CODEBASE INDEXER =====
+
+index:
+	. $(VENV)/bin/activate && python -m indexer.runner --repo $(BE_REPO) --service $(SERVICE)
+
+index-vectors:
+	. $(VENV)/bin/activate && python -m indexer.runner --repo $(BE_REPO) --service $(SERVICE) --vectors
+
+index-order-service:
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep BE_REPO_PATH | cut -d= -f2)" --service order-service --vectors
+
+# Full pipeline: index codebase + regenerate docs (endpoints, handler contexts)
+index-order-service-full:
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep BE_REPO_PATH | cut -d= -f2)" --service order-service --vectors --docs
+
+# Index any service by name (set SERVICE_NAME and SERVICE_REPO in .env or pass as args)
+index-service:
+	. $(VENV)/bin/activate && python -m indexer.runner --repo $(SERVICE_REPO) --service $(SERVICE_NAME) --vectors --docs
+
 explore:
 	. $(VENV)/bin/activate && python scripts/explore_feature.py --interactive
 

@@ -310,18 +310,50 @@ class AIOrchestrator:
 
             if loop > MAX_TOOL_LOOPS:
                 logger.warning(
-                    "[Step %d  ] Max tool loop reached (%d). gemini_calls=%d total_elapsed=%.3fs. Returning early.",
+                    "[Step %d  ] Max tool loop reached (%d). gemini_calls=%d total_elapsed=%.3fs. Forcing synthesis.",
                     loop,
                     MAX_TOOL_LOOPS,
                     gemini_calls,
                     time.perf_counter() - total_start,
                 )
-                reply = (
-                    "I have enough partial data, but the tool-calling cycle became too long. "
-                    "Please retry with a more specific query (for example: order ID or status only)."
-                )
                 _increment_fallback_counter("max_tool_loop")
+
+                # --- Graceful synthesis fallback ---
+                # Gemini still wants more tools, but we've gathered enough data.
+                # Instead of returning a generic error, ask Gemini to synthesize
+                # a final answer from the tool results it already received.
+                synthesis_reply = None
+
+                # 1. Check if the current response already contains text alongside tool calls
+                partial_text = _response_text(response)
+                if partial_text and len(partial_text) > 20:
+                    synthesis_reply = partial_text
+                    logger.info("[Step %d  ] Using partial text from last response (%d chars)", loop, len(partial_text))
+
+                # 2. If no usable text, send a forced-synthesis prompt
+                if not synthesis_reply:
+                    try:
+                        logger.info("[Step %d  ] Sending synthesis prompt to Gemini...", loop)
+                        gemini_calls += 1
+                        t = time.perf_counter()
+                        synthesis_response = chat_session.send_message(
+                            "You have already received enough tool results. "
+                            "Do NOT call any more tools. Answer the user's question NOW "
+                            "using only the data from your previous tool calls. "
+                            "If some details are uncertain, say so, but still give your best answer."
+                        )
+                        synth_elapsed = time.perf_counter() - t
+                        gemini_elapsed_total += synth_elapsed
+                        logger.info("[Step %d  ] Synthesis response  elapsed=%.3fs", loop, synth_elapsed)
+                        synthesis_reply = _response_text(synthesis_response)
+                    except Exception as e:
+                        logger.warning("[Step %d  ] Synthesis call failed: %s", loop, e)
+
                 total_elapsed = time.perf_counter() - total_start
+                reply = synthesis_reply or (
+                    "I gathered relevant data but could not fully synthesize an answer. "
+                    "Please retry with a more specific query."
+                )
                 _log_structured_metrics(
                     conversation_id=state.conversation_id,
                     tools_called=tools_called,
@@ -329,7 +361,7 @@ class AIOrchestrator:
                     gemini_latency_seconds=gemini_elapsed_total,
                     tool_latency_seconds=tool_elapsed_total,
                     total_latency_seconds=total_elapsed,
-                    fallback_reason="max_tool_loop",
+                    fallback_reason="max_tool_loop_synthesized" if synthesis_reply else "max_tool_loop",
                 )
                 self._context_store.append_turn(
                     state.conversation_id,

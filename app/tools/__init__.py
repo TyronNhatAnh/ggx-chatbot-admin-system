@@ -4,6 +4,14 @@ from app.tools.docs_tools import (
     list_available_docs,
     search_endpoints,
 )
+from app.tools.knowledge_tools import (
+    explain_status,
+    get_knowledge_stats,
+    get_struct_definition,
+    lookup_enum,
+    search_codebase,
+    trace_service_flow,
+)
 from app.tools.order_tools import (
     check_driver_price,
     estimate_authenticated_price,
@@ -37,6 +45,13 @@ ALL_TOOL_FUNCTIONS: list = [
     search_endpoints,
     get_handler_context,
     get_feature_requirement,
+    # knowledge tools — indexed codebase knowledge (enums, flows, structs, search)
+    lookup_enum,
+    explain_status,
+    trace_service_flow,
+    get_struct_definition,
+    search_codebase,
+    get_knowledge_stats,
 ]
 
 

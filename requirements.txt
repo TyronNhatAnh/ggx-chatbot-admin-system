@@ -7,3 +7,6 @@ python-dotenv
 httpx
 # Feature exploration pipeline (offline scripts only)
 pyyaml
+# Semantic code search (optional — indexer works without these, falls back to FTS5)
+chromadb
+sentence-transformers

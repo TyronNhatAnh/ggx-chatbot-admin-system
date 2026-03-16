@@ -1,0 +1,318 @@
+"""Index runner — orchestrates the full background indexing pipeline.
+
+This is the entry point for indexing one or more Go backend services.
+It runs the extractors, stores results in SQLite + JSON, and optionally
+generates vector embeddings.
+
+Usage:
+    python -m indexer.runner --repo /path/to/order-service --service order-service
+    python -m indexer.runner --config indexer.yaml
+"""
+
+import argparse
+import json
+import logging
+import sys
+import time
+from dataclasses import asdict
+from pathlib import Path
+
+from indexer.enum_extractor import extract_enums_from_repo
+from indexer.flow_extractor import extract_flows_from_repo
+from indexer.models import CodeChunk
+from indexer.store import KnowledgeStore, get_knowledge_store
+from indexer.type_extractor import extract_structs_from_repo
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-5s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+
+def _build_code_chunks_from_enums(enums, service: str) -> list[CodeChunk]:
+    """Convert enum groups into searchable code chunks."""
+    chunks = []
+    seen_names: dict[str, int] = {}
+    for eg in enums:
+        values_text = "\n".join(
+            f"  {v.name} = {v.value}  // {v.comment}" if v.comment
+            else f"  {v.name} = {v.value}"
+            for v in eg.values
+        )
+        content = f"// Enum: {eg.name} (type: {eg.type_name})\n{values_text}"
+        # Ensure unique qualified names (multiple unnamed enums per file)
+        base_name = f"{service}.{eg.name}"
+        count = seen_names.get(base_name, 0)
+        seen_names[base_name] = count + 1
+        qname = base_name if count == 0 else f"{base_name}.{count}"
+        chunks.append(CodeChunk(
+            qualified_name=qname,
+            content=content,
+            chunk_type="enum",
+            file=eg.file,
+            service=service,
+        ))
+    return chunks
+
+
+def _build_code_chunks_from_flows(flows, service: str) -> list[CodeChunk]:
+    """Convert service flows into searchable code chunks."""
+    chunks = []
+    seen_names: dict[str, int] = {}
+    for flow in flows:
+        svc_text = ", ".join(
+            f"{c.receiver}.{c.method}()" for c in flow.service_calls
+        ) or "none"
+        repo_text = ", ".join(
+            f"{c.receiver}.{c.method}()" for c in flow.repository_calls
+        ) or "none"
+        content = (
+            f"Handler: {flow.handler_name}\n"
+            f"File: {flow.handler_file}\n"
+            f"Service calls: {svc_text}\n"
+            f"Repository calls: {repo_text}"
+        )
+        base_name = f"{service}.{flow.handler_name}"
+        count = seen_names.get(base_name, 0)
+        seen_names[base_name] = count + 1
+        qname = base_name if count == 0 else f"{base_name}.{count}"
+        chunks.append(CodeChunk(
+            qualified_name=qname,
+            content=content,
+            chunk_type="flow",
+            file=flow.handler_file,
+            service=service,
+        ))
+    return chunks
+
+
+def _build_code_chunks_from_structs(structs, service: str) -> list[CodeChunk]:
+    """Convert struct definitions into searchable code chunks."""
+    chunks = []
+    seen_names: dict[str, int] = {}
+    for s in structs:
+        fields_text = "\n".join(
+            f"  {f.name} {f.type} `json:\"{f.json_tag}\"`" if f.json_tag
+            else f"  {f.name} {f.type}"
+            for f in s.fields
+        )
+        content = f"type {s.name} struct {{\n{fields_text}\n}}"
+        base_name = f"{service}.{s.name}"
+        count = seen_names.get(base_name, 0)
+        seen_names[base_name] = count + 1
+        qname = base_name if count == 0 else f"{base_name}.{count}"
+        chunks.append(CodeChunk(
+            qualified_name=qname,
+            content=content,
+            chunk_type="struct",
+            file=s.file,
+            service=service,
+        ))
+    return chunks
+
+
+def index_service(repo_path: str, service: str,
+                  store: KnowledgeStore | None = None,
+                  enable_vectors: bool = False,
+                  rebuild_docs: bool = False) -> dict:
+    """Run the full indexing pipeline for a single Go service.
+
+    Args:
+        repo_path: Path to the Go repository root.
+        service: Human-readable service name (e.g. "order-service").
+        store: KnowledgeStore instance (uses singleton if None).
+        enable_vectors: Whether to generate vector embeddings (requires extra deps).
+        rebuild_docs: Whether to regenerate discovery docs (endpoints + handler contexts).
+
+    Returns:
+        Summary dict with counts of extracted entities.
+    """
+    t0 = time.perf_counter()
+    store = store or get_knowledge_store()
+
+    logger.info("=" * 60)
+    logger.info("Indexing service: %s  repo: %s", service, repo_path)
+    logger.info("=" * 60)
+
+    # Clear previous data for this service (incremental = per-service granularity)
+    store.clear_service(service)
+
+    # ----- Pass 1: Extract enums -----
+    logger.info("Pass 1/3: Extracting enums...")
+    enums = extract_enums_from_repo(repo_path, service)
+    enum_count = store.store_enums(enums)
+    logger.info("  → Stored %d enum groups", enum_count)
+
+    # ----- Pass 2: Extract struct definitions -----
+    logger.info("Pass 2/3: Extracting struct definitions...")
+    structs = extract_structs_from_repo(repo_path, service)
+    struct_count = store.store_structs(structs)
+    logger.info("  → Stored %d struct definitions", struct_count)
+
+    # ----- Pass 3: Extract service flows -----
+    logger.info("Pass 3/3: Extracting service flows...")
+    flows = extract_flows_from_repo(repo_path, service)
+    flow_count = store.store_flows(flows)
+    logger.info("  → Stored %d service flows", flow_count)
+
+    # ----- Build code chunks for full-text + vector search -----
+    chunks = (
+        _build_code_chunks_from_enums(enums, service)
+        + _build_code_chunks_from_structs(structs, service)
+        + _build_code_chunks_from_flows(flows, service)
+    )
+    chunk_count = store.store_code_chunks(chunks)
+    logger.info("  → Stored %d searchable code chunks", chunk_count)
+
+    # ----- Optional: Vector embeddings -----
+    vector_count = 0
+    if enable_vectors:
+        try:
+            from indexer.vector_store import get_vector_store
+            vs = get_vector_store()
+            if vs:
+                vs.clear_service(service)
+                vector_count = vs.index_chunks(chunks)
+                logger.info("  → Generated %d vector embeddings", vector_count)
+        except Exception as e:
+            logger.warning("  → Vector indexing failed: %s", e)
+
+    # ----- Optional: Regenerate discovery docs (endpoints + handler contexts) -----
+    docs_count = 0
+    if rebuild_docs:
+        docs_count = _rebuild_discovery_docs(repo_path, service)
+
+    elapsed = time.perf_counter() - t0
+    summary = {
+        "service": service,
+        "repo_path": repo_path,
+        "enums": enum_count,
+        "structs": struct_count,
+        "flows": flow_count,
+        "code_chunks": chunk_count,
+        "vector_embeddings": vector_count,
+        "handler_contexts": docs_count,
+        "elapsed_seconds": round(elapsed, 2),
+    }
+    logger.info("Indexing complete: %s", json.dumps(summary))
+    return summary
+
+
+def index_all(services: list[dict], enable_vectors: bool = False,
+              rebuild_docs: bool = False) -> list[dict]:
+    """Index multiple services sequentially.
+
+    Args:
+        services: List of dicts with 'repo_path' and 'service' keys.
+        enable_vectors: Whether to generate vector embeddings.
+        rebuild_docs: Whether to regenerate discovery docs.
+
+    Returns:
+        List of summary dicts, one per service.
+    """
+    results = []
+    for svc in services:
+        result = index_service(
+            repo_path=svc["repo_path"],
+            service=svc["service"],
+            enable_vectors=enable_vectors,
+            rebuild_docs=rebuild_docs,
+        )
+        results.append(result)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Discovery docs regeneration (Phase 4 — multi-service docs update)
+# ---------------------------------------------------------------------------
+
+# Service name → discovery output directory name
+_SERVICE_DISCOVERY_MAP: dict[str, str] = {
+    "order-service": "order-services",
+}
+
+
+def _rebuild_discovery_docs(repo_path: str, service: str) -> int:
+    """Regenerate BE endpoint index + handler context docs for a service.
+
+    This is equivalent to running `scripts/run_discovery.py scan-be` but
+    integrated into the indexing pipeline — so docs always stay in sync.
+
+    Returns:
+        Number of handler context files written.
+    """
+    try:
+        from explorer.be_scanner import scan_be_repo
+        from explorer.context_builder import build_code_context
+    except ImportError as e:
+        logger.warning("  → Docs rebuild skipped (explorer not available): %s", e)
+        return 0
+
+    # Determine the discovery output directory for this service
+    discovery_dir_name = _SERVICE_DISCOVERY_MAP.get(service, service)
+    project_root = Path(__file__).parents[1]
+    discovery_dir = project_root / "docs" / "discovery" / discovery_dir_name
+    discovery_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Rebuilding docs for %s → %s", service, discovery_dir)
+
+    # 1. Scan BE endpoints
+    endpoints = scan_be_repo(repo_path=repo_path)
+    endpoints_file = discovery_dir / "be_endpoints.json"
+
+    import dataclasses
+    with endpoints_file.open("w", encoding="utf-8") as f:
+        json.dump([dataclasses.asdict(ep) for ep in endpoints], f, indent=2, ensure_ascii=False)
+    logger.info("  → Wrote %d endpoints to %s", len(endpoints), endpoints_file.name)
+
+    # 2. Build handler code contexts
+    context_dir = discovery_dir / "code_context"
+    context_dir.mkdir(parents=True, exist_ok=True)
+    written = build_code_context(
+        be_repo_path=repo_path,
+        index_path=str(endpoints_file),
+        output_dir=str(context_dir),
+    )
+    logger.info("  → Wrote %d handler context files", len(written))
+    return len(written)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Index Go backend services for the AI admin assistant."
+    )
+    parser.add_argument(
+        "--repo", required=True,
+        help="Path to the Go repository root.",
+    )
+    parser.add_argument(
+        "--service", required=True,
+        help="Service name (e.g. 'order-service').",
+    )
+    parser.add_argument(
+        "--vectors", action="store_true",
+        help="Enable vector embedding generation (requires chromadb + sentence-transformers).",
+    )
+    parser.add_argument(
+        "--docs", action="store_true",
+        help="Regenerate discovery docs (BE endpoints + handler contexts).",
+    )
+    args = parser.parse_args()
+
+    if not Path(args.repo).is_dir():
+        logger.error("Repository path does not exist: %s", args.repo)
+        sys.exit(1)
+
+    summary = index_service(
+        repo_path=args.repo,
+        service=args.service,
+        enable_vectors=args.vectors,
+        rebuild_docs=args.docs,
+    )
+    print(json.dumps(summary, indent=2))
+
+
+if __name__ == "__main__":
+    main()
