@@ -19,9 +19,10 @@ Current direction is no longer pure demo-only. The order query path is already i
 6. Orchestrator sends tool results back to Gemini and returns final answer.
 
 Important protections in current flow:
-- Max tool loop limit (`MAX_TOOL_LOOPS = 3`)
+- Max tool loop limit (`MAX_TOOL_LOOPS = 2`)
 - Duplicate tool-call detection in one conversation turn
 - Structured failure fallback when loop becomes repetitive
+- Per-turn cache for `get_order` after `search_orders` results to avoid redundant HTTP calls
 
 ## 3. Implemented APIs
 - `GET /health`
@@ -29,8 +30,8 @@ Important protections in current flow:
   - Returns `{ "status": "ok" }`
 
 - `POST /chat`
-  - Input: `{ "message": "..." }`
-  - Output: `{ "reply": "...", "tools_called": ["..."] }`
+  - Input: `{ "message": "...", "conversation_id": "optional" }`
+  - Output: `{ "reply": "...", "tools_called": ["..."], "conversation_id": "..." }`
   - Validation: message min/max length enforced
   - Error mapping includes Gemini quota exhaustion -> HTTP 429
 
@@ -39,6 +40,10 @@ Important protections in current flow:
 ### Tools currently exposed to Gemini
 - `get_order(order_id)`
 - `search_orders(status)`
+- `estimate_guest_price(payload)`
+- `estimate_authenticated_price(payload)`
+- `check_driver_price(payload)`
+- `estimate_guest_home_moving_price(payload)`
 - `get_driver(driver_id)`
 - `list_active_drivers()`
 - `get_order_summary()`
@@ -92,14 +97,15 @@ These docs support the larger plan:
 ## 8. Gaps and Risks (Current)
 - `/chat` endpoint still has no caller authentication/authorization
 - No request-level rate limiting
-- No automated test suite yet
+- Test coverage is still narrow (mostly `/chat` API integration style tests)
 - Driver and analytics tools still rely on mock data
-- No persistent conversation state between requests
+- Conversation continuity exists but is process-local in-memory only (not shared across replicas/restarts)
 - Observability is log-based only (no metrics/traces dashboard)
 
 ## 9. Recommended Next Steps
 1. Add auth + rate limit for `/chat`.
 2. Replace mock driver and analytics tools with real backend data sources.
-3. Add integration tests for orchestrator tool loop and error mapping.
+3. Expand tests around orchestrator loop controls (duplicate calls, max-loop fallback, unknown tool handling).
 4. Add request correlation ID and metrics (tool time, Gemini time, total time).
-5. Create formal API mapping docs for Web2 FE + BE flows and bind each flow to tool coverage.
+5. Move conversation context store to shared backing store (Redis/DB) for multi-instance stability.
+6. Create formal API mapping docs for Web2 FE + BE flows and bind each flow to tool coverage.

@@ -39,6 +39,16 @@ class Settings(BaseSettings):
     be_branch: str = "main"
     discovery_output_dir: str = "docs/discovery"
 
+    # ---------------------------------------------------------------------------
+    # /chat endpoint guardrails
+    # ---------------------------------------------------------------------------
+    chat_auth_enabled: bool = True
+    chat_api_key: str = ""
+    chat_rate_limit_enabled: bool = True
+    chat_rate_limit_requests: int = 30
+    chat_rate_limit_window_seconds: int = 60
+    chat_order_cache_ttl_seconds: int = 60
+
     class Config:
         env_file = ".env"
 

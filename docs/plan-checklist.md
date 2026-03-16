@@ -28,8 +28,9 @@ Build a production-ready read-only logistics AI assistant by using a staged disc
 - [x] Token cache with TTL and 401 refresh path
 - [x] Slim response payload to reduce LLM latency
 - [x] Quota error mapping to HTTP 429
-- [ ] Chat endpoint auth and rate limiting
-- [ ] Test suite (unit + integration)
+- [x] Basic `/chat` API integration tests (pricing paths + quota mapping + auth/rate-limit checks)
+- [x] Chat endpoint auth and rate limiting
+- [ ] Expand test suite depth (orchestrator loop controls, schema consistency, context lifecycle)
 
 ## Phase 1 - Discovery Foundation (Started)
 - [x] Initial function-first analysis approach established (check-price style flow)
@@ -112,15 +113,18 @@ Exit criteria:
   - [ ] latency budget target
 
 ## Phase 6 - Reliability and Performance Hardening
-- [ ] Add API auth for `/chat`
-- [ ] Add rate limit and abuse guard
-- [ ] Add structured metrics:
-  - [ ] model round-trip time
-  - [ ] tool execution time
-  - [ ] total request latency
-  - [ ] tool-call count per request
+- [x] Add API auth for `/chat`
+- [x] Add rate limit and abuse guard
+- [x] Add request correlation ID and include it in all `/chat` + tool logs
+- [ ] Add timeout and retry policy guardrails for external calls used by tools
+- [x] Add structured metrics:
+  - [x] model round-trip time
+  - [x] tool execution time
+  - [x] total request latency
+  - [x] tool-call count per request
 - [ ] Add alerting thresholds for latency and error rates
 - [ ] Add regression tests for prompt/tool routing behavior
+- [x] Add regression tests for duplicate-call suppression and max-loop fallback message
 
 ## Phase 7 - Product Readiness Gate
 - [ ] Requirements and business logic docs complete for target scope
@@ -135,4 +139,5 @@ Exit criteria:
 - [ ] Draft multi-repo config schema and artifact naming convention before coding
 - [ ] Implement Phase 1B in small increments (config -> scan -> map -> explore)
 - [ ] Replace mock analytics with real read-only aggregation source
-- [ ] Add minimal auth + rate limit for `/chat`
+- [x] Add minimal auth + rate limit for `/chat`
+- [ ] Use `docs/chat-api-deep-audit.md` as the source-of-truth backlog for `/chat` hardening tasks

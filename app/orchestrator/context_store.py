@@ -3,6 +3,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -14,9 +15,17 @@ class ConversationTurn:
 
 
 @dataclass
+class CachedOrderRecord:
+    order: dict[str, Any]
+    cached_at: float = field(default_factory=time.time)
+
+
+@dataclass
 class ConversationState:
     conversation_id: str
     turns: list[ConversationTurn] = field(default_factory=list)
+    order_cache: dict[str, CachedOrderRecord] = field(default_factory=dict)
+    last_focus_order_id: str | None = None
     updated_at: float = field(default_factory=time.time)
 
 

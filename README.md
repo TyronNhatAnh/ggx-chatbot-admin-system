@@ -26,7 +26,7 @@ llm/
     │
     ▼
 tools/
-  order_tools.py         ← get_order, search_orders, get_delayed_orders
+  order_tools.py         ← get_order, search_orders, estimate/check-price tools
   driver_tools.py        ← get_driver, list_active_drivers
   analytics_tools.py     ← get_order_summary, get_revenue_today
 ```
@@ -52,7 +52,22 @@ Open `.env` and set your Gemini API key:
 
 ```
 GEMINI_API_KEY=your-gemini-api-key-here
+CHAT_API_KEY=replace-with-strong-random-secret
 ```
+
+`/chat` is protected by API key auth and request rate limiting by default.
+You can tune guardrails with:
+
+```
+CHAT_AUTH_ENABLED=true
+CHAT_RATE_LIMIT_ENABLED=true
+CHAT_RATE_LIMIT_REQUESTS=30
+CHAT_RATE_LIMIT_WINDOW_SECONDS=60
+CHAT_ORDER_CACHE_TTL_SECONDS=60
+```
+
+`/chat` also supports request correlation ID via `X-Request-ID`.
+If provided, the same value is echoed back in the response header and appears in logs.
 
 Get a free key at <https://aistudio.google.com/app/apikey>.
 
@@ -190,7 +205,10 @@ tool calls. The system prompt enforces that the AI never modifies data.
 |---|---|
 | `get_order(order_id)` | Fetch a single order by ID |
 | `search_orders(status)` | Find all orders with a given status |
-| `get_delayed_orders()` | List all delayed orders |
+| `estimate_guest_price(payload)` | Estimate new order price for guest flow |
+| `estimate_authenticated_price(payload)` | Estimate new order price for authenticated flow |
+| `check_driver_price(payload)` | Estimate price for a specific driver |
+| `estimate_guest_home_moving_price(payload)` | Estimate guest home-moving order price |
 | `get_driver(driver_id)` | Fetch a single driver by ID |
 | `list_active_drivers()` | List all currently active drivers |
 | `get_order_summary()` | Order counts grouped by status |
@@ -205,14 +223,41 @@ tool calls. The system prompt enforces that the AI never modifies data.
 ```bash
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: replace-with-strong-random-secret" \
+  -H "X-Request-ID: req-demo-001" \
   -d '{"message": "What is the status of order ORD-002?"}'
 ```
+
+### Structured metrics in logs
+
+For each `/chat` request, orchestrator emits one structured metrics log event containing:
+
+- `gemini` latency (seconds)
+- `tools` latency (seconds)
+- `total` latency (seconds)
+- `tool_call_count` and `tool_unique_count`
+- fallback reason and cumulative fallback counters
 
 ```json
 {
   "reply": "Order ORD-002 is currently pending. It is for Wireless Headphones ordered by Bob Tan, totalling $199.99.",
-  "tools_called": ["get_order"]
+  "tools_called": ["get_order"],
+  "conversation_id": "0f1f10df-77c5-498b-90be-7eb58f49fe17"
 }
+```
+
+### Conversation continuity
+
+You can send `conversation_id` in follow-up `/chat` requests to keep short context
+across turns.
+
+Example:
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: replace-with-strong-random-secret" \
+  -d '{"message":"What about its driver fee?","conversation_id":"0f1f10df-77c5-498b-90be-7eb58f49fe17"}'
 ```
 
 **Find delayed orders**
@@ -220,6 +265,7 @@ curl -X POST http://localhost:8000/chat \
 ```bash
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: replace-with-strong-random-secret" \
   -d '{"message": "Are there any delayed orders?"}'
 ```
 
@@ -228,6 +274,7 @@ curl -X POST http://localhost:8000/chat \
 ```bash
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: replace-with-strong-random-secret" \
   -d '{"message": "Tell me about driver DRV-001"}'
 ```
 
