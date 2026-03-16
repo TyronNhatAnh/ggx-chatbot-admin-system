@@ -84,7 +84,11 @@ This repository has two different analysis workflows. They solve different jobs:
 1. System discovery (broad inventory and mapping)
 
 - Script: scripts/run_discovery.py
-- Output: docs/discovery/*.json and docs/discovery/code_context/*.context.md
+- Output:
+  - docs/discovery/web2/fe_api_inventory.json
+  - docs/discovery/order-services/be_endpoints.json
+  - docs/discovery/order-services/code_context/*.context.md
+  - docs/discovery/flow_mappings.json
 - Use this when:
   - onboarding a new FE/BE repo
   - APIs changed a lot and baseline mapping is stale

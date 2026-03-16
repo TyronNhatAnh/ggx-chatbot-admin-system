@@ -20,6 +20,26 @@ run:
 debug:
 	. $(VENV)/bin/activate && uvicorn $(APP) --reload --host 0.0.0.0 --port $(PORT)
 
+# ===== DISCOVERY / EXPLORER =====
+
+scan-fe:
+	. $(VENV)/bin/activate && python scripts/run_discovery.py scan-fe
+
+scan-be:
+	. $(VENV)/bin/activate && python scripts/run_discovery.py scan-be
+
+map-flows:
+	. $(VENV)/bin/activate && python scripts/run_discovery.py map-flows
+
+scan-all:
+	. $(VENV)/bin/activate && python scripts/run_discovery.py scan-all
+
+discover:
+	. $(VENV)/bin/activate && python scripts/run_discovery.py scan-all
+
+explore:
+	. $(VENV)/bin/activate && python scripts/explore_feature.py --interactive
+
 explore-feature:
 	. $(VENV)/bin/activate && python scripts/explore_feature.py --interactive
 

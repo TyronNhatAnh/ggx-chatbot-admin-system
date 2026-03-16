@@ -1,8 +1,9 @@
 """Code context builder — extracts Go handler source code for each discovered endpoint.
 
-For every entry in ``be_endpoint_map.json``, locates the handler function in the
-Go source tree, extracts its body, detects service calls, and writes a Markdown
-context file to ``docs/discovery/code_context/``.
+For every entry in ``be_endpoints.json`` (or legacy ``be_endpoint_map.json``),
+locates the handler function in the Go source tree, extracts its body, detects
+service calls, and writes a Markdown context file to
+``docs/discovery/order-services/code_context/``.
 
 Output file naming: ``{FunctionName}.context.md``
 
@@ -30,8 +31,10 @@ _IGNORE_DIRS = frozenset({
     ".git", "vendor", "testdata", "test", "mocks", "__pycache__",
 })
 
-_ENDPOINT_MAP_FILE = "be_endpoint_map.json"
+_ENDPOINTS_FILE = "be_endpoints.json"
 _OUTPUT_SUBDIR = "code_context"
+_LEGACY_ENDPOINT_MAP_FILE = "be_endpoint_map.json"
+_LEGACY_OUTPUT_SUBDIR = "code_context"
 
 # Truncate extracted bodies beyond this many lines to keep context files readable.
 _MAX_BODY_LINES = 120
@@ -50,6 +53,14 @@ _FUNC_DEF_RE = re.compile(
 # Matches two-level dot-access calls that indicate service/repo dependencies:
 #   h.orderService.CreateOrder(   →  dep="orderService"  method="CreateOrder"
 _SERVICE_CALL_RE = re.compile(r"\b\w+\.(\w+)\.(\w+)\s*\(")
+
+# Receiver-type names that are framework/stdlib patterns, never real injected services.
+# Covers Go Gin handler patterns: c.Request.Header.Get(), c.Request.Context(), err.Error()
+_NOISE_DEPS = frozenset({"Request", "Header", "Error"})
+
+# Method names indicating stdlib/time conversions, not service calls.
+# Covers time.Time field accesses: orderDetail.AppointmentAt.UnixMilli() etc.
+_NOISE_METHODS = frozenset({"UnixMilli"})
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -122,12 +133,16 @@ def _detect_service_calls(body: str) -> list[str]:
 
     Detects the pattern ``receiver.dependency.Method()`` which indicates the
     handler delegating to an injected service or repository field.
+    Filters out framework/stdlib noise (HTTP header access, context retrieval,
+    error string calls, time.Time field conversions).
     """
     seen: set[str] = set()
     calls: list[str] = []
     for m in _SERVICE_CALL_RE.finditer(body):
         dep = m.group(1)    # e.g. "orderService"
         method = m.group(2)  # e.g. "CreateOrder"
+        if dep in _NOISE_DEPS or method in _NOISE_METHODS:
+            continue
         key = f"{dep}.{method}()"
         if key not in seen:
             seen.add(key)
@@ -191,8 +206,8 @@ def _render_context_md(
     """Render a Markdown context document for a single endpoint."""
     method = endpoint.get("method", "")
     path = endpoint.get("path", "")
-    handler = endpoint.get("handler", "")
-    function = endpoint.get("function", "")
+    handler = endpoint.get("controller", endpoint.get("handler", ""))
+    function = endpoint.get("controller_method", endpoint.get("function", ""))
 
     if service_calls:
         calls_section = "\n".join(f"- `{c}`" for c in service_calls)
@@ -229,16 +244,18 @@ def build_code_context(
 ) -> list[Path]:
     """Build Markdown context files for all endpoints in the backend index.
 
-    For each endpoint in ``be_endpoint_map.json``, locates its handler function
+    For each endpoint in ``be_endpoints.json`` (or legacy ``be_endpoint_map.json``),
+    locates its handler function
     in the Go source tree, extracts the body, detects service dependencies, and
     writes a ``{FunctionName}.context.md`` file.
 
     Args:
         be_repo_path: Absolute or relative path to the Go backend repository root.
-        index_path:   Path to ``be_endpoint_map.json``.  Defaults to
-                      ``{settings.discovery_output_dir}/be_endpoint_map.json``.
+        index_path:   Path to ``be_endpoints.json``. Defaults to
+              ``{settings.discovery_output_dir}/order-services/be_endpoints.json``
+              with legacy fallback to ``{settings.discovery_output_dir}/be_endpoint_map.json``.
         output_dir:   Destination directory for the generated context files.
-                      Defaults to ``{settings.discovery_output_dir}/code_context/``.
+                  Defaults to ``{settings.discovery_output_dir}/order-services/code_context/``.
 
     Returns:
         List of Paths to the written ``.context.md`` files.
@@ -249,11 +266,12 @@ def build_code_context(
         return []
 
     # Resolve the endpoint index file.
-    resolved_index = (
-        Path(index_path)
-        if index_path
-        else Path(settings.discovery_output_dir) / _ENDPOINT_MAP_FILE
-    )
+    if index_path:
+        resolved_index = Path(index_path)
+    else:
+        resolved_index = Path(settings.discovery_output_dir) / "order-services" / _ENDPOINTS_FILE
+        if not resolved_index.exists():
+            resolved_index = Path(settings.discovery_output_dir) / _LEGACY_ENDPOINT_MAP_FILE
     if not resolved_index.exists():
         logger.error(
             "[ContextBuilder] Endpoint index not found: %s — run scan-be first.", resolved_index
@@ -267,7 +285,7 @@ def build_code_context(
     resolved_output = (
         Path(output_dir)
         if output_dir
-        else Path(settings.discovery_output_dir) / _OUTPUT_SUBDIR
+        else Path(settings.discovery_output_dir) / "order-services" / _OUTPUT_SUBDIR
     )
     resolved_output.mkdir(parents=True, exist_ok=True)
 
@@ -284,7 +302,7 @@ def build_code_context(
     skipped = 0
 
     for ep in endpoints:
-        func_name = ep.get("function", "").strip()
+        func_name = str(ep.get("controller_method", ep.get("function", ""))).strip()
         if not func_name:
             continue
 
@@ -294,10 +312,13 @@ def build_code_context(
             skipped += 1
             continue
 
-        # Prefer non-test files when multiple definitions exist.
+        # Prefer HTTP handler files over gRPC/other; then any non-test file.
         match = next(
-            (m for m in matches if not m[0].endswith("_test.go")),
-            matches[0],
+            (m for m in matches if not m[0].endswith("_test.go") and "/api/http/" in m[0]),
+            next(
+                (m for m in matches if not m[0].endswith("_test.go")),
+                matches[0],
+            ),
         )
         file_path, receiver_type, raw_body = match
 

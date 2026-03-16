@@ -37,6 +37,15 @@ logger = logging.getLogger(__name__)
 
 _SPEC_DIR = _PROJECT_ROOT / "explorer" / "feature_specs"
 _DISCOVERY_DIR = _PROJECT_ROOT / "docs" / "discovery"
+_DISCOVERY_ORDER_DIR = _DISCOVERY_DIR / "order-services"
+_DISCOVERY_WEB2_DIR = _DISCOVERY_DIR / "web2"
+
+
+def _load_discovery_records(new_path: Path, legacy_path: Path) -> list[dict]:
+    """Read discovery records from namespaced path first, then legacy fallback."""
+    if new_path.exists():
+        return _load_json_list(new_path)
+    return _load_json_list(legacy_path)
 
 
 def _slugify(text: str) -> str:
@@ -96,8 +105,14 @@ def _gemini_enrich_spec(feature_input: str, draft_spec: dict) -> dict:
     """Use Gemini to enrich draft feature spec from current discovery artifacts."""
     from app.config import settings
 
-    be_map = _load_json_list(_DISCOVERY_DIR / "be_endpoint_map.json")
-    fe_inventory = _load_json_list(_DISCOVERY_DIR / "fe_api_inventory.json")
+    be_map = _load_discovery_records(
+        _DISCOVERY_ORDER_DIR / "be_endpoints.json",
+        _DISCOVERY_DIR / "be_endpoints.json",
+    )
+    fe_inventory = _load_discovery_records(
+        _DISCOVERY_WEB2_DIR / "fe_api_inventory.json",
+        _DISCOVERY_DIR / "fe_api_inventory.json",
+    )
     flows = _load_json_list(_DISCOVERY_DIR / "flow_mappings.json")
 
     prompt = (
@@ -163,14 +178,20 @@ def _auto_build_spec(feature_input: str, selected_api_scope: list[str] | None = 
     tokens = set(_extract_tokens(feature_input))
     feature_name = _slugify(feature_input)
 
-    be_map = _load_json_list(_DISCOVERY_DIR / "be_endpoint_map.json")
-    fe_inventory = _load_json_list(_DISCOVERY_DIR / "fe_api_inventory.json")
+    be_map = _load_discovery_records(
+        _DISCOVERY_ORDER_DIR / "be_endpoints.json",
+        _DISCOVERY_DIR / "be_endpoints.json",
+    )
+    fe_inventory = _load_discovery_records(
+        _DISCOVERY_WEB2_DIR / "fe_api_inventory.json",
+        _DISCOVERY_DIR / "fe_api_inventory.json",
+    )
 
     matched_endpoints: list[dict] = []
     for item in be_map:
         method = str(item.get("method", "")).upper()
         path = str(item.get("path", ""))
-        function = str(item.get("function", ""))
+        function = str(item.get("controller_method", item.get("function", "")))
         haystack = f"{method} {path} {function}".lower()
         if not tokens or any(tok in haystack for tok in tokens):
             matched_endpoints.append(item)
@@ -242,14 +263,17 @@ def _write_spec_file(feature_name: str, spec: dict, output_path: str = "") -> Pa
 
 
 def _interactive_select_api_scope(feature_input: str) -> list[str]:
-    be_map = _load_json_list(_DISCOVERY_DIR / "be_endpoint_map.json")
+    be_map = _load_discovery_records(
+        _DISCOVERY_ORDER_DIR / "be_endpoints.json",
+        _DISCOVERY_DIR / "be_endpoints.json",
+    )
     tokens = set(_extract_tokens(feature_input))
     matched: list[str] = []
 
     for item in be_map:
         method = str(item.get("method", "")).upper().strip()
         path = _normalize_api_path(str(item.get("path", "")).strip())
-        function = str(item.get("function", ""))
+        function = str(item.get("controller_method", item.get("function", "")))
         candidate = f"{method} {path}"
         haystack = f"{candidate} {function}".lower()
         if not method or not path:

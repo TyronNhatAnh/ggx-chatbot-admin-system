@@ -1,65 +1,15 @@
 feature:
   name: check_price
-  description: >
-    Pre-order price estimation. User (guest or authenticated) gets a price
-    breakdown before placing an order. Covers standard delivery, home-moving,
-    and driver-specific price check flows.
-
-  # BE file globs to collect (relative to be_repo_path).
-  # More specific = smaller context = better AI accuracy.
+  description: check_price
   be_files:
-    - internal/api/http/v1/order_handler.go
-    - internal/api/http/v1/order_new_handler.go
-    - internal/api/http/v1/routes.go
-    - internal/domain/order/handler/check_driver_price_handler.go
-    - internal/domain/order/handler/estimate_handler.go
-    - internal/domain/order/service/*.go
-    - internal/domain/pricing/**/*.go
-    - internal/model/check_price*.go
-    - internal/model/estimate*.go
-    - internal/model/calc_price*.go
-
-  # FE file globs to collect (relative to fe_repo_path).
+  - internal/api/http/v1/routes.go
   fe_files:
-    - src/lib/apis/order.ts
-    - src/lib/apis/common.ts
-    - src/ducks/reducers/order/thunks.ts
-    - src/containers/booking/**/*.ts
-    - src/containers/booking/**/*.tsx
-    - src/pages/booking*.tsx
-    - src/pages/estimate*.tsx
-
-  # API endpoints this feature touches (used to scope the index step).
-  api_scope:
-    - POST /guest/estimate
-    - POST /estimate
-    - POST /guest/check-price-driver
-    - POST /guest/orders/calc-price/:orderId
-    - POST /guest/home-moving/estimate
-
-  # Go struct names to look for in BE source.
-  go_types:
-    - CheckPriceDriverRequest
-    - CalcPriceOrderRequest
-    - EstimateRequest
-    - CheckPriceResponse
-    - EstimateResponse
-    - PriceBreakdown
-
-  # TypeScript interface/type names to look for in FE source.
-  ts_types:
-    - EstimateRequest
-    - EstimateResponse
-    - CheckPriceRequest
-    - PriceBreakdown
-    - VehicleType
-
-  # Business concepts to document explicitly.
+  - src/lib/apis/order.ts
+  api_scope: []
+  go_types: []
+  ts_types: []
   business_terms:
-    - vehicle_type
-    - from_place / to_place
-    - goods_weight / goods_type
-    - surcharge
-    - base_price
-    - guest vs authenticated flow
-    - driver-specific price
+  - actor
+  - trigger
+  - validation
+  - error code

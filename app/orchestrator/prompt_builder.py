@@ -27,8 +27,6 @@ Tool selection (one call per logical query — no duplicates):
   Maps to GET /coupons.
 - user order statistics / dashboard → get_order_statistics().
   Maps to GET /orders/statistics. Per-user stats.
-- admin order counts aggregate (mock, grouped by status) → get_order_summary.
-- revenue → get_revenue_today.
 - new delivery price for guest user (non-home-moving) → estimate_guest_price(payload).
   Maps to POST /guest/estimate. Only for simulating a new, not-yet-created guest delivery order.
 - new delivery price for authenticated user (main channel) → estimate_authenticated_price(payload).
@@ -38,6 +36,17 @@ Tool selection (one call per logical query — no duplicates):
 - home-moving price for guest → estimate_guest_home_moving_price(payload).
   Maps to POST /guest/home-moving/estimate. Use only for home-moving requests, not regular deliveries.
 - Estimate tools are ONLY for new, not-yet-created orders. If the order already exists, use get_order_detail instead.
+- feature business rules / use cases / API constraints → get_feature_requirement(feature_name).
+- What docs / knowledge are available → list_available_docs(). Call this FIRST if unsure what exists.
+- Which endpoint/API handles a specific action → search_endpoints(keyword).
+  Searches method, path, controller, and function name. Lightest doc lookup — prefer over loading full docs.
+- How a specific backend handler works (code, service calls) → get_handler_context(handler_name).
+  handler_name is the Go function name, e.g. EstimateGuest, GetOrderDetail, CancelOrderB2C.
+  Call list_available_docs() to see all valid handler names.
+- Feature business rules / use cases / validation constraints → get_feature_requirement(feature_name).
+  Heaviest doc — only call when business rules or end-to-end flow detail is needed.
+  Supports flat name ("check_price") or service-namespaced ("order/check_price") for multi-service.
+  Call list_available_docs() to discover available features.
 """.strip()
 
 

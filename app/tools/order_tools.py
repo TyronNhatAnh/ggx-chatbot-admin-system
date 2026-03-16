@@ -68,11 +68,6 @@ def get_coupons() -> dict:
     return get_order_client().get_coupons()
 
 
-def calc_guest_order_price(order_id: str, user_id: int | None = None) -> dict:
-    """Re-calculate price for an existing guest order. Requires order_id and user_id."""
-    return get_order_client().calc_guest_order_price(order_id, user_id)
-
-
 def estimate_guest_home_moving_price(payload: dict) -> dict:
     """Estimate home-moving price for a guest. payload: POST /guest/home-moving/estimate body."""
     return get_order_client().estimate_guest_home_moving(payload)

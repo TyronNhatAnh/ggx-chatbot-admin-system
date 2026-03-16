@@ -268,9 +268,11 @@ def _auto_fill_api_scope_from_discovery(feature: dict[str, Any]) -> None:
     if isinstance(existing, list) and existing:
         return
 
-    discovery_file = Path("docs/discovery/fe_api_inventory.json")
+    discovery_file = Path("docs/discovery/web2/fe_api_inventory.json")
     if not discovery_file.exists():
-        return
+        discovery_file = Path("docs/discovery/fe_api_inventory.json")
+        if not discovery_file.exists():
+            return
 
     try:
         records = json.loads(discovery_file.read_text(encoding="utf-8"))
@@ -357,6 +359,120 @@ def _sanitize_strings(obj: Any) -> Any:
 
 def _first_source_file(source_files: set[str]) -> str:
     return sorted(source_files)[0] if source_files else "UNKNOWN"
+
+
+def _parse_method_path(api_value: str) -> tuple[str, str]:
+    """Parse 'METHOD /path' style API scope entries.
+
+    Returns (method, path) with sane UNKNOWN defaults for malformed values.
+    """
+    value = (api_value or "").strip()
+    if not value:
+        return "UNKNOWN", "UNKNOWN"
+    parts = value.split(None, 1)
+    if len(parts) == 1:
+        return parts[0].upper(), "UNKNOWN"
+    return parts[0].upper(), parts[1].strip() or "UNKNOWN"
+
+
+def _build_fallback_payload(
+    feature_name: str,
+    api_scope: list[str],
+    source_files: set[str],
+) -> dict[str, Any]:
+    """Build a strict-evidence-compliant fallback payload without LLM output.
+
+    This keeps explore flow usable even when model output is malformed JSON.
+    """
+    fallback_file = _first_source_file(source_files)
+    scope = api_scope if isinstance(api_scope, list) else []
+
+    use_case = {
+        "id": "UC-UNKNOWN",
+        "title": "UNKNOWN",
+        "actor": "UNKNOWN",
+        "trigger": "UNKNOWN",
+        "preconditions": ["UNKNOWN (evidence_gap)"],
+        "happy_path": ["UNKNOWN (evidence_gap)"],
+        "edge_cases": ["UNKNOWN (evidence_gap)"],
+        "business_value": "UNKNOWN",
+        "api_paths": scope or ["UNKNOWN"],
+        "evidence_refs": [{"file": fallback_file, "symbol": "UNKNOWN"}],
+    }
+
+    endpoints: list[dict[str, Any]] = []
+    for api in scope:
+        method, path = _parse_method_path(api)
+        endpoints.append(
+            {
+                "method": method,
+                "path": path,
+                "handler_file": "UNKNOWN",
+                "handler_function": "UNKNOWN",
+                "auth_required": "UNKNOWN",
+                "service_chain": ["UNKNOWN (evidence_gap)"],
+                "request_schema": {},
+                "response_schema": {},
+                "business_rules": ["UNKNOWN (evidence_gap)"],
+                "error_cases": [
+                    {
+                        "code": "UNKNOWN",
+                        "http_status": "UNKNOWN",
+                        "condition": "UNKNOWN (evidence_gap)",
+                    }
+                ],
+                "external_dependencies": [],
+                "read_only_safe": True,
+                "evidence_refs": [{"file": fallback_file, "symbol": "UNKNOWN"}],
+            }
+        )
+
+    if not endpoints:
+        endpoints.append(
+            {
+                "method": "UNKNOWN",
+                "path": "UNKNOWN",
+                "handler_file": "UNKNOWN",
+                "handler_function": "UNKNOWN",
+                "auth_required": "UNKNOWN",
+                "service_chain": ["UNKNOWN (evidence_gap)"],
+                "request_schema": {},
+                "response_schema": {},
+                "business_rules": ["UNKNOWN (evidence_gap)"],
+                "error_cases": [
+                    {
+                        "code": "UNKNOWN",
+                        "http_status": "UNKNOWN",
+                        "condition": "UNKNOWN (evidence_gap)",
+                    }
+                ],
+                "external_dependencies": [],
+                "read_only_safe": True,
+                "evidence_refs": [{"file": fallback_file, "symbol": "UNKNOWN"}],
+            }
+        )
+
+    index = {
+        "feature": feature_name,
+        "use_cases": [use_case],
+        "endpoints": endpoints,
+        "shared_types": {},
+        "fe_types": {},
+        "cross_cutting_observations": ["UNKNOWN (evidence_gap)"],
+        "logic_evidence": [
+            {
+                "file": fallback_file,
+                "symbol": "UNKNOWN",
+                "why_it_matters": "Fallback artifact created after JSON parse or strict validation failure",
+            }
+        ],
+    }
+
+    requirement_md = _render_requirement_from_index(index)
+    return {
+        "index": index,
+        "requirement_markdown": requirement_md,
+    }
 
 
 def _normalize_evidence_refs(items: list[dict], source_files: set[str]) -> None:
@@ -717,17 +833,25 @@ def _run_single_pass(spec: dict[str, Any], source_bundle: str, source_manifest: 
         )
         if repaired is not None:
             return repaired
-        return {
-            "index": {"feature": feature["name"], "raw_response": raw},
-            "requirement_markdown": raw_text.strip(),
-        }
+        logger.warning(
+            "[AIExplorer] Falling back to deterministic payload after JSON parse failure"
+        )
+        return _build_fallback_payload(
+            feature_name=feature["name"],
+            api_scope=feature.get("api_scope", []),
+            source_files=source_files,
+        )
     except ValueError as exc:
         logger.error("[AIExplorer] Single-pass: invalid payload shape — %s", exc)
         logger.debug("[AIExplorer] Raw response:\n%s", raw[:3000])
-        return {
-            "index": {"feature": feature["name"], "raw_response": raw},
-            "requirement_markdown": raw_text.strip(),
-        }
+        logger.warning(
+            "[AIExplorer] Falling back to deterministic payload after strict validation failure"
+        )
+        return _build_fallback_payload(
+            feature_name=feature["name"],
+            api_scope=feature.get("api_scope", []),
+            source_files=source_files,
+        )
 
 
 def _truncate_text(value: str, limit: int) -> str:

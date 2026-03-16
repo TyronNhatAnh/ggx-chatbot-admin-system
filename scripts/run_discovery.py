@@ -4,7 +4,7 @@
 Commands:
     scan-fe   Scan the frontend repository for outgoing API calls.
     scan-be   Scan the backend repository for endpoint definitions and
-              extract handler code context into docs/discovery/code_context/.
+              extract handler code context into docs/discovery/order-services/code_context/.
     map-flows Match FE calls to BE endpoints and write flow mappings.
     scan-all  Run scan-fe, scan-be and map-flows in sequence.
 
@@ -46,6 +46,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_DISCOVERY_DIR = Path(settings.discovery_output_dir)
+_ORDER_SERVICES_DIR = _DISCOVERY_DIR / "order-services"
+_WEB2_DIR = _DISCOVERY_DIR / "web2"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -75,9 +79,27 @@ def _save_json(data: list, filename: str) -> Path:
     return out_path
 
 
+def _save_json_to(data: list, target_path: Path) -> Path:
+    """Serialise dataclass list to a specific target path."""
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with target_path.open("w", encoding="utf-8") as f:
+        json.dump([dataclasses.asdict(item) for item in data], f, indent=2, ensure_ascii=False)
+    logger.info("[Discovery] Saved %d records → %s", len(data), target_path)
+    return target_path
+
+
 def _load_json_as(filename: str, cls: type) -> list:
     """Load a JSON file from the output directory and deserialise into dataclass instances."""
     path = Path(settings.discovery_output_dir) / filename
+    if not path.exists():
+        logger.error("[Discovery] Expected file not found: %s — run the relevant scan first.", path)
+        sys.exit(1)
+    with path.open(encoding="utf-8") as f:
+        return [cls(**item) for item in json.load(f)]
+
+
+def _load_json_as_from(path: Path, cls: type) -> list:
+    """Load JSON from an explicit path and deserialize into dataclasses."""
     if not path.exists():
         logger.error("[Discovery] Expected file not found: %s — run the relevant scan first.", path)
         sys.exit(1)
@@ -94,29 +116,8 @@ def cmd_scan_fe(args: types.SimpleNamespace) -> None:
     branch = args.branch or settings.fe_branch
     logger.info("[Discovery] Starting frontend scan: path=%s  branch=%s", repo_path, branch)
     results = scan_fe_repo(repo_path=repo_path, branch=branch)
-    _save_json(results, "fe_api_inventory.json")
+    _save_json_to(results, _WEB2_DIR / "fe_api_inventory.json")
     logger.info("[Discovery] scan-fe complete: %d API calls found.", len(results))
-
-
-def _save_endpoint_map(endpoints: list, filename: str) -> Path:
-    """Save endpoints as be_endpoint_map.json with handler/function field names."""
-    output_dir = Path(settings.discovery_output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / filename
-    records = [
-        {
-            "method": ep.method,
-            "path": ep.path,
-            "handler": ep.controller,
-            "function": ep.controller_method,
-            "file": ep.file,
-        }
-        for ep in endpoints
-    ]
-    with out_path.open("w", encoding="utf-8") as f:
-        json.dump(records, f, indent=2, ensure_ascii=False)
-    logger.info("[Discovery] Saved %d records → %s", len(records), out_path)
-    return out_path
 
 
 def cmd_scan_be(args: types.SimpleNamespace) -> None:
@@ -124,17 +125,28 @@ def cmd_scan_be(args: types.SimpleNamespace) -> None:
     branch = args.branch or settings.be_branch
     logger.info("[Discovery] Starting backend scan: path=%s  branch=%s", repo_path, branch)
     results = scan_be_repo(repo_path=repo_path, branch=branch)
-    _save_json(results, "be_endpoints.json")
-    _save_endpoint_map(results, "be_endpoint_map.json")
+    _save_json_to(results, _ORDER_SERVICES_DIR / "be_endpoints.json")
     logger.info("[Discovery] scan-be: %d endpoints found. Building code context...", len(results))
-    written = build_code_context(be_repo_path=repo_path)
+    written = build_code_context(
+        be_repo_path=repo_path,
+        index_path=str(_ORDER_SERVICES_DIR / "be_endpoints.json"),
+        output_dir=str(_ORDER_SERVICES_DIR / "code_context"),
+    )
     logger.info("[Discovery] scan-be complete: %d context file(s) written.", len(written))
 
 
 def cmd_map_flows(args: types.SimpleNamespace) -> None:
     logger.info("[Discovery] Loading scan results for flow mapping...")
-    fe_calls: list[FrontendApiCall] = _load_json_as("fe_api_inventory.json", FrontendApiCall)
-    be_endpoints: list[BackendEndpoint] = _load_json_as("be_endpoints.json", BackendEndpoint)
+    fe_inventory_path = _WEB2_DIR / "fe_api_inventory.json"
+    be_endpoints_path = _ORDER_SERVICES_DIR / "be_endpoints.json"
+    # Backward compatibility with legacy flat structure.
+    if not fe_inventory_path.exists():
+        fe_inventory_path = _DISCOVERY_DIR / "fe_api_inventory.json"
+    if not be_endpoints_path.exists():
+        be_endpoints_path = _DISCOVERY_DIR / "be_endpoints.json"
+
+    fe_calls: list[FrontendApiCall] = _load_json_as_from(fe_inventory_path, FrontendApiCall)
+    be_endpoints: list[BackendEndpoint] = _load_json_as_from(be_endpoints_path, BackendEndpoint)
     flows = map_flows(fe_calls=fe_calls, be_endpoints=be_endpoints)
     _save_json(flows, "flow_mappings.json")
     logger.info("[Discovery] map-flows complete: %d flows mapped.", len(flows))

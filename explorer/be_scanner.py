@@ -20,10 +20,13 @@ def _enrich_service_calls(endpoints: list[BackendEndpoint], repo_path: str) -> N
         matches = func_index.get(ep.controller_method, [])
         if not matches:
             continue
-        # Prefer non-test files when multiple definitions exist.
+        # Prefer HTTP handler files over gRPC/other; then any non-test file.
         file_path, _, body = next(
-            (m for m in matches if not m[0].endswith("_test.go")),
-            matches[0],
+            (m for m in matches if not m[0].endswith("_test.go") and "/api/http/" in m[0]),
+            next(
+                (m for m in matches if not m[0].endswith("_test.go")),
+                matches[0],
+            ),
         )
         calls = _detect_service_calls(body)
         if calls:

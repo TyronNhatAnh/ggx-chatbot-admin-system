@@ -6,11 +6,12 @@ This directory contains generated artifacts from scripts/run_discovery.py.
 
 | File | Produced by | Contents |
 |------|-------------|----------|
-| fe_api_inventory.json | scan-fe | Outgoing HTTP calls found in the frontend repo |
-| be_endpoints.json | scan-be | Backend endpoint definitions |
-| be_endpoint_map.json | scan-be | Endpoint map with handler/function/file |
+| web2/fe_api_inventory.json | scan-fe | Outgoing HTTP calls found in the Web2 frontend repo |
+| order-services/be_endpoints.json | scan-be | Backend endpoint definitions for order-services |
 | flow_mappings.json | map-flows | FE call to BE endpoint mappings |
-| code_context/*.context.md | scan-be | Handler-level backend code context snippets |
+| order-services/code_context/*.context.md | scan-be | Handler-level backend code context snippets |
+
+Legacy flat paths are still read as fallback for backward compatibility.
 
 ## When To Run Discovery
 
