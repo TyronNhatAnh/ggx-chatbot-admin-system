@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     gemini_api_key: str
 
     # Model to use. gemini-2.5-flash is fast and free-tier friendly.
-    model_name: str = "gemini-2.5-flash"
+    model_name: str = "gemini-3-flash"
 
     # ---------------------------------------------------------------------------
     # User Service — provides authentication (Bearer token)

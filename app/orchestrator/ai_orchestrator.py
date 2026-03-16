@@ -13,7 +13,7 @@ from app.orchestrator.context_store import CachedOrderRecord, ConversationState,
 from app.tools import ALL_TOOL_FUNCTIONS, TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
-MAX_TOOL_LOOPS = 2      # max Gemini round-trips in tool loop → caps total Gemini calls at MAX_TOOL_LOOPS+1
+MAX_TOOL_LOOPS = 3      # max Gemini round-trips in tool loop → caps total Gemini calls at MAX_TOOL_LOOPS+1
 CONTEXT_HISTORY_TURNS = 2
 CONTEXT_TEXT_BUDGET = 900
 ORDER_CACHE_MAX_ITEMS = 24
