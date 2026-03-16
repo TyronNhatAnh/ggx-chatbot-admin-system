@@ -119,9 +119,76 @@ def search_codebase(query: str) -> dict:
         return {"error": "KNOWLEDGE_ERROR", "message": str(e)}
 
 
+def traverse_graph(name: str, edge_types: str = "", direction: str = "outgoing", max_depth: int = 3) -> dict:
+    """Traverse the codebase graph from a starting node, following typed edges.
+    Returns the connected subgraph (edges and nodes) reachable from the start.
+    Use for tracing call chains, finding dependencies, or understanding code structure.
+    Args:
+        name: Name of the starting node (partial match). E.g. "GetOrderDetail", "OrderAPIs".
+        edge_types: Comma-separated edge types to follow. Available types:
+            calls, delegates_to, handles, defines, calls_api, x_calls,
+            routes_to, dispatches, thunk_calls, exposes_api.
+            Leave empty to follow all edge types.
+        direction: "outgoing" (default), "incoming", or "both".
+        max_depth: Maximum hops to traverse (1-5). Default 3.
+    Examples:
+        traverse_graph("GetOrderDetail", "calls,delegates_to")
+        traverse_graph("OrderAPIs.getOrder", "exposes_api", direction="outgoing")
+        traverse_graph("orderService.GetOrder", direction="incoming")
+    """
+    if not name or not name.strip():
+        return {"error": "MISSING_NAME", "message": "Provide a node name to start traversal."}
+    try:
+        store = get_knowledge_store()
+        type_list = [t.strip() for t in edge_types.split(",") if t.strip()] or None
+        depth = max(1, min(5, max_depth))
+        if direction not in ("outgoing", "incoming", "both"):
+            direction = "outgoing"
+        return store.traverse(name.strip(), edge_types=type_list, direction=direction, max_depth=depth)
+    except Exception as e:
+        logger.exception("[knowledge_tools] traverse_graph failed: %s", e)
+        return {"error": "KNOWLEDGE_ERROR", "message": str(e)}
+
+
+def find_api_consumers(endpoint: str) -> dict:
+    """Find all frontend components and pages that call a specific backend API endpoint.
+    Use when the user asks "which page calls this API?" or "who consumes this endpoint?".
+    The endpoint can be a partial match, e.g. "/orders/:orderId" or "GET /api/v1/orders".
+    Returns React components, their routes, and the edge chain connecting them.
+    Examples: find_api_consumers("/orders/:orderId"), find_api_consumers("GetOrderDetail")
+    """
+    if not endpoint or not endpoint.strip():
+        return {"error": "MISSING_ENDPOINT", "message": "Provide an API endpoint or handler name."}
+    try:
+        store = get_knowledge_store()
+        return store.find_edges(endpoint.strip(), edge_type="calls_api", direction="incoming")
+    except Exception as e:
+        logger.exception("[knowledge_tools] find_api_consumers failed: %s", e)
+        return {"error": "KNOWLEDGE_ERROR", "message": str(e)}
+
+
+def trace_full_stack(endpoint: str) -> dict:
+    """Trace the full request path for an API endpoint across frontend and backend.
+    Returns the complete chain: React page/component -> API endpoint -> Go handler -> service calls -> repository calls.
+    Works with partial endpoint matches. Use when the user asks:
+      - "What happens end-to-end when this API is called?"
+      - "Which page triggers this handler and what does it do?"
+      - "Trace the full flow for order creation"
+    Examples: trace_full_stack("/orders"), trace_full_stack("GetOrderDetail"), trace_full_stack("SubmitOrder")
+    """
+    if not endpoint or not endpoint.strip():
+        return {"error": "MISSING_ENDPOINT", "message": "Provide an API endpoint or handler name."}
+    try:
+        store = get_knowledge_store()
+        return store.trace_full_stack(endpoint.strip())
+    except Exception as e:
+        logger.exception("[knowledge_tools] trace_full_stack failed: %s", e)
+        return {"error": "KNOWLEDGE_ERROR", "message": str(e)}
+
+
 def get_knowledge_stats() -> dict:
     """Show summary statistics of the indexed codebase knowledge.
-    Returns counts of enums, structs, service flows, and code chunks.
+    Returns counts of enums, structs, service flows, code chunks, edges, and edge types.
     Call this to check what knowledge is available before using other knowledge tools.
     """
     try:

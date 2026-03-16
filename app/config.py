@@ -31,12 +31,14 @@ class Settings(BaseSettings):
 
     # ---------------------------------------------------------------------------
     # System Discovery — paths to external repos used by the explorer module.
-    # Optional; only required when running scripts/run_discovery.py.
+    # Optional; only required when running scripts/run_discovery.py or indexer.
     # ---------------------------------------------------------------------------
-    fe_repo_path: str = ""
-    be_repo_path: str = ""
-    fe_branch: str = "main"
-    be_branch: str = "main"
+    web2_repo_path: str = ""
+    web2_branch: str = "main"
+    order_service_repo_path: str = ""
+    order_service_branch: str = "main"
+    user_service_repo_path: str = ""
+    user_service_branch: str = "main"
     discovery_output_dir: str = "docs/discovery"
 
     # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from indexer.models import (
     CodeChunk,
+    Edge,
     EnumGroup,
     EnumValue,
     ServiceFlow,
@@ -108,6 +109,24 @@ CREATE INDEX IF NOT EXISTS idx_struct_name ON struct_definitions(name);
 CREATE INDEX IF NOT EXISTS idx_flows_handler ON service_flows(handler_name);
 CREATE INDEX IF NOT EXISTS idx_chunks_type ON code_chunks(chunk_type);
 CREATE INDEX IF NOT EXISTS idx_chunks_name ON code_chunks(qualified_name);
+
+CREATE TABLE IF NOT EXISTS edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_type TEXT NOT NULL,
+    from_name TEXT NOT NULL,
+    from_service TEXT NOT NULL DEFAULT '',
+    edge_type TEXT NOT NULL,
+    to_type TEXT NOT NULL,
+    to_name TEXT NOT NULL,
+    to_service TEXT NOT NULL DEFAULT '',
+    file TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_name, edge_type);
+CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_name, edge_type);
+CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(edge_type);
+CREATE INDEX IF NOT EXISTS idx_edges_service ON edges(from_service);
 """
 
 _FTS_TRIGGERS = """
@@ -155,6 +174,32 @@ class KnowledgeStore:
             conn.commit()
             logger.info("[KnowledgeStore] Migrated: added persona column to enum_values")
 
+        # Ensure edges table exists (Phase 1 graph evolution)
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "edges" not in tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS edges (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    from_type TEXT NOT NULL,
+                    from_name TEXT NOT NULL,
+                    from_service TEXT NOT NULL DEFAULT '',
+                    edge_type TEXT NOT NULL,
+                    to_type TEXT NOT NULL,
+                    to_name TEXT NOT NULL,
+                    to_service TEXT NOT NULL DEFAULT '',
+                    file TEXT NOT NULL DEFAULT '',
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_name, edge_type);
+                CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_name, edge_type);
+                CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(edge_type);
+                CREATE INDEX IF NOT EXISTS idx_edges_service ON edges(from_service);
+            """)
+            conn.commit()
+            logger.info("[KnowledgeStore] Migrated: created edges table")
+
     def close(self) -> None:
         if self._conn:
             self._conn.close()
@@ -180,6 +225,10 @@ class KnowledgeStore:
         )
         conn.execute(
             "DELETE FROM code_chunks WHERE service = ?", (service,)
+        )
+        conn.execute(
+            "DELETE FROM edges WHERE from_service = ? OR to_service = ?",
+            (service, service),
         )
         conn.commit()
         logger.info("[KnowledgeStore] Cleared data for service=%s", service)
@@ -244,6 +293,31 @@ class KnowledgeStore:
             count += 1
         conn.commit()
         self._write_json("flows.json", [asdict(f) for f in flows])
+        return count
+
+    def store_edges(self, edges: list[Edge]) -> int:
+        """Store graph edges for traversal queries."""
+        conn = self._get_conn()
+        count = 0
+        for e in edges:
+            conn.execute(
+                "INSERT INTO edges "
+                "(from_type, from_name, from_service, edge_type, "
+                "to_type, to_name, to_service, file, metadata_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    e.from_type, e.from_name, e.from_service, e.edge_type,
+                    e.to_type, e.to_name, e.to_service, e.file,
+                    json.dumps(e.metadata),
+                ),
+            )
+            count += 1
+        conn.commit()
+        self._write_json("edges.json", [
+            {"from": f"{e.from_type}:{e.from_name}", "edge": e.edge_type,
+             "to": f"{e.to_type}:{e.to_name}", "file": e.file}
+            for e in edges
+        ])
         return count
 
     def store_code_chunks(self, chunks: list[CodeChunk]) -> int:
@@ -457,6 +531,167 @@ class KnowledgeStore:
             ],
         }
 
+    def traverse(self, start_name: str, edge_types: list[str] | None = None,
+                  direction: str = "outgoing", max_depth: int = 3,
+                  limit: int = 50) -> dict:
+        """Multi-hop graph traversal from a starting node.
+
+        Args:
+            start_name: Name (partial match) of the starting node.
+            edge_types: Filter to specific edge types (None = all).
+            direction: 'outgoing', 'incoming', or 'both'.
+            max_depth: Maximum traversal depth.
+            limit: Max edges to return.
+
+        Returns:
+            Dict with nodes visited and edges traversed.
+        """
+        conn = self._get_conn()
+
+        # Seed: find starting edges
+        visited_names: set[str] = set()
+        all_edges: list[dict] = []
+
+        # Resolve start node name(s) — partial match
+        name_pattern = f"%{start_name}%"
+
+        for depth in range(max_depth):
+            if depth == 0:
+                current_names = [name_pattern]
+                is_first = True
+            else:
+                if not visited_names:
+                    break
+                current_names = list(visited_names - {e["from"] for e in all_edges} - {e["to"] for e in all_edges})
+                if not current_names:
+                    # Use all frontier nodes
+                    if direction in ("outgoing", "both"):
+                        current_names = list({e["to"] for e in all_edges[-limit:]})
+                    else:
+                        current_names = list({e["from"] for e in all_edges[-limit:]})
+                is_first = False
+
+            for name in current_names:
+                if len(all_edges) >= limit:
+                    break
+
+                operator = "LIKE" if is_first else "="
+                match_val = name if is_first else name
+
+                if direction in ("outgoing", "both"):
+                    q = (f"SELECT from_type, from_name, from_service, edge_type, "
+                         f"to_type, to_name, to_service, file "
+                         f"FROM edges WHERE from_name {operator} ?")
+                    params: list = [match_val]
+                    if edge_types:
+                        placeholders = ",".join("?" * len(edge_types))
+                        q += f" AND edge_type IN ({placeholders})"
+                        params.extend(edge_types)
+                    q += f" LIMIT ?"
+                    params.append(limit - len(all_edges))
+
+                    for r in conn.execute(q, params).fetchall():
+                        edge_dict = {
+                            "from": r["from_name"],
+                            "from_type": r["from_type"],
+                            "from_service": r["from_service"],
+                            "edge": r["edge_type"],
+                            "to": r["to_name"],
+                            "to_type": r["to_type"],
+                            "to_service": r["to_service"],
+                            "file": r["file"],
+                        }
+                        all_edges.append(edge_dict)
+                        visited_names.add(r["to_name"])
+
+                if direction in ("incoming", "both"):
+                    q = (f"SELECT from_type, from_name, from_service, edge_type, "
+                         f"to_type, to_name, to_service, file "
+                         f"FROM edges WHERE to_name {operator} ?")
+                    params = [match_val]
+                    if edge_types:
+                        placeholders = ",".join("?" * len(edge_types))
+                        q += f" AND edge_type IN ({placeholders})"
+                        params.extend(edge_types)
+                    q += f" LIMIT ?"
+                    params.append(limit - len(all_edges))
+
+                    for r in conn.execute(q, params).fetchall():
+                        edge_dict = {
+                            "from": r["from_name"],
+                            "from_type": r["from_type"],
+                            "from_service": r["from_service"],
+                            "edge": r["edge_type"],
+                            "to": r["to_name"],
+                            "to_type": r["to_type"],
+                            "to_service": r["to_service"],
+                            "file": r["file"],
+                        }
+                        all_edges.append(edge_dict)
+                        visited_names.add(r["from_name"])
+
+        # Deduplicate edges
+        seen: set[str] = set()
+        unique_edges: list[dict] = []
+        for e in all_edges:
+            key = f"{e['from']}|{e['edge']}|{e['to']}"
+            if key not in seen:
+                seen.add(key)
+                unique_edges.append(e)
+
+        return {
+            "start": start_name,
+            "direction": direction,
+            "depth": max_depth,
+            "edges_found": len(unique_edges),
+            "edges": unique_edges[:limit],
+        }
+
+    def find_edges(self, name: str, edge_type: str | None = None,
+                   direction: str = "both", limit: int = 20) -> dict:
+        """Find direct edges for a node (1-hop only). Fast lookup."""
+        conn = self._get_conn()
+        results: list[dict] = []
+        pattern = f"%{name}%"
+
+        if direction in ("outgoing", "both"):
+            q = ("SELECT from_type, from_name, from_service, edge_type, "
+                 "to_type, to_name, to_service, file "
+                 "FROM edges WHERE from_name LIKE ?")
+            params: list = [pattern]
+            if edge_type:
+                q += " AND edge_type = ?"
+                params.append(edge_type)
+            q += " LIMIT ?"
+            params.append(limit)
+            for r in conn.execute(q, params).fetchall():
+                results.append({
+                    "from": r["from_name"], "from_type": r["from_type"],
+                    "edge": r["edge_type"],
+                    "to": r["to_name"], "to_type": r["to_type"],
+                    "to_service": r["to_service"], "file": r["file"],
+                })
+
+        if direction in ("incoming", "both"):
+            q = ("SELECT from_type, from_name, from_service, edge_type, "
+                 "to_type, to_name, to_service, file "
+                 "FROM edges WHERE to_name LIKE ?")
+            params = [pattern]
+            if edge_type:
+                q += " AND edge_type = ?"
+                params.append(edge_type)
+            q += " LIMIT ?"
+            params.append(limit)
+            for r in conn.execute(q, params).fetchall():
+                results.append({
+                    "from": r["from_name"], "from_type": r["from_type"],
+                    "edge": r["edge_type"],
+                    "to": r["to_name"], "to_type": r["to_type"],
+                    "to_service": r["to_service"], "file": r["file"],
+                })
+
+        return {"name": name, "matches": len(results), "edges": results}
+
     def search_code(self, query: str, limit: int = 10) -> dict:
         """Full-text search over indexed code chunks."""
         conn = self._get_conn()
@@ -494,6 +729,108 @@ class KnowledgeStore:
             ],
         }
 
+    def trace_full_stack(self, endpoint: str, limit: int = 30) -> dict:
+        """Trace a full-stack path: React page -> API -> Go handler -> service -> repo.
+
+        Given an API endpoint (partial match), walks the graph in both
+        directions to reconstruct the complete request flow across services.
+
+        Returns:
+            Dict with the endpoint, upstream consumers (React components/pages),
+            and downstream implementation chain (handler -> service -> repo).
+        """
+        conn = self._get_conn()
+        pattern = f"%{endpoint}%"
+
+        # --- Find matching api_endpoint nodes via handles edges ---
+        be_rows = conn.execute(
+            "SELECT from_name, to_name, to_service, file "
+            "FROM edges WHERE edge_type = 'handles' AND from_name LIKE ? LIMIT ?",
+            (pattern, limit),
+        ).fetchall()
+
+        if not be_rows:
+            # Try matching by handler name instead
+            be_rows = conn.execute(
+                "SELECT from_name, to_name, to_service, file "
+                "FROM edges WHERE edge_type = 'handles' AND to_name LIKE ? LIMIT ?",
+                (pattern, limit),
+            ).fetchall()
+
+        matched_endpoints: list[str] = []
+        handlers: list[dict] = []
+        seen_handlers: set[str] = set()
+
+        for r in be_rows:
+            ep = r["from_name"]
+            handler = r["to_name"]
+            if ep not in matched_endpoints:
+                matched_endpoints.append(ep)
+            if handler in seen_handlers:
+                continue
+            seen_handlers.add(handler)
+
+            # Downstream: handler -> service calls, handler -> repo calls
+            svc_calls = conn.execute(
+                "SELECT to_name, to_type FROM edges "
+                "WHERE from_name = ? AND edge_type = 'calls' LIMIT ?",
+                (handler, limit),
+            ).fetchall()
+            repo_calls = conn.execute(
+                "SELECT to_name, to_type FROM edges "
+                "WHERE from_name = ? AND edge_type = 'delegates_to' LIMIT ?",
+                (handler, limit),
+            ).fetchall()
+
+            handlers.append({
+                "handler": handler,
+                "service": r["to_service"],
+                "file": r["file"],
+                "service_calls": [row["to_name"] for row in svc_calls],
+                "repository_calls": [row["to_name"] for row in repo_calls],
+            })
+
+        # --- Upstream: find React components that call these endpoints ---
+        consumers: list[dict] = []
+        seen_consumers: set[str] = set()
+
+        for ep in matched_endpoints:
+            # Direct calls_api edges (React component -> api_endpoint)
+            fe_rows = conn.execute(
+                "SELECT from_name, from_type, from_service, file "
+                "FROM edges WHERE to_name = ? AND edge_type IN ('calls_api', 'x_calls') "
+                "LIMIT ?",
+                (ep, limit),
+            ).fetchall()
+            for fr in fe_rows:
+                if fr["from_name"] in seen_consumers:
+                    continue
+                seen_consumers.add(fr["from_name"])
+
+                # Check if this component has a route
+                route_row = conn.execute(
+                    "SELECT from_name FROM edges "
+                    "WHERE to_name = ? AND edge_type = 'routes_to' LIMIT 1",
+                    (fr["from_name"],),
+                ).fetchone()
+
+                consumer: dict = {
+                    "component": fr["from_name"],
+                    "type": fr["from_type"],
+                    "service": fr["from_service"],
+                    "file": fr["file"],
+                }
+                if route_row:
+                    consumer["route"] = route_row["from_name"]
+                consumers.append(consumer)
+
+        return {
+            "endpoints": matched_endpoints,
+            "matches": len(matched_endpoints),
+            "consumers": consumers,
+            "handlers": handlers,
+        }
+
     def get_stats(self) -> dict:
         """Return summary statistics of indexed knowledge."""
         conn = self._get_conn()
@@ -503,12 +840,18 @@ class KnowledgeStore:
             "structs": conn.execute("SELECT COUNT(*) FROM struct_definitions").fetchone()[0],
             "flows": conn.execute("SELECT COUNT(*) FROM service_flows").fetchone()[0],
             "code_chunks": conn.execute("SELECT COUNT(*) FROM code_chunks").fetchone()[0],
+            "edges": conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0],
             "services": [
                 r[0] for r in conn.execute(
                     "SELECT DISTINCT service FROM enums UNION "
                     "SELECT DISTINCT service FROM service_flows"
                 ).fetchall()
             ],
+            "edge_types": {
+                r[0]: r[1] for r in conn.execute(
+                    "SELECT edge_type, COUNT(*) FROM edges GROUP BY edge_type ORDER BY COUNT(*) DESC"
+                ).fetchall()
+            },
         }
 
     # ------------------------------------------------------------------

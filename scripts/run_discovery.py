@@ -112,8 +112,8 @@ def _load_json_as_from(path: Path, cls: type) -> list:
 # ---------------------------------------------------------------------------
 
 def cmd_scan_fe(args: types.SimpleNamespace) -> None:
-    repo_path = _resolve(args.repo_path, settings.fe_repo_path, "fe-repo-path")
-    branch = args.branch or settings.fe_branch
+    repo_path = _resolve(args.repo_path, settings.web2_repo_path, "web2-repo-path")
+    branch = args.branch or settings.web2_branch
     logger.info("[Discovery] Starting frontend scan: path=%s  branch=%s", repo_path, branch)
     results = scan_fe_repo(repo_path=repo_path, branch=branch)
     _save_json_to(results, _WEB2_DIR / "fe_api_inventory.json")
@@ -121,8 +121,8 @@ def cmd_scan_fe(args: types.SimpleNamespace) -> None:
 
 
 def cmd_scan_be(args: types.SimpleNamespace) -> None:
-    repo_path = _resolve(args.repo_path, settings.be_repo_path, "be-repo-path")
-    branch = args.branch or settings.be_branch
+    repo_path = _resolve(args.repo_path, settings.order_service_repo_path, "order-service-repo-path")
+    branch = args.branch or settings.order_service_branch
     logger.info("[Discovery] Starting backend scan: path=%s  branch=%s", repo_path, branch)
     results = scan_be_repo(repo_path=repo_path, branch=branch)
     _save_json_to(results, _ORDER_SERVICES_DIR / "be_endpoints.json")
@@ -190,11 +190,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_fe = subparsers.add_parser("scan-fe", help="Scan the frontend repository for API calls.")
     p_fe.add_argument(
         "--repo-path", default="", metavar="PATH",
-        help="Path to the FE repo root. Overrides FE_REPO_PATH env var.",
+        help="Path to the FE repo root. Overrides WEB2_REPO_PATH env var.",
     )
     p_fe.add_argument(
         "--branch", default="", metavar="BRANCH",
-        help="Branch to scan. Overrides FE_BRANCH env var.",
+        help="Branch to scan. Overrides WEB2_BRANCH env var.",
     )
     p_fe.set_defaults(func=cmd_scan_fe)
 
@@ -202,11 +202,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_be = subparsers.add_parser("scan-be", help="Scan the backend repository for API endpoints.")
     p_be.add_argument(
         "--repo-path", default="", metavar="PATH",
-        help="Path to the BE repo root. Overrides BE_REPO_PATH env var.",
+        help="Path to the BE repo root. Overrides ORDER_SERVICE_REPO_PATH env var.",
     )
     p_be.add_argument(
         "--branch", default="", metavar="BRANCH",
-        help="Branch to scan. Overrides BE_BRANCH env var.",
+        help="Branch to scan. Overrides ORDER_SERVICE_BRANCH env var.",
     )
     p_be.set_defaults(func=cmd_scan_be)
 
@@ -221,19 +221,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_all = subparsers.add_parser("scan-all", help="Run scan-fe, scan-be, and map-flows in sequence.")
     p_all.add_argument(
         "--fe-repo-path", dest="fe_repo_path", default="", metavar="PATH",
-        help="Path to the FE repo root. Overrides FE_REPO_PATH env var.",
+        help="Path to the FE repo root. Overrides WEB2_REPO_PATH env var.",
     )
     p_all.add_argument(
         "--be-repo-path", dest="be_repo_path", default="", metavar="PATH",
-        help="Path to the BE repo root. Overrides BE_REPO_PATH env var.",
+        help="Path to the BE repo root. Overrides ORDER_SERVICE_REPO_PATH env var.",
     )
     p_all.add_argument(
         "--fe-branch", dest="fe_branch", default="", metavar="BRANCH",
-        help="FE branch to scan. Overrides FE_BRANCH env var.",
+        help="FE branch to scan. Overrides WEB2_BRANCH env var.",
     )
     p_all.add_argument(
         "--be-branch", dest="be_branch", default="", metavar="BRANCH",
-        help="BE branch to scan. Overrides BE_BRANCH env var.",
+        help="BE branch to scan. Overrides ORDER_SERVICE_BRANCH env var.",
     )
     p_all.set_defaults(func=cmd_scan_all)
 

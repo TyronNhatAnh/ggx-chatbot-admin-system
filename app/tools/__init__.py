@@ -6,11 +6,14 @@ from app.tools.docs_tools import (
 )
 from app.tools.knowledge_tools import (
     explain_status,
+    find_api_consumers,
     get_knowledge_stats,
     get_struct_definition,
     lookup_enum,
     search_codebase,
+    trace_full_stack,
     trace_service_flow,
+    traverse_graph,
 )
 from app.tools.order_tools import (
     check_driver_price,
@@ -51,6 +54,10 @@ ALL_TOOL_FUNCTIONS: list = [
     trace_service_flow,
     get_struct_definition,
     search_codebase,
+    # graph traversal tools — cross-service flow tracing
+    traverse_graph,
+    find_api_consumers,
+    trace_full_stack,
     get_knowledge_stats,
 ]
 

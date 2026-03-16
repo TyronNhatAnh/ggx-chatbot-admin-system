@@ -46,15 +46,31 @@ index-vectors:
 	. $(VENV)/bin/activate && python -m indexer.runner --repo $(BE_REPO) --service $(SERVICE) --vectors
 
 index-order-service:
-	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep BE_REPO_PATH | cut -d= -f2)" --service order-service --vectors
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep ORDER_SERVICE_REPO_PATH | cut -d= -f2)" --service order-service --lang go --vectors
 
 # Full pipeline: index codebase + regenerate docs (endpoints, handler contexts)
 index-order-service-full:
-	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep BE_REPO_PATH | cut -d= -f2)" --service order-service --vectors --docs
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep ORDER_SERVICE_REPO_PATH | cut -d= -f2)" --service order-service --lang go --vectors --docs
 
-# Index any service by name (set SERVICE_NAME and SERVICE_REPO in .env or pass as args)
+# Index any service by name — set SERVICE_REPO, SERVICE_NAME, and optionally LANG
+# Examples:
+#   make index-service SERVICE_REPO=/path/to/repo SERVICE_NAME=admin-service LANG=java
+#   make index-service SERVICE_REPO=/path/to/web2 SERVICE_NAME=web2 LANG=react
 index-service:
-	. $(VENV)/bin/activate && python -m indexer.runner --repo $(SERVICE_REPO) --service $(SERVICE_NAME) --vectors --docs
+	. $(VENV)/bin/activate && python -m indexer.runner --repo $(SERVICE_REPO) --service $(SERVICE_NAME) $(if $(LANG),--lang $(LANG)) --vectors --docs
+
+# Cross-service endpoint linking — matches React API calls to Go handlers
+# Run after indexing both backend and frontend services
+link:
+	. $(VENV)/bin/activate && python -m indexer.linker
+
+# Index all configured services + run linker in one command
+# Reads ORDER_SERVICE_REPO_PATH, WEB2_REPO_PATH, USER_SERVICE_REPO_PATH from .env
+index-all:
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep ORDER_SERVICE_REPO_PATH | cut -d= -f2)" --service order-service --lang go --vectors --docs
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep WEB2_REPO_PATH | cut -d= -f2)" --service web2 --lang react --vectors
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep USER_SERVICE_REPO_PATH | cut -d= -f2)" --service user-service --lang go --vectors --docs
+	. $(VENV)/bin/activate && python -m indexer.linker
 
 explore:
 	. $(VENV)/bin/activate && python scripts/explore_feature.py --interactive

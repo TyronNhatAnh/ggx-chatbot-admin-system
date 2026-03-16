@@ -368,11 +368,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--be-repo", default="", metavar="PATH",
-        help="Path to the BE repo root. Overrides BE_REPO_PATH in .env.",
+        help="Path to the BE repo root. Overrides ORDER_SERVICE_REPO_PATH in .env.",
     )
     parser.add_argument(
         "--fe-repo", default="", metavar="PATH",
-        help="Path to the FE repo root. Overrides FE_REPO_PATH in .env.",
+        help="Path to the FE repo root. Overrides WEB2_REPO_PATH in .env.",
     )
     args = parser.parse_args()
 

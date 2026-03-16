@@ -1,2 +1,2 @@
-# Background codebase indexing pipeline.
-# Extracts enums, service flows, types, and embeddings from Go backend repos.
+# Multi-language codebase indexing pipeline.
+# Supports Go, Java, React/TS, Ruby via pluggable parsers under indexer/parsers/.

@@ -923,8 +923,8 @@ def explore_feature(
 
     Args:
         spec_path:    Path to the feature YAML spec file.
-        be_repo_path: Override for BE repo path (defaults to settings.be_repo_path).
-        fe_repo_path: Override for FE repo path (defaults to settings.fe_repo_path).
+        be_repo_path: Override for BE repo path (defaults to settings.order_service_repo_path).
+        fe_repo_path: Override for FE repo path (defaults to settings.web2_repo_path).
 
     Returns:
         Path to the written requirement.md file.
@@ -940,8 +940,8 @@ def explore_feature(
     _auto_fill_api_scope_from_discovery(feature)
     feature_name: str = feature["name"]
 
-    be_path = be_repo_path or settings.be_repo_path
-    fe_path = fe_repo_path or settings.fe_repo_path
+    be_path = be_repo_path or settings.order_service_repo_path
+    fe_path = fe_repo_path or settings.web2_repo_path
 
     # Output directory for this feature.
     out_dir = Path("docs/features") / feature_name
@@ -955,7 +955,7 @@ def explore_feature(
 
     if not all_files:
         raise ValueError(
-            "No source files collected. Check be_repo_path/fe_repo_path in .env "
+            "No source files collected. Check order_service_repo_path/web2_repo_path in .env "
             "and be_files/fe_files in the feature spec."
         )
 

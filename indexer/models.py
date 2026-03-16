@@ -66,6 +66,25 @@ class ServiceFlow:
 
 
 @dataclass
+class Edge:
+    """A directed relationship between two code entities.
+
+    Enables graph traversal queries like:
+      - "which handlers call orderService.GetOrderByID?"
+      - "React component → API → Go handler" multi-hop traces
+    """
+    from_type: str          # node type: 'function', 'component', 'api_endpoint', ...
+    from_name: str          # qualified name of source node
+    from_service: str       # service the source belongs to
+    edge_type: str          # 'calls', 'defines', 'handles', 'calls_api', ...
+    to_type: str            # node type of target
+    to_name: str            # qualified name of target node
+    to_service: str         # service the target belongs to
+    file: str = ""          # file where the relationship was detected
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass
 class CodeChunk:
     """An indexed code fragment for vector search."""
     qualified_name: str     # e.g. "order-service.OrderHandler.GetOrderDetail"

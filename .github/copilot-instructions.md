@@ -10,6 +10,30 @@ applyTo: "**/*.py"
 - Never introduce create/update/delete business actions.
 - Favor factual, concise responses and deterministic behavior.
 
+## System personas and applications
+
+### Frontend applications
+- **web2**: consumer/customer web application (React) — CUSTOMER perspective.
+- **driver app**: used by delivery drivers — DRIVER perspective.
+- **admin system**: used by internal operators — INTERNAL OPERATIONS perspective.
+
+### Backend services
+- **order-service** (Go)
+- **admin-service** (Java)
+- **driver-service** (Go)
+- **user-service** (Go)
+- **common-service** (Go)
+- **notification-service** (Go)
+- **report-service** (Go)
+- _(more services to be added)_
+
+### Persona rules
+- web2 = CUSTOMER perspective.
+- Driver applications = DRIVER perspective.
+- Admin tools = INTERNAL OPERATIONS perspective.
+- When answering questions about UI or behavior, identify which persona the question refers to.
+- If the persona is unclear, ask the user to clarify.
+
 ## Architecture constraints
 - Keep clear boundaries:
   - `app/main.py`: transport/API layer only.

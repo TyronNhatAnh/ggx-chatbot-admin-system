@@ -1,5 +1,12 @@
 """Seed persona tags onto existing enum values in the knowledge store.
 
+NOTE: This is a ONE-TIME migration script. Run only when rebuilding the
+knowledge store from scratch, or after re-indexing order-service.
+It is NOT part of the automated indexing pipeline.
+
+Usage:
+    PYTHONPATH=. python scripts/seed_persona_tags.py
+
 Persona mapping rules (based on domain knowledge):
 
   "customer" — OrderRequest is the customer-facing order lifecycle:

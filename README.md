@@ -27,8 +27,26 @@ llm/
     ▼
 tools/
   order_tools.py         ← get_order, search_orders, estimate/check-price tools
-  driver_tools.py        ← get_driver, list_active_drivers
-  analytics_tools.py     ← get_order_summary, get_revenue_today
+  docs_tools.py          ← search_endpoints, get_handler_context, feature docs
+  knowledge_tools.py     ← enum lookup, flow trace, struct, graph traversal
+
+  ┌─────────────────────────────────────────────────────┐
+  │  Offline indexing pipeline (not part of /chat)      │
+  │                                                     │
+  │  indexer/                                           │
+  │    runner.py         ← orchestrates 4-pass indexing │
+  │    parsers/go/       ← Go enum/flow/type extractors │
+  │    parsers/react/    ← React component/API parsers  │
+  │    store.py          ← SQLite knowledge store       │
+  │    vector_store.py   ← ChromaDB semantic search     │
+  │    linker.py         ← cross-service endpoint match │
+  │                                                     │
+  │  explorer/                                          │
+  │    be_scanner.py     ← Go endpoint discovery        │
+  │    fe_scanner.py     ← React API call inventory     │
+  │    context_builder.py← handler code context (.md)   │
+  │    flow_mapper.py    ← FE→BE flow matching          │
+  └─────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -205,18 +223,43 @@ tool calls. The system prompt enforces that the AI never modifies data.
 
 ## Available tools
 
+### Order tools (live API)
+
 | Tool | Description |
 |---|---|
-| `get_order(order_id)` | Fetch a single order by ID |
-| `search_orders(status)` | Find all orders with a given status |
-| `estimate_guest_price(payload)` | Estimate new order price for guest flow |
-| `estimate_authenticated_price(payload)` | Estimate new order price for authenticated flow |
+| `get_order_detail(order_id)` | Fetch a single order by ID |
+| `get_orders(status)` | Find orders by status |
+| `get_order_payment_status(order_id)` | Payment status for an order |
+| `get_order_cancel_fee(order_id)` | Cancel fee for an order |
+| `get_order_statistics()` | Order counts grouped by status |
+| `get_coupons()` | List available coupons |
+| `estimate_guest_price(payload)` | Estimate price for guest flow |
+| `estimate_authenticated_price(payload)` | Estimate price for authenticated flow |
 | `check_driver_price(payload)` | Estimate price for a specific driver |
-| `estimate_guest_home_moving_price(payload)` | Estimate guest home-moving order price |
-| `get_driver(driver_id)` | Fetch a single driver by ID |
-| `list_active_drivers()` | List all currently active drivers |
-| `get_order_summary()` | Order counts grouped by status |
-| `get_revenue_today()` | Revenue total from today's delivered orders |
+| `estimate_guest_home_moving_price(payload)` | Estimate guest home-moving price |
+
+### Discovery docs tools
+
+| Tool | Description |
+|---|---|
+| `list_available_docs()` | List discovery doc directories |
+| `search_endpoints(keyword)` | Search BE endpoints by path/handler |
+| `get_handler_context(name)` | Get Go handler source code snippet |
+| `get_feature_requirement(name)` | Get feature requirement docs |
+
+### Knowledge tools (indexed codebase)
+
+| Tool | Description |
+|---|---|
+| `lookup_enum(name)` | Look up enum/const definitions |
+| `explain_status(code)` | Explain a numeric status code across all enums |
+| `trace_service_flow(handler)` | Trace handler → service → repo call chain |
+| `get_struct_definition(name)` | Look up Go struct fields and JSON tags |
+| `search_codebase(query)` | Semantic + full-text code search |
+| `traverse_graph(name, edge_types)` | Multi-hop graph traversal across code entities |
+| `find_api_consumers(endpoint)` | Find React components calling an API endpoint |
+| `trace_full_stack(endpoint)` | Full trace: React page → API → handler → service → repo |
+| `get_knowledge_stats()` | Summary stats of indexed knowledge |
 
 ---
 
@@ -284,6 +327,52 @@ curl -X POST http://localhost:8000/chat \
 
 ---
 
+## Codebase indexer
+
+The indexer extracts structured knowledge from Go and React source repos into
+a SQLite knowledge store + ChromaDB vector index. This powers the knowledge
+tools above.
+
+### Index a service
+
+```bash
+# Go backend
+make index-service SERVICE_REPO=/path/to/order-service SERVICE_NAME=order-service LANG=go
+
+# React frontend
+make index-service SERVICE_REPO=/path/to/web2 SERVICE_NAME=web2 LANG=react
+```
+
+### Cross-service linking
+
+After indexing both FE and BE, run the linker to match React API calls → Go handlers:
+
+```bash
+make link
+```
+
+### Full pipeline (all services + link)
+
+```bash
+make index-all
+```
+
+This reads `ORDER_SERVICE_REPO_PATH`, `WEB2_REPO_PATH`, and `USER_SERVICE_REPO_PATH` from `.env` and runs:
+order-service index → web2 index → user-service index → linker.
+
+### What gets indexed
+
+| Entity | Go | React |
+|---|---|---|
+| Enums / const groups | ✅ | ✅ |
+| Struct / interface definitions | ✅ | ✅ |
+| Handler → service → repo flows | ✅ | Component → API call flows |
+| Graph edges (calls, defines, handles) | ✅ | routes_to, calls_api, dispatches |
+| Cross-service edges (x_calls) | — | Matched by linker |
+| Vector embeddings | ✅ | ✅ |
+
+---
+
 ## Makefile commands
 
 | Command | Description |
@@ -292,4 +381,11 @@ curl -X POST http://localhost:8000/chat \
 | `make run` | Start the server |
 | `make debug` | Start the server with hot-reload |
 | `make docker-run` | Build and run with Docker Compose |
+| `make index-order-service` | Index order-service (reads ORDER_SERVICE_REPO_PATH from .env) |
+| `make index-order-service-full` | Index order-service + regenerate explorer docs |
+| `make index-service` | Index any service: `SERVICE_REPO=... SERVICE_NAME=... LANG=...` |
+| `make link` | Run cross-service endpoint linker |
+| `make index-all` | Index all configured services + link |
+| `make scan-all` | Run system discovery (FE + BE scans + flow mapping) |
+| `make explore` | Interactive feature exploration |
 | `make clean` | Remove the virtualenv |
