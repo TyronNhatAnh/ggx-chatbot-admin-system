@@ -26,6 +26,12 @@ from app.tools.order_tools import (
     get_order_statistics,
     get_orders,
 )
+from app.tools.user_tools import (
+    get_feature_flags,
+    get_my_feature_flags,
+    get_tos_contents,
+    get_withdraw_reasons,
+)
 
 # All tool functions exposed to the AI model.
 # Gemini auto-generates JSON schemas from each function's type hints and docstring.
@@ -42,6 +48,11 @@ ALL_TOOL_FUNCTIONS: list = [
     estimate_authenticated_price,
     check_driver_price,
     estimate_guest_home_moving_price,
+    # user tools — read-only user-service queries
+    get_withdraw_reasons,
+    get_tos_contents,
+    get_feature_flags,
+    get_my_feature_flags,
     # docs tools — two-tier knowledge (endpoint search → handler source code)
     list_available_docs,
     search_endpoints,

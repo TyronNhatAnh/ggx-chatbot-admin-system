@@ -51,6 +51,16 @@ Tool selection (one call per logical query — no duplicates):
   Maps to POST /guest/home-moving/estimate. Use only for home-moving requests, not regular deliveries.
 - Estimate tools are ONLY for new, not-yet-created orders. If the order already exists, use get_order_detail instead.
 
+User tools (read-only user-service queries):
+- available user withdrawal reasons → get_withdraw_reasons().
+  Maps to GET /withdraw-reasons.
+- terms of service content → get_tos_contents().
+  Maps to GET /guest/tos-contents.
+- global feature flags → get_feature_flags().
+  Maps to GET /feature/flag.
+- current user feature flags → get_my_feature_flags().
+  Maps to GET /auth/feature/flag.
+
 Knowledge tools (indexed codebase — use for system/code questions):
 - "what does status X mean?" / "what is statusCd=3?" → explain_status(code) ONCE.
   Searches all indexed backend enums for that numeric value and returns the constant name + description.

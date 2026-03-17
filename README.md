@@ -195,7 +195,7 @@ Gemini:    "Order 12345 is currently in Transit status."
 
 ---
 
-## Available tools (22)
+## Available tools (26)
 
 ### Order tools — live API (10)
 
@@ -211,6 +211,15 @@ Gemini:    "Order 12345 is currently in Transit status."
 | `estimate_authenticated_price(payload)` | Estimate price for authenticated flow |
 | `check_driver_price(payload)` | Estimate price for a specific driver |
 | `estimate_guest_home_moving_price(payload)` | Estimate guest home-moving price |
+
+### User tools — live API (4)
+
+| Tool | Description |
+|---|---|
+| `get_withdraw_reasons()` | Get withdrawal reason list |
+| `get_tos_contents()` | Get guest terms-of-service contents |
+| `get_feature_flags()` | Get global feature flags |
+| `get_my_feature_flags()` | Get feature flags for current authenticated user |
 
 ### Docs tools — indexed endpoint/handler knowledge (3)
 
