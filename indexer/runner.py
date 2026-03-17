@@ -179,7 +179,6 @@ def _build_edges_from_flows(flows, service: str) -> list[Edge]:
 def index_service(repo_path: str, service: str,
                   store: KnowledgeStore | None = None,
                   enable_vectors: bool = False,
-                  rebuild_docs: bool = False,
                   lang: str | None = None) -> dict:
     """Run the full indexing pipeline for a single service.
 
@@ -188,7 +187,6 @@ def index_service(repo_path: str, service: str,
         service: Human-readable service name (e.g. "order-service", "web2").
         store: KnowledgeStore instance (uses singleton if None).
         enable_vectors: Whether to generate vector embeddings (requires extra deps).
-        rebuild_docs: Whether to regenerate discovery docs (endpoints + handler contexts).
         lang: Language key ('go', 'java', 'react', 'ruby').
               Auto-detected from repo contents if omitted.
 
@@ -254,6 +252,11 @@ def index_service(repo_path: str, service: str,
         + _build_code_chunks_from_structs(structs, service)
         + _build_code_chunks_from_flows(flows, service)
     )
+    # GoParser also extracts handler source-code chunks (actual Go bodies)
+    if hasattr(parser, "extract_handler_chunks"):
+        handler_chunks = parser.extract_handler_chunks(repo_path, service)
+        chunks.extend(handler_chunks)
+        logger.info("  → Extracted %d handler source-code chunks", len(handler_chunks))
     chunk_count = store.store_code_chunks(chunks)
     logger.info("  → Stored %d searchable code chunks", chunk_count)
 
@@ -270,11 +273,6 @@ def index_service(repo_path: str, service: str,
         except Exception as e:
             logger.warning("  → Vector indexing failed: %s", e)
 
-    # ----- Optional: Regenerate discovery docs (endpoints + handler contexts) -----
-    docs_count = 0
-    if rebuild_docs and lang != "react":
-        docs_count = _rebuild_discovery_docs(repo_path, service)
-
     elapsed = time.perf_counter() - t0
     summary = {
         "service": service,
@@ -285,7 +283,6 @@ def index_service(repo_path: str, service: str,
         "edges": edge_count,
         "code_chunks": chunk_count,
         "vector_embeddings": vector_count,
-        "handler_contexts": docs_count,
         "elapsed_seconds": round(elapsed, 2),
     }
     logger.info("Indexing complete: %s", json.dumps(summary))
@@ -293,14 +290,12 @@ def index_service(repo_path: str, service: str,
 
 
 def index_all(services: list[dict], enable_vectors: bool = False,
-              rebuild_docs: bool = False,
               link: bool = True) -> list[dict]:
     """Index multiple services sequentially.
 
     Args:
         services: List of dicts with 'repo_path', 'service', and optional 'lang' keys.
         enable_vectors: Whether to generate vector embeddings.
-        rebuild_docs: Whether to regenerate discovery docs.
         link: Whether to run cross-service endpoint linking after indexing.
 
     Returns:
@@ -312,7 +307,6 @@ def index_all(services: list[dict], enable_vectors: bool = False,
             repo_path=svc["repo_path"],
             service=svc["service"],
             enable_vectors=enable_vectors,
-            rebuild_docs=rebuild_docs,
             lang=svc.get("lang"),
         )
         results.append(result)
@@ -328,61 +322,6 @@ def index_all(services: list[dict], enable_vectors: bool = False,
             logger.warning("Cross-service linking failed: %s", e)
 
     return results
-
-
-# ---------------------------------------------------------------------------
-# Discovery docs regeneration (Phase 4 — multi-service docs update)
-# ---------------------------------------------------------------------------
-
-# Service name → discovery output directory name
-_SERVICE_DISCOVERY_MAP: dict[str, str] = {
-    "order-service": "order-services",
-}
-
-
-def _rebuild_discovery_docs(repo_path: str, service: str) -> int:
-    """Regenerate BE endpoint index + handler context docs for a service.
-
-    This is equivalent to running `scripts/run_discovery.py scan-be` but
-    integrated into the indexing pipeline — so docs always stay in sync.
-
-    Returns:
-        Number of handler context files written.
-    """
-    try:
-        from explorer.be_scanner import scan_be_repo
-        from explorer.context_builder import build_code_context
-    except ImportError as e:
-        logger.warning("  → Docs rebuild skipped (explorer not available): %s", e)
-        return 0
-
-    # Determine the discovery output directory for this service
-    discovery_dir_name = _SERVICE_DISCOVERY_MAP.get(service, service)
-    project_root = Path(__file__).parents[1]
-    discovery_dir = project_root / "docs" / "discovery" / discovery_dir_name
-    discovery_dir.mkdir(parents=True, exist_ok=True)
-
-    logger.info("Rebuilding docs for %s → %s", service, discovery_dir)
-
-    # 1. Scan BE endpoints
-    endpoints = scan_be_repo(repo_path=repo_path)
-    endpoints_file = discovery_dir / "be_endpoints.json"
-
-    import dataclasses
-    with endpoints_file.open("w", encoding="utf-8") as f:
-        json.dump([dataclasses.asdict(ep) for ep in endpoints], f, indent=2, ensure_ascii=False)
-    logger.info("  → Wrote %d endpoints to %s", len(endpoints), endpoints_file.name)
-
-    # 2. Build handler code contexts
-    context_dir = discovery_dir / "code_context"
-    context_dir.mkdir(parents=True, exist_ok=True)
-    written = build_code_context(
-        be_repo_path=repo_path,
-        index_path=str(endpoints_file),
-        output_dir=str(context_dir),
-    )
-    logger.info("  → Wrote %d handler context files", len(written))
-    return len(written)
 
 
 def main() -> None:
@@ -407,10 +346,6 @@ def main() -> None:
         help="Enable vector embedding generation (requires chromadb + sentence-transformers).",
     )
     parser.add_argument(
-        "--docs", action="store_true",
-        help="Regenerate discovery docs (BE endpoints + handler contexts).",
-    )
-    parser.add_argument(
         "--link", action="store_true",
         help="Run cross-service endpoint linking after indexing.",
     )
@@ -424,7 +359,6 @@ def main() -> None:
         repo_path=args.repo,
         service=args.service,
         enable_vectors=args.vectors,
-        rebuild_docs=args.docs,
         lang=args.lang,
     )
 

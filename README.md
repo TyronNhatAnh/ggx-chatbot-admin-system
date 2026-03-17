@@ -5,6 +5,10 @@ Google Gemini. Operators can ask questions about orders, drivers, and system
 analytics in plain English. The AI fetches real data through internal tools
 and returns factual answers.
 
+The system combines two knowledge sources:
+1. **Live API calls** — real-time order/pricing data from backend services.
+2. **Indexed codebase knowledge** — offline-extracted enums, structs, handler source code, API routes, and call graphs from Go and React repos.
+
 ---
 
 ## Architecture
@@ -27,7 +31,7 @@ llm/
     ▼
 tools/
   order_tools.py         ← get_order, search_orders, estimate/check-price tools
-  docs_tools.py          ← search_endpoints, get_handler_context, feature docs
+  docs_tools.py          ← search_endpoints, get_handler_context
   knowledge_tools.py     ← enum lookup, flow trace, struct, graph traversal
 
   ┌─────────────────────────────────────────────────────┐
@@ -35,17 +39,11 @@ tools/
   │                                                     │
   │  indexer/                                           │
   │    runner.py         ← orchestrates 4-pass indexing │
-  │    parsers/go/       ← Go enum/flow/type extractors │
+  │    parsers/go/       ← Go enum/flow/type/route ext  │
   │    parsers/react/    ← React component/API parsers  │
   │    store.py          ← SQLite knowledge store       │
   │    vector_store.py   ← ChromaDB semantic search     │
   │    linker.py         ← cross-service endpoint match │
-  │                                                     │
-  │  explorer/                                          │
-  │    be_scanner.py     ← Go endpoint discovery        │
-  │    fe_scanner.py     ← React API call inventory     │
-  │    context_builder.py← handler code context (.md)   │
-  │    flow_mapper.py    ← FE→BE flow matching          │
   └─────────────────────────────────────────────────────┘
 ```
 
@@ -66,28 +64,22 @@ cd ai-admin-assistant
 cp .env.example .env
 ```
 
-Open `.env` and set your Gemini API key:
+Open `.env` and set your Gemini API key + chat secret:
 
 ```
 GEMINI_API_KEY=your-gemini-api-key-here
 CHAT_API_KEY=replace-with-strong-random-secret
 ```
 
-`/chat` is protected by API key auth and request rate limiting by default.
-You can tune guardrails with:
+For indexing, also set repo paths:
 
 ```
-CHAT_AUTH_ENABLED=true
-CHAT_RATE_LIMIT_ENABLED=true
-CHAT_RATE_LIMIT_REQUESTS=30
-CHAT_RATE_LIMIT_WINDOW_SECONDS=60
-CHAT_ORDER_CACHE_TTL_SECONDS=60
+ORDER_SERVICE_REPO_PATH=/path/to/ggx-kr-order-service
+USER_SERVICE_REPO_PATH=/path/to/ggx-kr-user-service
+WEB2_REPO_PATH=/path/to/ggx-kr-consumer-web
 ```
 
-`/chat` also supports request correlation ID via `X-Request-ID`.
-If provided, the same value is echoed back in the response header and appears in logs.
-
-Get a free key at <https://aistudio.google.com/app/apikey>.
+Get a free Gemini key at <https://aistudio.google.com/app/apikey>.
 
 **3. Install dependencies**
 
@@ -95,135 +87,117 @@ Get a free key at <https://aistudio.google.com/app/apikey>.
 make install
 ```
 
-## Discovery And Feature Exploration
-
-This repository has two different analysis workflows. They solve different jobs:
-
-1. System discovery (broad inventory and mapping)
-
-- Script: scripts/run_discovery.py
-- Output:
-  - docs/discovery/web2/fe_api_inventory.json
-  - docs/discovery/order-services/be_endpoints.json
-  - docs/discovery/order-services/code_context/*.context.md
-  - docs/discovery/flow_mappings.json
-- Use this when:
-  - onboarding a new FE/BE repo
-  - APIs changed a lot and baseline mapping is stale
-  - you need broad FE -> BE coverage before choosing features
-
-2. Feature exploration (deep requirement/spec for one feature)
-
-- Script: scripts/explore_feature.py
-- Input: explorer/feature_specs/<feature>.yaml
-- Output: docs/features/<feature>/index.json and requirement.md
-- Use this when:
-  - you already know the feature scope
-  - you need detailed use cases, endpoint contracts, and business rules
-
-Current recommended path:
-
-1. Run run_discovery only when baseline mapping is missing or outdated.
-2. For day-to-day feature analysis, run explore_feature only.
-
-### Strict Evidence Policy (Default)
-
-Feature exploration enforces strict evidence only:
-
-- No inference or assumptions in generated requirement/spec output.
-- Every use case and endpoint must include evidence refs to matched source files.
-- Missing evidence must be labeled as UNKNOWN/evidence_gap.
-- Invalid output is rejected and written to error artifacts, not to final docs.
-
-Run feature exploration:
-
-```bash
-. .venv/bin/activate
-python scripts/explore_feature.py --spec explorer/feature_specs/check_price.yaml
-```
-
-Simplest workflows:
-
-```bash
-# 1) Interactive menu: choose existing spec or describe new feature
-python scripts/explore_feature.py --interactive
-
-# 2) One-line feature text: auto-create spec and run
-python scripts/explore_feature.py --feature "check price for guest and home moving"
-
-# 3) One-shot full auto (recommended for minimal manual steps):
-#    - runs discovery scan-all
-#    - auto-builds and Gemini-enriches feature spec
-#    - runs explore and writes docs/features/<feature>/...
-python scripts/explore_feature.py --full-auto --feature "login base"
-```
-
-Use template for new features:
-
-- Spec template: explorer/feature_specs/_template.yaml
-- Authoring guide: docs/features/README.md
-
 ---
 
 ## Running the server
 
-**Production mode**
-
 ```bash
-make run
+make run          # Production mode
+make debug        # Development mode (auto-reload)
+make docker-run   # Docker
 ```
 
-**Development mode** (auto-reload on file save)
+The server starts on `http://localhost:8000`. Swagger docs: `http://localhost:8000/docs`
 
-```bash
-make debug
+---
+
+## Codebase indexer
+
+The indexer is the offline pipeline that reads Go and React source repos and extracts structured knowledge into a SQLite store + ChromaDB vector index. This knowledge powers the AI's ability to answer code/architecture questions at runtime.
+
+### What gets extracted
+
+| Entity | Go | React |
+|---|---|---|
+| Enums / const groups | ✅ | ✅ |
+| Struct / interface definitions | ✅ | ✅ |
+| Handler → service → repo flows | ✅ | Component → API call flows |
+| HTTP routes (Gin router parsing) | ✅ | — |
+| Handler source code (CodeChunks) | ✅ | — |
+| Graph edges (calls, defines, handles) | ✅ | routes_to, calls_api, dispatches |
+| Cross-service edges (x_calls) | — | Matched by linker |
+| Vector embeddings (semantic search) | ✅ | ✅ |
+
+### Index a new Go service (e.g. user-service)
+
+**Step 1.** Add the repo path to `.env`:
+
+```
+USER_SERVICE_REPO_PATH=/path/to/ggx-kr-user-service
 ```
 
-**Docker**
+**Step 2.** Run the indexer:
 
 ```bash
-make docker-run
+make index-user-service
 ```
 
-The server starts on `http://localhost:8000`.
+Or use the generic command for any service:
 
-Interactive Swagger docs: `http://localhost:8000/docs`
+```bash
+make index-service SERVICE_REPO=/path/to/repo SERVICE_NAME=my-service LANG=go
+```
+
+**Step 3.** Run the linker (matches React API calls → Go handlers across services):
+
+```bash
+make link
+```
+
+**Step 4.** (Optional) Seed persona tags after indexing order-service:
+
+```bash
+make seed-personas
+```
+
+### Full pipeline (all services + link)
+
+```bash
+make index-all
+```
+
+Reads `ORDER_SERVICE_REPO_PATH`, `WEB2_REPO_PATH`, `USER_SERVICE_REPO_PATH` from `.env` and runs:
+order-service → web2 → user-service → linker.
+
+### Adding a new pre-configured service shortcut
+
+To add a new Makefile shortcut (e.g. `make index-driver-service`):
+
+1. Add `DRIVER_SERVICE_REPO_PATH=/path/to/repo` to `.env` and `.env.example`
+2. Add to Makefile:
+   ```makefile
+   index-driver-service:
+   	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep DRIVER_SERVICE_REPO_PATH | cut -d= -f2)" --service driver-service --lang go --vectors
+   ```
+3. Add to `index-all` target if you want it included in the full pipeline.
 
 ---
 
 ## How tool calling works
 
-The AI **never guesses** data. Instead, Gemini is given a set of Python
-functions as "tools". When the user asks a question that requires data, Gemini
-decides which tool to call and with what arguments. The orchestrator executes
-the function locally and sends the result back to Gemini, which then produces
-the final response.
+The AI **never guesses** data. Gemini is given Python functions as "tools".
+When the user asks a question requiring data, Gemini calls the appropriate tool,
+the orchestrator executes it locally, and sends the result back to Gemini for
+the final answer.
 
 ```
-User:      "What is the status of order ORD-002?"
+User:      "What is the status of order 12345?"
     │
     ▼
-Gemini:    [tool call] get_order(order_id="ORD-002")
+Gemini:    [tool call] get_order_detail(order_id="12345")
     │
     ▼
-Orchestrator executes: get_order("ORD-002")
-    │  returns: {"id": "ORD-002", "status": "pending", ...}
+Orchestrator executes → returns order data
     │
     ▼
-Gemini:    "Order ORD-002 is currently pending."
-    │
-    ▼
-User:      receives final answer
+Gemini:    "Order 12345 is currently in Transit status."
 ```
-
-This loop repeats until Gemini produces a plain-text answer with no further
-tool calls. The system prompt enforces that the AI never modifies data.
 
 ---
 
-## Available tools
+## Available tools (22)
 
-### Order tools (live API)
+### Order tools — live API (10)
 
 | Tool | Description |
 |---|---|
@@ -238,16 +212,15 @@ tool calls. The system prompt enforces that the AI never modifies data.
 | `check_driver_price(payload)` | Estimate price for a specific driver |
 | `estimate_guest_home_moving_price(payload)` | Estimate guest home-moving price |
 
-### Discovery docs tools
+### Docs tools — indexed endpoint/handler knowledge (3)
 
 | Tool | Description |
 |---|---|
-| `list_available_docs()` | List discovery doc directories |
-| `search_endpoints(keyword)` | Search BE endpoints by path/handler |
-| `get_handler_context(name)` | Get Go handler source code snippet |
-| `get_feature_requirement(name)` | Get feature requirement docs |
+| `list_available_docs()` | List available handlers, endpoints, indexed services |
+| `search_endpoints(keyword)` | Search BE endpoints by path/handler name |
+| `get_handler_context(name)` | Get Go handler source code + endpoint + service calls |
 
-### Knowledge tools (indexed codebase)
+### Knowledge tools — indexed codebase (9)
 
 | Tool | Description |
 |---|---|
@@ -265,111 +238,25 @@ tool calls. The system prompt enforces that the AI never modifies data.
 
 ## Example API requests
 
-**Query an order**
-
 ```bash
+# Query an order
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -H "X-API-Key: replace-with-strong-random-secret" \
-  -H "X-Request-ID: req-demo-001" \
-  -d '{"message": "What is the status of order ORD-002?"}'
-```
+  -d '{"message": "What is the status of order 12345?"}'
 
-### Structured metrics in logs
-
-For each `/chat` request, orchestrator emits one structured metrics log event containing:
-
-- `gemini` latency (seconds)
-- `tools` latency (seconds)
-- `total` latency (seconds)
-- `tool_call_count` and `tool_unique_count`
-- fallback reason and cumulative fallback counters
-
-```json
-{
-  "reply": "Order ORD-002 is currently pending. It is for Wireless Headphones ordered by Bob Tan, totalling $199.99.",
-  "tools_called": ["get_order"],
-  "conversation_id": "0f1f10df-77c5-498b-90be-7eb58f49fe17"
-}
-```
-
-### Conversation continuity
-
-You can send `conversation_id` in follow-up `/chat` requests to keep short context
-across turns.
-
-Example:
-
-```bash
+# Ask about code
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -H "X-API-Key: replace-with-strong-random-secret" \
-  -d '{"message":"What about its driver fee?","conversation_id":"0f1f10df-77c5-498b-90be-7eb58f49fe17"}'
-```
+  -d '{"message": "How does the EstimateGuest handler work?"}'
 
-**Find delayed orders**
-
-```bash
+# Follow-up with conversation continuity
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -H "X-API-Key: replace-with-strong-random-secret" \
-  -d '{"message": "Are there any delayed orders?"}'
+  -d '{"message":"What about its cancel fee?","conversation_id":"<id-from-previous-response>"}'
 ```
-
-**Get a driver**
-
-```bash
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: replace-with-strong-random-secret" \
-  -d '{"message": "Tell me about driver DRV-001"}'
-```
-
----
-
-## Codebase indexer
-
-The indexer extracts structured knowledge from Go and React source repos into
-a SQLite knowledge store + ChromaDB vector index. This powers the knowledge
-tools above.
-
-### Index a service
-
-```bash
-# Go backend
-make index-service SERVICE_REPO=/path/to/order-service SERVICE_NAME=order-service LANG=go
-
-# React frontend
-make index-service SERVICE_REPO=/path/to/web2 SERVICE_NAME=web2 LANG=react
-```
-
-### Cross-service linking
-
-After indexing both FE and BE, run the linker to match React API calls → Go handlers:
-
-```bash
-make link
-```
-
-### Full pipeline (all services + link)
-
-```bash
-make index-all
-```
-
-This reads `ORDER_SERVICE_REPO_PATH`, `WEB2_REPO_PATH`, and `USER_SERVICE_REPO_PATH` from `.env` and runs:
-order-service index → web2 index → user-service index → linker.
-
-### What gets indexed
-
-| Entity | Go | React |
-|---|---|---|
-| Enums / const groups | ✅ | ✅ |
-| Struct / interface definitions | ✅ | ✅ |
-| Handler → service → repo flows | ✅ | Component → API call flows |
-| Graph edges (calls, defines, handles) | ✅ | routes_to, calls_api, dispatches |
-| Cross-service edges (x_calls) | — | Matched by linker |
-| Vector embeddings | ✅ | ✅ |
 
 ---
 
@@ -381,11 +268,11 @@ order-service index → web2 index → user-service index → linker.
 | `make run` | Start the server |
 | `make debug` | Start the server with hot-reload |
 | `make docker-run` | Build and run with Docker Compose |
-| `make index-order-service` | Index order-service (reads ORDER_SERVICE_REPO_PATH from .env) |
-| `make index-order-service-full` | Index order-service + regenerate explorer docs |
+| `make index-order-service` | Index order-service |
+| `make index-user-service` | Index user-service |
+| `make index-web2` | Index web2 (React frontend) |
 | `make index-service` | Index any service: `SERVICE_REPO=... SERVICE_NAME=... LANG=...` |
 | `make link` | Run cross-service endpoint linker |
 | `make index-all` | Index all configured services + link |
-| `make scan-all` | Run system discovery (FE + BE scans + flow mapping) |
-| `make explore` | Interactive feature exploration |
+| `make seed-personas` | Seed persona tags on enums (after order-service index) |
 | `make clean` | Remove the virtualenv |

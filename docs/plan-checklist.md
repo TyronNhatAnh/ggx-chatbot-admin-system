@@ -1,26 +1,17 @@
 # AI Admin Assistant Plan Checklist
 
 ## Goal
-Build a production-ready read-only logistics AI assistant by using a staged discovery and implementation plan:
-1. Analyze key functions first (started from check-price flow).
-2. Scan full Web2 FE + BE and map API usage.
-3. Consolidate business logic and requirements into docs.
-4. Expand tool layer and assistant coverage for full logistics operations.
+Build a production-ready read-only logistics AI assistant with:
+1. Indexed codebase knowledge (Go + React repos) for deep system understanding.
+2. Live API integration for real-time order/pricing queries.
+3. Multi-service coverage across the full logistics platform.
 
-## Strategy Decision (Current)
-- Primary track: optimize one FE/BE pair first (`web2` + `order`) for speed, quality, and deterministic output.
-- Expansion track: add multi-repo support immediately after single-pair quality gate passes.
-- Why this order:
-  - lower implementation risk and easier debugging
-  - faster feedback loop for prompt/spec/discovery quality
-  - avoids over-generalizing before baseline contracts are stable
+## Strategy
+- Single offline indexing pipeline (`indexer/`) extracts all structured knowledge.
+- Docs tools query the indexed knowledge store (no separate discovery/explorer step).
+- Live tools query real backend APIs (order-service, user-service) at runtime.
 
-## Scope Baseline
-- Source A: AI Admin Assistant (this repo)
-- Source B: Web2 FE + BE systems (legacy/current production flows)
-- Domain target: End-to-end logistics operations (order lifecycle, driver, pricing, payment, reports)
-
-## Phase 0 - Current State Check
+## Phase 0 - Foundation (DONE)
 - [x] FastAPI service with `/chat` and `/health`
 - [x] Gemini function-calling orchestrator integrated
 - [x] Loop safety guard (`MAX_TOOL_LOOPS`) and duplicate-call prevention
@@ -30,114 +21,54 @@ Build a production-ready read-only logistics AI assistant by using a staged disc
 - [x] Quota error mapping to HTTP 429
 - [x] Basic `/chat` API integration tests (pricing paths + quota mapping + auth/rate-limit checks)
 - [x] Chat endpoint auth and rate limiting
-- [ ] Expand test suite depth (orchestrator loop controls, schema consistency, context lifecycle)
+- [x] Request correlation ID propagation
 
-## Phase 1 - Discovery Foundation (Started)
-- [x] Initial function-first analysis approach established (check-price style flow)
-- [x] Created service-level discovery notes in docs
-- [x] Define one canonical template for every discovered API (endpoint, caller, payload, business rule, dependencies)
-- [x] Define naming standard for docs output files
-- [x] Add feature exploration template (`explorer/feature_specs/_template.yaml`)
-- [x] Add feature exploration guide (`docs/features/README.md`)
-- [x] Enforce strict evidence-only generation for feature requirement/spec outputs
+## Phase 1 - Codebase Indexer (DONE)
+- [x] 4-pass Go parser: enums → types → flows → graph edges
+- [x] React parser: components, API calls, routes, types
+- [x] Go route extraction (Gin router patterns → handler-endpoint mapping)
+- [x] Handler source code storage as indexed CodeChunks
+- [x] SQLite knowledge store with FTS5 + graph edges
+- [x] ChromaDB vector embeddings for semantic search
+- [x] Cross-service linker (React API calls → Go handlers)
+- [x] Docs tools rewritten to query indexer store (no file-based discovery)
+- [x] Explorer module removed — indexer covers all functionality
+- [x] Indexed: order-service (104 enums, 531 structs, 182 flows, 999 chunks)
+- [x] Indexed: web2 (30 enums, 217 types, 85 flows)
 
-## Phase 1A - Single Pair Hardening (Now)
-- Scope: only one FE + one BE repo (`web2` + `order`)
-- [ ] Freeze canonical golden feature specs for top journeys in this pair (check_price, tracking, cancel)
-- [ ] Tighten `be_files` / `fe_files` globs to minimize noise and token volume
-- [ ] Validate evidence quality: no UNKNOWN on in-scope handlers unless true code gap
-- [ ] Baseline latency and output size for repeated explore runs
-- [ ] Finalize docs output contract and cleanup behavior for error artifacts
+## Phase 2 - Multi-Service Expansion
+- [x] user-service indexing support (Go)
+- [ ] Index admin-service (Java Spring — needs Java parser)
+- [ ] Index driver-service, common-service, notification-service (Go)
+- [ ] Index DA/CA mobile apps if applicable
+- [ ] Expand cross-service links with more backend services
 
-Exit criteria:
-- [ ] 3 priority features generate stable docs twice in a row with no manual fixes
-- [ ] Discovery outputs are reproducible for same commit and same spec
-- [ ] Team agrees output readability is sufficient for business review
+## Phase 3 - Tool Coverage Expansion
+- [ ] Replace mock driver tools with real read-only providers
+- [ ] Add analytics/reporting tools backed by real data
+- [ ] Group tools by domain: order, driver, pricing, payment, report
+- [ ] For each new tool: define response contract, pagination, error contract, latency budget
 
-## Phase 1B - Multi-Repo Foundation (Next)
-- Target services to onboard:
-  - admin (java spring)
-  - user / driver / common / notification (golang)
-  - ruby integration services (2)
-  - DA / CA apps (2)
-- [ ] Add multi-repo config support (list of FE repos, list of BE repos)
-- [ ] Add namespaced discovery outputs per repo (avoid overwrite collisions)
-- [ ] Extend flow mapping to include source repo identifiers
-- [ ] Add merge step for cross-repo endpoint inventory and flow mappings
-- [ ] Update feature spec format to optionally include repo namespace per file glob
+## Phase 4 - Reliability and Performance Hardening
+- [x] Auth guard for `/chat` (API key)
+- [x] Rate limiting (configurable via .env)
+- [x] Request correlation ID in logs
+- [x] Structured metrics (model/tool/total latency, tool counts)
+- [ ] Timeout and retry policy guardrails for external calls
+- [ ] Expand orchestrator regression tests (duplicate calls, max-loop, unknown tool)
+- [ ] Alerting thresholds for latency and error rates
 
-Exit criteria:
-- [ ] At least 3 BE services + 2 FE apps scanned in one orchestrated run
-- [ ] No artifact overwrite across repos
-- [ ] Cross-service feature can cite evidence from multiple repos in one requirement
-
-## Phase 2 - Web2 FE Scan Checklist
-- [ ] Inventory all FE modules/pages related to logistics domain
-- [ ] Extract every API call used by FE (method + URL + params + body)
-- [ ] Map API call to feature/user action
-- [ ] Mark critical journeys:
-  - [ ] Create/estimate/check-price
-  - [ ] Order tracking/status
-  - [ ] Driver assignment/visibility
-  - [ ] Payment/coupon/tip
-  - [ ] Report/export
-- [ ] Capture FE-side validation rules and conditional flows
-
-## Phase 3 - Web2 BE Scan Checklist
-- [ ] Inventory service boundaries and major domains (order, user, payment, driver, reporting)
-- [ ] Map endpoint -> handler -> service -> persistence/integration chain
-- [ ] Capture business constraints per endpoint
-- [ ] Capture status transitions and state machine rules
-- [ ] Capture external dependencies and failure handling
-- [ ] Mark read-only safe endpoints for assistant tools
-
-## Phase 4 - FE-BE Mapping Docs (Core Deliverable)
-- [ ] Build FE action -> BE API -> business logic mapping table
-- [ ] Link every flow to source files and docs references
-- [ ] Identify missing or inconsistent requirements
-- [ ] Identify duplicated APIs and overlapping semantics
-- [ ] Produce domain glossary (status codes, enums, key entities)
-
-## Phase 5 - Tool Design and Expansion
-- [ ] Keep current small query tools as reusable building blocks
-- [ ] Group tools by domain:
-  - [ ] order tools
-  - [ ] driver tools
-  - [ ] pricing tools
-  - [ ] payment/report tools
-- [ ] Add only read-only tools needed by mapped user journeys
-- [ ] For each new tool, define:
-  - [ ] minimal response contract
-  - [ ] pagination/limit strategy
-  - [ ] error contract
-  - [ ] latency budget target
-
-## Phase 6 - Reliability and Performance Hardening
-- [x] Add API auth for `/chat`
-- [x] Add rate limit and abuse guard
-- [x] Add request correlation ID and include it in all `/chat` + tool logs
-- [ ] Add timeout and retry policy guardrails for external calls used by tools
-- [x] Add structured metrics:
-  - [x] model round-trip time
-  - [x] tool execution time
-  - [x] total request latency
-  - [x] tool-call count per request
-- [ ] Add alerting thresholds for latency and error rates
-- [ ] Add regression tests for prompt/tool routing behavior
-- [x] Add regression tests for duplicate-call suppression and max-loop fallback message
-
-## Phase 7 - Product Readiness Gate
-- [ ] Requirements and business logic docs complete for target scope
-- [ ] Tool coverage mapped to priority logistics queries
-- [ ] No critical mock dependency in production path
-- [ ] SLO target defined and measured (p50/p95 latency)
+## Phase 5 - Production Readiness
+- [ ] Move conversation store to shared backing store (Redis/DB)
+- [ ] Add observability dashboard (metrics, traces)
 - [ ] Security review complete (secrets, authz, logging hygiene)
-- [ ] Rollout checklist complete (staging test + monitoring + fallback)
+- [ ] SLO target defined and measured (p50/p95 latency)
+- [ ] Staging test + monitoring + fallback rollout plan
+- [ ] No mock dependencies in production path
 
-## Immediate Next Actions (Recommended)
-- [ ] Finish Phase 1A first: top 3 features in single pair and stabilize outputs
-- [ ] Draft multi-repo config schema and artifact naming convention before coding
-- [ ] Implement Phase 1B in small increments (config -> scan -> map -> explore)
-- [ ] Replace mock analytics with real read-only aggregation source
-- [x] Add minimal auth + rate limit for `/chat`
-- [ ] Use `docs/chat-api-deep-audit.md` as the source-of-truth backlog for `/chat` hardening tasks
+## Immediate Next Actions
+- [ ] Index remaining Go services (driver, common, notification)
+- [ ] Investigate Java parser for admin-service
+- [ ] Replace mock driver/analytics tools
+- [ ] Expand test suite depth (orchestrator loop controls, schema consistency)
+- [ ] Use `docs/chat-api-deep-audit.md` as the backlog for `/chat` hardening tasks

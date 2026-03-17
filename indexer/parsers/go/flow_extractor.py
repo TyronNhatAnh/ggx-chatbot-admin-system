@@ -18,7 +18,7 @@ import logging
 import re
 from pathlib import Path
 
-from indexer.models import ServiceCall, ServiceFlow
+from indexer.models import CodeChunk, ServiceCall, ServiceFlow
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,9 @@ _REPO_SUFFIXES = ("Repo", "Repository", "Store", "DAO", "Cache")
 _IGNORE_DIRS = frozenset({
     ".git", "vendor", "testdata", "test", "mocks", "__pycache__",
 })
+
+# Truncate handler bodies beyond this many lines in code chunks.
+_MAX_HANDLER_BODY_LINES = 120
 
 
 def _classify_dependency(dep_name: str) -> str:
@@ -138,8 +141,15 @@ def _extract_calls_from_body(body: str, receiver_var: str,
 
 
 def extract_flows_from_file(file_path: Path, repo_root: Path,
-                            service: str) -> list[ServiceFlow]:
-    """Extract all service flows from a single Go file."""
+                            service: str,
+                            endpoint_map: dict[str, str] | None = None,
+                            ) -> list[ServiceFlow]:
+    """Extract all service flows from a single Go file.
+
+    Args:
+        endpoint_map: Optional handler_func → endpoint string map
+                      (from route_extractor) to populate flow.endpoint.
+    """
     try:
         content = file_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -165,9 +175,14 @@ def extract_flows_from_file(file_path: Path, repo_root: Path,
             body, receiver_var, rel_path
         )
 
+        endpoint = ""
+        if endpoint_map:
+            endpoint = endpoint_map.get(method_name, "")
+
         flows.append(ServiceFlow(
             handler_name=method_name,
             handler_file=rel_path,
+            endpoint=endpoint,
             service_calls=svc_calls,
             repository_calls=repo_calls,
             service=service,
@@ -176,8 +191,77 @@ def extract_flows_from_file(file_path: Path, repo_root: Path,
     return flows
 
 
+def _truncate_body(body: str) -> tuple[str, bool]:
+    """Limit handler body to _MAX_HANDLER_BODY_LINES lines."""
+    lines = body.splitlines()
+    if len(lines) <= _MAX_HANDLER_BODY_LINES:
+        return body, False
+    return "\n".join(lines[:_MAX_HANDLER_BODY_LINES]) + "\n// ... (truncated)", True
+
+
+def extract_handler_chunks_from_file(
+    file_path: Path, repo_root: Path, service: str,
+    endpoint_map: dict[str, str] | None = None,
+) -> list[CodeChunk]:
+    """Extract handler source-code chunks for each *Handler method.
+
+    These chunks store the actual Go handler body so that docs_tools can
+    serve handler context without explorer's code_context/ files.
+    """
+    try:
+        content = file_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    rel_path = str(file_path.relative_to(repo_root))
+    chunks: list[CodeChunk] = []
+
+    for m in _FUNC_DEF_RE.finditer(content):
+        receiver_var = m.group(1)
+        receiver_type = m.group(2)
+        method_name = m.group(3)
+
+        if not receiver_type.endswith("Handler"):
+            continue
+
+        body, start_line, end_line = _extract_function_body(content, m.start())
+        if not body:
+            continue
+
+        truncated_body, was_truncated = _truncate_body(body)
+        svc_calls, repo_calls = _extract_calls_from_body(body, receiver_var, rel_path)
+
+        # Build service_calls list for metadata
+        calls_list = [f"{c.receiver}.{c.method}()" for c in svc_calls]
+        calls_list += [f"{c.receiver}.{c.method}()" for c in repo_calls]
+
+        endpoint = ""
+        if endpoint_map:
+            endpoint = endpoint_map.get(method_name, "")
+
+        chunks.append(CodeChunk(
+            qualified_name=f"{service}.{receiver_type}.{method_name}",
+            content=truncated_body,
+            chunk_type="handler",
+            file=rel_path,
+            service=service,
+            start_line=start_line,
+            end_line=end_line,
+            metadata={
+                "receiver_type": receiver_type,
+                "endpoint": endpoint,
+                "service_calls": calls_list,
+                "truncated": was_truncated,
+            },
+        ))
+
+    return chunks
+
+
 def extract_flows_from_repo(repo_path: str, service: str) -> list[ServiceFlow]:
     """Walk a Go repository and extract all handler service flows.
+
+    Also resolves Gin route definitions so each flow gets its endpoint populated.
 
     Args:
         repo_path: Path to the Go repository root.
@@ -186,7 +270,11 @@ def extract_flows_from_repo(repo_path: str, service: str) -> list[ServiceFlow]:
     Returns:
         List of ServiceFlow, one per handler function found.
     """
+    from indexer.parsers.go.route_extractor import extract_routes_from_repo
+
     root = Path(repo_path).resolve()
+    endpoint_map = extract_routes_from_repo(repo_path)
+
     all_flows: list[ServiceFlow] = []
 
     for go_file in root.rglob("*.go"):
@@ -194,7 +282,7 @@ def extract_flows_from_repo(repo_path: str, service: str) -> list[ServiceFlow]:
             continue
         if go_file.name.endswith("_test.go"):
             continue
-        file_flows = extract_flows_from_file(go_file, root, service)
+        file_flows = extract_flows_from_file(go_file, root, service, endpoint_map)
         all_flows.extend(file_flows)
 
     logger.info(
@@ -202,3 +290,31 @@ def extract_flows_from_repo(repo_path: str, service: str) -> list[ServiceFlow]:
         len(all_flows), service,
     )
     return all_flows
+
+
+def extract_handler_chunks_from_repo(repo_path: str, service: str) -> list[CodeChunk]:
+    """Walk a Go repository and extract handler source-code chunks.
+
+    Returns CodeChunk objects with chunk_type='handler' containing the
+    actual Go source code of each handler method.
+    """
+    from indexer.parsers.go.route_extractor import extract_routes_from_repo
+
+    root = Path(repo_path).resolve()
+    endpoint_map = extract_routes_from_repo(repo_path)
+
+    all_chunks: list[CodeChunk] = []
+
+    for go_file in root.rglob("*.go"):
+        if any(part in _IGNORE_DIRS for part in go_file.parts):
+            continue
+        if go_file.name.endswith("_test.go"):
+            continue
+        chunks = extract_handler_chunks_from_file(go_file, root, service, endpoint_map)
+        all_chunks.extend(chunks)
+
+    logger.info(
+        "[FlowExtractor] Extracted %d handler code chunks for %s",
+        len(all_chunks), service,
+    )
+    return all_chunks

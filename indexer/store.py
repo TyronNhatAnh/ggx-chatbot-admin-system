@@ -855,6 +855,149 @@ class KnowledgeStore:
         }
 
     # ------------------------------------------------------------------
+    # Endpoint / handler queries (replaces explorer/docs_tools deps)
+    # ------------------------------------------------------------------
+
+    def search_endpoints(self, keyword: str, limit: int = 30) -> list[dict]:
+        """Search indexed endpoints (handles edges + service_flows) by keyword.
+
+        Matches against endpoint path, handler name, and service name.
+        Returns list of dicts with method, path, handler, service, file,
+        and service_calls.
+        """
+        conn = self._get_conn()
+        term = f"%{keyword.strip().lower()}%"
+
+        # Search handles edges for endpoint → handler mappings
+        rows = conn.execute(
+            "SELECT e.from_name AS endpoint, e.to_name AS handler, "
+            "e.to_service AS service, e.file "
+            "FROM edges e "
+            "WHERE e.edge_type = 'handles' "
+            "AND (LOWER(e.from_name) LIKE ? OR LOWER(e.to_name) LIKE ?) "
+            "LIMIT ?",
+            (term, term, limit),
+        ).fetchall()
+
+        results: list[dict] = []
+        for r in rows:
+            endpoint = r["endpoint"]
+            parts = endpoint.split(None, 1)
+            method = parts[0] if len(parts) == 2 else ""
+            path = parts[1] if len(parts) == 2 else endpoint
+
+            handler_name = r["handler"].rsplit(".", 1)[-1] if "." in r["handler"] else r["handler"]
+
+            # Get service calls from service_flows
+            flow_row = conn.execute(
+                "SELECT service_calls_json, repository_calls_json "
+                "FROM service_flows WHERE handler_name = ? AND service = ? LIMIT 1",
+                (handler_name, r["service"]),
+            ).fetchone()
+
+            service_calls: list[str] = []
+            if flow_row:
+                import json as _json
+                try:
+                    svc = _json.loads(flow_row["service_calls_json"])
+                    service_calls = [
+                        f"{c['receiver']}.{c['method']}()" for c in svc if isinstance(c, dict)
+                    ]
+                    repo = _json.loads(flow_row["repository_calls_json"])
+                    service_calls += [
+                        f"{c['receiver']}.{c['method']}()" for c in repo if isinstance(c, dict)
+                    ]
+                except (ValueError, KeyError):
+                    pass
+
+            results.append({
+                "method": method,
+                "path": path,
+                "controller_method": handler_name,
+                "service": r["service"],
+                "file": r["file"],
+                "service_calls": service_calls,
+            })
+
+        return results
+
+    def get_handler_context(self, handler_name: str) -> dict | None:
+        """Get handler source code from code_chunks (chunk_type='handler').
+
+        Returns dict with handler name, source code, endpoint, service calls,
+        or None if not found.
+        """
+        conn = self._get_conn()
+        safe = handler_name.strip()
+
+        # Match by method name suffix (qualified_name = service.ReceiverType.Method)
+        row = conn.execute(
+            "SELECT qualified_name, content, service, file, "
+            "start_line, end_line, metadata_json "
+            "FROM code_chunks "
+            "WHERE chunk_type = 'handler' "
+            "AND (qualified_name LIKE ? OR qualified_name = ?) "
+            "ORDER BY qualified_name LIMIT 1",
+            (f"%.{safe}", safe),
+        ).fetchone()
+
+        if not row:
+            return None
+
+        metadata = {}
+        try:
+            metadata = json.loads(row["metadata_json"])
+        except (ValueError, KeyError):
+            pass
+
+        return {
+            "handler": row["qualified_name"].rsplit(".", 1)[-1],
+            "qualified_name": row["qualified_name"],
+            "service": row["service"],
+            "file": row["file"],
+            "start_line": row["start_line"],
+            "end_line": row["end_line"],
+            "endpoint": metadata.get("endpoint", ""),
+            "receiver_type": metadata.get("receiver_type", ""),
+            "service_calls": metadata.get("service_calls", []),
+            "source_code": row["content"],
+        }
+
+    def list_handlers(self) -> list[str]:
+        """List all indexed handler names (from handler code chunks).
+
+        Returns method names only. For generic names (Handle, Handler) that appear
+        across multiple receiver types, includes ReceiverType.MethodName.
+        """
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT qualified_name FROM code_chunks WHERE chunk_type = 'handler' "
+            "ORDER BY qualified_name"
+        ).fetchall()
+        # qualified_name = service.ReceiverType.MethodName
+        names: list[str] = []
+        method_count: dict[str, int] = {}
+        for r in rows:
+            parts = r["qualified_name"].split(".")
+            method = parts[-1] if parts else r["qualified_name"]
+            method_count[method] = method_count.get(method, 0) + 1
+
+        seen: dict[str, int] = {}
+        for r in rows:
+            parts = r["qualified_name"].split(".")
+            method = parts[-1] if parts else r["qualified_name"]
+            if method_count[method] > 1 and len(parts) >= 2:
+                # Include receiver type for disambiguation
+                display = f"{parts[-2]}.{method}" if len(parts) >= 2 else method
+            else:
+                display = method
+            if display not in seen:
+                seen[display] = 0
+                names.append(display)
+
+        return names
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 

@@ -76,25 +76,19 @@ Knowledge tool discipline:
   Round 2: if essential detail is still missing, call ONE targeted follow-up.
   Then STOP and synthesize your answer from the data you have. Do not keep searching.
 
-Doc tools (three-tier — for API docs and business rules):
-- feature business rules / use cases / API constraints → get_feature_requirement(feature_name).
+Doc tools (two-tier — for API/endpoint lookup and handler source code):
 - What docs / knowledge are available → list_available_docs(). Call this FIRST if unsure what exists.
 - Which endpoint/API handles a specific action → search_endpoints(keyword).
   Searches method, path, controller, and function name. Lightest doc lookup — prefer over loading full docs.
 - How a specific backend handler works (code, service calls) → get_handler_context(handler_name).
   handler_name is the Go function name, e.g. EstimateGuest, GetOrderDetail, CancelOrderB2C.
   Call list_available_docs() to see all valid handler names.
-- Feature business rules / use cases / validation constraints → get_feature_requirement(feature_name).
-  Heaviest doc — only call when business rules or end-to-end flow detail is needed.
-  Supports flat name ("check_price") or service-namespaced ("order/check_price") for multi-service.
-  Call list_available_docs() to discover available features.
 
 Tool priority for code/system questions (lightest first):
   1. explain_status / lookup_enum — instant SQLite lookup
   2. trace_service_flow / get_struct_definition — indexed structured data
   3. search_codebase — full-text or semantic search
-  4. search_endpoints / get_handler_context — doc-based (Tier 1-2)
-  5. get_feature_requirement — heaviest (Tier 3)
+  4. search_endpoints / get_handler_context — endpoint & handler source code
 """.strip()
 
 

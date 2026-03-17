@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from indexer.models import EnumGroup, ServiceFlow, StructDefinition
+from indexer.models import CodeChunk, EnumGroup, ServiceFlow, StructDefinition
 from indexer.parsers.base import LanguageParser
 from indexer.parsers.go.enum_extractor import extract_enums_from_repo
-from indexer.parsers.go.flow_extractor import extract_flows_from_repo
+from indexer.parsers.go.flow_extractor import (
+    extract_flows_from_repo,
+    extract_handler_chunks_from_repo,
+)
 from indexer.parsers.go.type_extractor import extract_structs_from_repo
 
 
@@ -32,3 +35,7 @@ class GoParser(LanguageParser):
 
     def extract_flows(self, repo_path: str, service: str) -> list[ServiceFlow]:
         return extract_flows_from_repo(repo_path, service)
+
+    def extract_handler_chunks(self, repo_path: str, service: str) -> list[CodeChunk]:
+        """Extract handler source-code chunks (Go handler bodies)."""
+        return extract_handler_chunks_from_repo(repo_path, service)

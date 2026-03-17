@@ -69,7 +69,11 @@ class VectorStore:
         for i in range(0, len(chunks), _MAX_BATCH_SIZE):
             batch = chunks[i:i + _MAX_BATCH_SIZE]
             texts = [c.content for c in batch]
-            ids = [f"{c.chunk_type}.{c.service}.{c.qualified_name}" for c in batch]
+            ids = [
+                f"{c.chunk_type}.{c.service}.{c.qualified_name}.{c.file}:{c.start_line}"
+                if c.start_line else f"{c.chunk_type}.{c.service}.{c.qualified_name}"
+                for c in batch
+            ]
             metadatas = [
                 {
                     "qualified_name": c.qualified_name,

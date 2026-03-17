@@ -1,5 +1,4 @@
 from app.tools.docs_tools import (
-    get_feature_requirement,
     get_handler_context,
     list_available_docs,
     search_endpoints,
@@ -43,11 +42,10 @@ ALL_TOOL_FUNCTIONS: list = [
     estimate_authenticated_price,
     check_driver_price,
     estimate_guest_home_moving_price,
-    # docs tools — three-tier knowledge (index → handler context → feature requirements)
+    # docs tools — two-tier knowledge (endpoint search → handler source code)
     list_available_docs,
     search_endpoints,
     get_handler_context,
-    get_feature_requirement,
     # knowledge tools — indexed codebase knowledge (enums, flows, structs, search)
     lookup_enum,
     explain_status,

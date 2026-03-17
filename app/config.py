@@ -1,11 +1,11 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     # Your Gemini API key — set this in the .env file
     gemini_api_key: str
 
-    # Model to use. gemini-2.5-flash is fast and free-tier friendly.
+    # Model to use. gemini-3-flash is fast and free-tier friendly.
     model_name: str = "gemini-3-flash"
 
     # ---------------------------------------------------------------------------
@@ -30,18 +30,6 @@ class Settings(BaseSettings):
     user_service_auth_mode: str = "MULTI_AUTH"
 
     # ---------------------------------------------------------------------------
-    # System Discovery — paths to external repos used by the explorer module.
-    # Optional; only required when running scripts/run_discovery.py or indexer.
-    # ---------------------------------------------------------------------------
-    web2_repo_path: str = ""
-    web2_branch: str = "main"
-    order_service_repo_path: str = ""
-    order_service_branch: str = "main"
-    user_service_repo_path: str = ""
-    user_service_branch: str = "main"
-    discovery_output_dir: str = "docs/discovery"
-
-    # ---------------------------------------------------------------------------
     # /chat endpoint guardrails
     # ---------------------------------------------------------------------------
     chat_auth_enabled: bool = True
@@ -51,8 +39,9 @@ class Settings(BaseSettings):
     chat_rate_limit_window_seconds: int = 60
     chat_order_cache_ttl_seconds: int = 60
 
-    class Config:
-        env_file = ".env"
+    # Allow extra keys in .env (e.g. repo/branch vars used by Makefile only)
+    # without failing Settings validation at runtime.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 settings = Settings()

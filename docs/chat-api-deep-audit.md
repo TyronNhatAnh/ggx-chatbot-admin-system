@@ -31,15 +31,9 @@
 ## Findings (Prioritized)
 
 ### High
-1. Missing caller auth on `/chat`
-- Current behavior: endpoint is publicly callable if network-exposed.
-- Impact: abuse risk, quota burn, and data exposure through tool outputs.
-- Recommendation: add API key/JWT or internal gateway auth before production rollout.
+1. ~~Missing caller auth on `/chat`~~ — RESOLVED: API key auth added.
 
-2. No request-level rate limiting
-- Current behavior: no throttling in API layer.
-- Impact: burst traffic can exhaust Gemini quota and downstream dependencies.
-- Recommendation: per-client and global rate limits with safe 429 response contract.
+2. ~~No request-level rate limiting~~ — RESOLVED: Configurable rate limiting added.
 
 ### Medium
 3. Conversation memory is process-local only
@@ -47,10 +41,7 @@
 - Impact: continuity breaks across restarts/multi-instance deployments.
 - Recommendation: optional shared store (Redis) for production continuity.
 
-4. Observability is log-centric, not metrics-centric
-- Current behavior: rich logs exist, but no structured metrics emission.
-- Impact: difficult SLO tracking and alerting at scale.
-- Recommendation: emit model/tool latency, tool count, error types, and loop fallback counters.
+4. ~~Observability is log-centric, not metrics-centric~~ — PARTIALLY RESOLVED: Structured metrics (model/tool/total latency, tool counts) now emitted per request.
 
 5. Test depth does not match orchestration complexity
 - Current behavior: API tests cover basic pricing routing and quota mapping.

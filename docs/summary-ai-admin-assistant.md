@@ -51,11 +51,10 @@ Important protections in current flow:
 - `check_driver_price(payload)` — driver price estimate
 - `estimate_guest_home_moving_price(payload)` — home moving estimate
 
-### Discovery docs tools (reads from docs/discovery/)
-- `list_available_docs()` — list discovery directories
+### Docs tools (reads from indexer knowledge store)
+- `list_available_docs()` — list handler names, endpoint stats, indexed services
 - `search_endpoints(keyword)` — search BE endpoints by path/handler
 - `get_handler_context(name)` — Go handler source code snippet
-- `get_feature_requirement(name)` — feature requirement docs
 
 ### Knowledge tools (reads from SQLite + ChromaDB)
 - `lookup_enum(name)` — enum/const lookup
@@ -70,7 +69,7 @@ Important protections in current flow:
 
 ### Tool categories
 - Order tools: real API-backed (read-only)
-- Docs tools: reads pre-generated discovery docs (markdown/JSON)
+- Docs tools: queries indexed knowledge store (endpoints, handler source code)
 - Knowledge tools: queries indexed knowledge store (SQLite + ChromaDB vector search)
 
 ## 5. Service Integration State
@@ -105,37 +104,28 @@ Remaining practical bottlenecks:
 Offline pipeline that extracts structured knowledge from Go and React repos.
 
 ### Pipeline
-1. `indexer/runner.py` — 4-pass extract: enums → types → flows → graph edges
-2. `indexer/parsers/go/` — Go parser (handler chains, enums, structs)
+1. `indexer/runner.py` — 4-pass extract: enums → types → flows → graph edges, plus handler chunk extraction
+2. `indexer/parsers/go/` — Go parser (handler chains, enums, structs, route extraction)
 3. `indexer/parsers/react/` — React parser (components, API calls, routes)
-4. `indexer/linker.py` — matches React API calls → Go handlers across services
-5. `indexer/store.py` — SQLite knowledge store (FTS5 + graph edges)
+4. `indexer/linker.py` — matches React API calls → Go handlers across services (x_calls edges)
+5. `indexer/store.py` — SQLite knowledge store (FTS5 + graph edges + endpoint/handler queries)
 6. `indexer/vector_store.py` — ChromaDB semantic embeddings
 
+### Key capabilities
+- Go route extraction: parses Gin router definitions to map handler → HTTP endpoint
+- Handler source storage: captures actual Go handler source code as indexed CodeChunks
+- Cross-service linking: matches React `calls_api` edges to Go `handles` edges
+
 ### Current indexed services
-- `order-service` (Go) — 104 enums, 531 structs, 182 flows
+- `order-service` (Go) — 104 enums, 531 structs, 182 flows, 407 edges, 999 code chunks
 - `web2` (React) — 30 enums, 217 types, 85 flows, 391 edges
-
-### Graph edges (598 total)
-- `defines` (337): file → function/component
-- `handles` (113): API endpoint → Go handler
-- `calls` (42): handler → service method
-- `calls_api` (42): React component → API endpoint
-- `exposes_api` (41): API module method → endpoint
-- `routes_to` (12): Next.js route → component
-- `x_calls` (11): React component → Go handler (cross-service)
-
-### Integration with explorer/
-The indexer runs explorer modules via `--docs` flag to regenerate
-`be_endpoints.json` and `*.context.md` for Go services.
-Explorer docs provide handler source code; indexer provides queryable graph.
 
 ## 8. Gaps and Risks (Current)
 - Test coverage is still narrow (mostly `/chat` API integration style tests)
 - Driver and analytics tools were removed (previously mock); not yet replaced
 - Conversation continuity exists but is process-local in-memory only (not shared across replicas/restarts)
 - Observability is log-based only (no metrics/traces dashboard)
-- Cross-service links limited to order-service + web2 (15 FE endpoints unmatched — need user-service, common-service indexed)
+- Cross-service links limited to order-service + web2 (some FE endpoints unmatched — need user-service, common-service indexed)
 
 ## 9. Recommended Next Steps
 1. Index user-service and common-service to expand cross-service coverage.
