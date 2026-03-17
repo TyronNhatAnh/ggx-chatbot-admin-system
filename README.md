@@ -195,7 +195,7 @@ Gemini:    "Order 12345 is currently in Transit status."
 
 ---
 
-## Available tools (26)
+## Available tools (42)
 
 ### Order tools — live API (10)
 
@@ -212,7 +212,8 @@ Gemini:    "Order 12345 is currently in Transit status."
 | `check_driver_price(payload)` | Estimate price for a specific driver |
 | `estimate_guest_home_moving_price(payload)` | Estimate guest home-moving price |
 
-### User tools — live API (4)
+### User tools — live API (18)
+### User tools — live API (20)
 
 | Tool | Description |
 |---|---|
@@ -220,6 +221,22 @@ Gemini:    "Order 12345 is currently in Transit status."
 | `get_tos_contents()` | Get guest terms-of-service contents |
 | `get_feature_flags()` | Get global feature flags |
 | `get_my_feature_flags()` | Get feature flags for current authenticated user |
+| `get_user_profile(user_id)` | Get user profile by ID (includes lastSignIn/lastAccessedAt when available) |
+| `get_my_user_profile()` | Get current authenticated user profile (includes lastSignIn/lastAccessedAt when available) |
+| `search_users(name, phone_number, email, page_index, page_size)` | Search users with paging |
+| `get_user_driver(user_id)` | Get driver-linked user profile by user ID |
+| `get_branch_by_id(branch_id)` | Get branch by ID |
+| `search_branches(org_name, branch_name, page_index, page_size)` | Search branches |
+| `get_organization_by_id(organization_id)` | Get organization by ID |
+| `search_organizations(organization_name, division, page_index, page_size)` | Search organizations |
+| `verify_client_token(token)` | Verify client token (read-only validation endpoint) |
+| `list_admin_roles(department_id)` | List admin roles (optional department filter) |
+| `list_admin_departments()` | List admin departments |
+| `list_admin_menus()` | List admin menus |
+| `get_admin_permissions(role_id)` | Get permissions by role |
+| `get_accessible_menu_tree(role_id)` | Get accessible menu tree by role |
+| `validate_b2c_org_code(org_code)` | Validate B2C organization code (B2B admin workflows) |
+| `verify_biz_registration_number(biz_number, user_id)` | Verify business registration number (compliance audits) |
 
 ### Docs tools — indexed endpoint/handler knowledge (3)
 

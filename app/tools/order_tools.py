@@ -59,8 +59,33 @@ def get_order_cancel_fee(order_id: str) -> dict:
 
 
 def get_order_statistics() -> dict:
-    """Get per-user order statistics dashboard (GET /orders/statistics). Not an admin aggregate."""
+    """Get per-user Web2/customer statistics (GET /orders/statistics). Not full-system aggregate."""
     return get_order_client().get_order_statistics()
+
+
+def get_statement_of_use_summary(params: dict | None = None) -> dict:
+    """Get full-system customer report summary (GET /report/statement-of-use/summary)."""
+    return get_order_client().get_statement_of_use_summary(params=params)
+
+
+def get_statement_of_use_detail(params: dict | None = None) -> dict:
+    """Get full-system customer report detail rows (GET /report/statement-of-use/detail)."""
+    return get_order_client().get_statement_of_use_detail(params=params)
+
+
+def get_statement_of_use_driver_summary(params: dict | None = None) -> dict:
+    """Get full-system driver report summary (GET /report/statement-of-use-driver/summary)."""
+    return get_order_client().get_statement_of_use_driver_summary(params=params)
+
+
+def get_statement_of_use_driver_detail(params: dict | None = None) -> dict:
+    """Get full-system driver report detail rows (GET /report/statement-of-use-driver/detail)."""
+    return get_order_client().get_statement_of_use_driver_detail(params=params)
+
+
+def get_b2b_tracking_service_detail(params: dict | None = None) -> dict:
+    """Get B2B tracking service detail report (GET /report/b2b-tracking-service/detail)."""
+    return get_order_client().get_b2b_tracking_service_detail(params=params)
 
 
 def get_coupons() -> dict:
@@ -71,3 +96,21 @@ def get_coupons() -> dict:
 def estimate_guest_home_moving_price(payload: dict) -> dict:
     """Estimate home-moving price for a guest. payload: POST /guest/home-moving/estimate body."""
     return get_order_client().estimate_guest_home_moving(payload)
+
+
+def get_order_route(order_id: str) -> dict:
+    """Get the delivery route and waypoint details for an order (GET /orders/:orderId/route).
+    Returns waypoints in sequence with status, coordinates, and timestamps. Useful for tracking delivery progress."""
+    return get_order_client().get_order_route(order_id)
+
+
+def get_order_shipping_records(keyword: str = "") -> dict:
+    """Get user's recent delivery destinations for reorder suggestions (GET /orders/shipping-records?keyword=...).
+    Returns list of past delivery addresses. Useful when customer asks about previous destinations or wants to reorder."""
+    return get_order_client().get_order_shipping_records(keyword)
+
+
+def get_order_reorder_info(order_id: str) -> dict:
+    """Get order data to reorder same route (GET /orders/:orderId/reorder).
+    Returns origin/destination, goods, and appointment info. Useful when user wants to repeat a delivery."""
+    return get_order_client().get_order_reorder_info(order_id)

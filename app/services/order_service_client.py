@@ -585,6 +585,62 @@ class OrderServiceClient:
             return {"error": "ORDER_SERVICE_ERROR", "detail": payload.get("errors")}
         return payload.get("data", payload)
 
+    @staticmethod
+    def _clean_query_params(params: dict | None) -> dict:
+        """Drop empty query params to keep requests compact and deterministic."""
+        if not isinstance(params, dict):
+            return {}
+        return {
+            key: value
+            for key, value in params.items()
+            if value is not None and value != ""
+        }
+
+    def _get_report_data(self, path: str, params: dict | None = None) -> dict:
+        """Shared GET wrapper for report endpoints (non-download APIs only)."""
+        try:
+            payload = self._get(path, params=self._clean_query_params(params))
+            data = self._unwrap_success_payload(payload)
+            if isinstance(data, dict) and data.get("error"):
+                return data
+
+            if isinstance(data, list):
+                rows = data[:100]
+                return {"rows": rows, "count": len(data)}
+
+            if isinstance(data, dict):
+                rows = (
+                    data.get("rows")
+                    or data.get("list")
+                    or data.get("items")
+                    or data.get("data")
+                )
+                if isinstance(rows, list):
+                    slim_rows = rows[:100]
+                    extras = {
+                        k: v
+                        for k, v in data.items()
+                        if k not in ("rows", "list", "items", "data")
+                    }
+                    return {"rows": slim_rows, "count": len(rows), **extras}
+                return data
+
+            return {"raw": data}
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "report endpoint %s HTTP %s — body: %s",
+                path,
+                exc.response.status_code,
+                exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("report endpoint %s network error — %s", path, exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error("report endpoint %s unexpected error — %s: %s", path, type(exc).__name__, exc)
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
     # ------------------------------------------------------------------
     # Public API methods (read-only)
     # ------------------------------------------------------------------
@@ -771,9 +827,10 @@ class OrderServiceClient:
 
     def get_order_statistics(self) -> dict:
         """
-        Get the per-user order statistics dashboard.
+        Get per-user Web2/customer order statistics dashboard.
 
         Endpoint: GET /api/v1/orders/statistics
+        Scope: current authenticated user only (not full-system).
         """
         try:
             payload = self._get("/orders/statistics")
@@ -793,6 +850,26 @@ class OrderServiceClient:
         except Exception as exc:  # noqa: BLE001
             logger.error("get_order_statistics unexpected error — %s: %s", type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
+    def get_statement_of_use_summary(self, params: dict | None = None) -> dict:
+        """GET /api/v1/report/statement-of-use/summary (full-system customer report)."""
+        return self._get_report_data("/report/statement-of-use/summary", params=params)
+
+    def get_statement_of_use_detail(self, params: dict | None = None) -> dict:
+        """GET /api/v1/report/statement-of-use/detail (full-system customer report)."""
+        return self._get_report_data("/report/statement-of-use/detail", params=params)
+
+    def get_statement_of_use_driver_summary(self, params: dict | None = None) -> dict:
+        """GET /api/v1/report/statement-of-use-driver/summary (full-system driver report)."""
+        return self._get_report_data("/report/statement-of-use-driver/summary", params=params)
+
+    def get_statement_of_use_driver_detail(self, params: dict | None = None) -> dict:
+        """GET /api/v1/report/statement-of-use-driver/detail (full-system driver report)."""
+        return self._get_report_data("/report/statement-of-use-driver/detail", params=params)
+
+    def get_b2b_tracking_service_detail(self, params: dict | None = None) -> dict:
+        """GET /api/v1/report/b2b-tracking-service/detail."""
+        return self._get_report_data("/report/b2b-tracking-service/detail", params=params)
 
     def get_coupons(self) -> dict:
         """
@@ -820,6 +897,136 @@ class OrderServiceClient:
             return {"error": "NETWORK_ERROR", "detail": str(exc)}
         except Exception as exc:  # noqa: BLE001
             logger.error("get_coupons unexpected error — %s: %s", type(exc).__name__, exc)
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
+    def get_order_route(self, order_id: str) -> dict:
+        """
+        Get the delivery route (waypoints) for an authenticated user's order.
+
+        Endpoint: GET /api/v1/orders/{orderId}/route
+        Response includes waypoint details, sequence, status, and coordinates.
+        """
+        try:
+            payload = self._get(f"/orders/{order_id}/route")
+            data = self._unwrap_success_payload(payload)
+            if isinstance(data, dict) and data.get("error"):
+                return data
+            # If route is a list of waypoints, slim them; if it's a dict, return as-is
+            if isinstance(data, list):
+                waypoints = self._slim_waypoints(data, limit=20)
+                return {"waypoints": waypoints, "count": len(waypoints)}
+            if isinstance(data, dict):
+                # Check if data contains waypoints under a key
+                waypoints = data.get("waypoints") or data.get("route") or []
+                if isinstance(waypoints, list):
+                    slimmed = self._slim_waypoints(waypoints, limit=20)
+                    return {"waypoints": slimmed, "count": len(slimmed), **{k: v for k, v in data.items() if k not in ("waypoints", "route")}}
+                return data
+            return data
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return {"error": "ORDER_NOT_FOUND", "order_id": order_id}
+            logger.error(
+                "get_order_route HTTP %s for order_id=%s — body: %s",
+                exc.response.status_code, order_id, exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("get_order_route network error for order_id=%s — %s", order_id, exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "get_order_route unexpected error for order_id=%s — %s: %s",
+                order_id, type(exc).__name__, exc,
+            )
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
+    def get_order_shipping_records(self, keyword: str = "") -> dict:
+        """
+        Get user's recent delivery addresses (shipping records) for reorder suggestions.
+
+        Endpoint: GET /api/v1/orders/shipping-records?keyword=...
+        Used by Web2 to suggest past destinations when user creates new order.
+        """
+        try:
+            params = {"keyword": keyword} if keyword else {}
+            payload = self._get("/orders/shipping-records", params=params)
+            data = self._unwrap_success_payload(payload)
+            if isinstance(data, dict) and data.get("error"):
+                return data
+            # Response is typically a list of waypoint records or a dict with list inside
+            if isinstance(data, list):
+                records = self._slim_waypoints(data, limit=15)
+                return {"records": records, "count": len(records)}
+            if isinstance(data, dict):
+                records = data.get("data") or data.get("records") or data.get("waypoints") or []
+                if isinstance(records, list):
+                    slimmed = self._slim_waypoints(records, limit=15)
+                    return {"records": slimmed, "count": len(slimmed), **{k: v for k, v in data.items() if k not in ("data", "records", "waypoints")}}
+                return data
+            return data
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "get_order_shipping_records HTTP %s — body: %s",
+                exc.response.status_code, exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("get_order_shipping_records network error — %s", exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "get_order_shipping_records unexpected error — %s: %s", type(exc).__name__, exc
+            )
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
+    def get_order_reorder_info(self, order_id: str) -> dict:
+        """
+        Get order data to pre-populate reorder form when customer wants to reorder.
+
+        Endpoint: GET /api/v1/orders/{orderId}/reorder
+        Returns: origin order + pre-filled data for new order creation.
+        """
+        try:
+            payload = self._get(f"/orders/{order_id}/reorder")
+            data = self._unwrap_success_payload(payload)
+            if isinstance(data, dict) and data.get("error"):
+                return data
+            # Slim the reorder payload to keep it compact
+            if isinstance(data, dict):
+                return {
+                    "orderId": data.get("orderId") or data.get("id"),
+                    "fromPlace": self._slim_place(data.get("fromPlace")),
+                    "toPlace": self._slim_place(data.get("toPlace")),
+                    "fromAddress": data.get("fromAddress"),
+                    "toAddress": data.get("toAddress"),
+                    "goods": self._slim_goods_infos(data.get("goodsInfos", [])),
+                    "appointmentAt": data.get("appointmentAt"),
+                    "notes": data.get("notes") or data.get("remark"),
+                    "vehicle": self._slim_vehicle(data.get("vehicle")),
+                    # Also include any extra fields that might be reorder defaults
+                    "prefilledData": {k: v for k, v in data.items() if k not in (
+                        "orderId", "id", "fromPlace", "toPlace", "fromAddress", "toAddress",
+                        "goodsInfos", "appointmentAt", "notes", "remark", "vehicle"
+                    )}
+                }
+            return data
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return {"error": "ORDER_NOT_FOUND", "order_id": order_id}
+            logger.error(
+                "get_order_reorder_info HTTP %s for order_id=%s — body: %s",
+                exc.response.status_code, order_id, exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("get_order_reorder_info network error for order_id=%s — %s", order_id, exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "get_order_reorder_info unexpected error for order_id=%s — %s: %s",
+                order_id, type(exc).__name__, exc,
+            )
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
     # ------------------------------------------------------------------
