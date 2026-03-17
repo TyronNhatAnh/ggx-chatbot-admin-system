@@ -71,6 +71,16 @@ GEMINI_API_KEY=your-gemini-api-key-here
 CHAT_API_KEY=replace-with-strong-random-secret
 ```
 
+`/chat` requires an admin bearer token in request body:
+
+```json
+{
+  "message": "...",
+  "conversation_id": "optional",
+  "service_token": "Bearer <admin-access-token>"
+}
+```
+
 For indexing, also set repo paths:
 
 ```
@@ -260,6 +270,12 @@ Gemini:    "Order 12345 is currently in Transit status."
 | `trace_full_stack(endpoint)` | Full trace: React page → API → handler → service → repo |
 | `get_knowledge_stats()` | Summary stats of indexed knowledge |
 
+## Authentication model
+
+- The assistant no longer logs in to user-service using env credentials.
+- Downstream user/order-service calls always use the admin token provided by the caller in `/chat.service_token`.
+- If token is missing/invalid/expired, tools will return service errors (for example 401 mapped into service error payloads).
+
 ---
 
 ## Example API requests
@@ -269,19 +285,19 @@ Gemini:    "Order 12345 is currently in Transit status."
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -H "X-API-Key: replace-with-strong-random-secret" \
-  -d '{"message": "What is the status of order 12345?"}'
+  -d '{"message": "What is the status of order 12345?", "service_token": "Bearer <admin-access-token>"}'
 
 # Ask about code
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -H "X-API-Key: replace-with-strong-random-secret" \
-  -d '{"message": "How does the EstimateGuest handler work?"}'
+  -d '{"message": "How does the EstimateGuest handler work?", "service_token": "Bearer <admin-access-token>"}'
 
 # Follow-up with conversation continuity
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -H "X-API-Key: replace-with-strong-random-secret" \
-  -d '{"message":"What about its cancel fee?","conversation_id":"<id-from-previous-response>"}'
+  -d '{"message":"What about its cancel fee?","conversation_id":"<id-from-previous-response>","service_token":"Bearer <admin-access-token>"}'
 ```
 
 ---

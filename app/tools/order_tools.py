@@ -10,6 +10,24 @@ Each function is a thin wrapper around OrderServiceClient so that:
 from app.services.order_service_client import get_order_client
 
 
+def _build_report_params(
+    *,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    pay: list[str] | str | None = None,
+    params: dict | None = None,
+) -> dict:
+    """Merge explicit report args with optional params dict for compatibility."""
+    merged = dict(params or {})
+    if from_date is not None:
+        merged["from_date"] = from_date
+    if to_date is not None:
+        merged["to_date"] = to_date
+    if pay is not None:
+        merged["pay"] = pay
+    return merged
+
+
 def get_order_detail(order_id: str) -> dict:
     """Fetch full B2C detail for one order by ID (GET /orders/:orderId). Use for priceBreakdown, goods, payment, waypoints."""
     return get_order_client().get_order_detail(order_id)
@@ -63,24 +81,76 @@ def get_order_statistics() -> dict:
     return get_order_client().get_order_statistics()
 
 
-def get_statement_of_use_summary(params: dict | None = None) -> dict:
-    """Get full-system customer report summary (GET /report/statement-of-use/summary)."""
-    return get_order_client().get_statement_of_use_summary(params=params)
+def get_statement_of_use_summary(
+    from_date: str | None = None,
+    to_date: str | None = None,
+    pay: list[str] | str | None = None,
+) -> dict:
+    """Get full-system customer report summary.
+
+    Args:
+        from_date: Start date (YYYY-MM-DD).
+        to_date: End date (YYYY-MM-DD).
+        pay: Payment filter(s), e.g. ["cash", "credit", "card", "point", "brandpay"].
+    """
+    return get_order_client().get_statement_of_use_summary(
+        params=_build_report_params(from_date=from_date, to_date=to_date, pay=pay)
+    )
 
 
-def get_statement_of_use_detail(params: dict | None = None) -> dict:
-    """Get full-system customer report detail rows (GET /report/statement-of-use/detail)."""
-    return get_order_client().get_statement_of_use_detail(params=params)
+def get_statement_of_use_detail(
+    from_date: str | None = None,
+    to_date: str | None = None,
+    pay: list[str] | str | None = None,
+    params: dict | None = None,
+) -> dict:
+    """Get full-system customer report detail rows.
+
+    Args:
+        from_date: Start date (YYYY-MM-DD).
+        to_date: End date (YYYY-MM-DD).
+        pay: Payment filter(s), e.g. ["cash", "credit", "card", "point", "brandpay"].
+        params: Optional passthrough query params for paging/filter extensions.
+    """
+    return get_order_client().get_statement_of_use_detail(
+        params=_build_report_params(from_date=from_date, to_date=to_date, pay=pay, params=params)
+    )
 
 
-def get_statement_of_use_driver_summary(params: dict | None = None) -> dict:
-    """Get full-system driver report summary (GET /report/statement-of-use-driver/summary)."""
-    return get_order_client().get_statement_of_use_driver_summary(params=params)
+def get_statement_of_use_driver_summary(
+    from_date: str | None = None,
+    to_date: str | None = None,
+    pay: list[str] | str | None = None,
+) -> dict:
+    """Get full-system driver report summary.
+
+    Args:
+        from_date: Start date (YYYY-MM-DD).
+        to_date: End date (YYYY-MM-DD).
+        pay: Payment filter(s), e.g. ["cash", "credit", "card", "point", "brandpay"].
+    """
+    return get_order_client().get_statement_of_use_driver_summary(
+        params=_build_report_params(from_date=from_date, to_date=to_date, pay=pay)
+    )
 
 
-def get_statement_of_use_driver_detail(params: dict | None = None) -> dict:
-    """Get full-system driver report detail rows (GET /report/statement-of-use-driver/detail)."""
-    return get_order_client().get_statement_of_use_driver_detail(params=params)
+def get_statement_of_use_driver_detail(
+    from_date: str | None = None,
+    to_date: str | None = None,
+    pay: list[str] | str | None = None,
+    params: dict | None = None,
+) -> dict:
+    """Get full-system driver report detail rows.
+
+    Args:
+        from_date: Start date (YYYY-MM-DD).
+        to_date: End date (YYYY-MM-DD).
+        pay: Payment filter(s), e.g. ["cash", "credit", "card", "point", "brandpay"].
+        params: Optional passthrough query params for paging/filter extensions.
+    """
+    return get_order_client().get_statement_of_use_driver_detail(
+        params=_build_report_params(from_date=from_date, to_date=to_date, pay=pay, params=params)
+    )
 
 
 def get_b2b_tracking_service_detail(params: dict | None = None) -> dict:

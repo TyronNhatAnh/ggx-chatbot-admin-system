@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.orchestrator.ai_orchestrator import AIOrchestrator
+from app.orchestrator.ai_orchestrator import AIOrchestrator, _extract_order_id_candidates
 
 
 @dataclass
@@ -50,6 +50,10 @@ class _FakeModel:
 
 
 class OrchestratorRegressionTests(unittest.TestCase):
+    def test_extract_order_id_candidates_skips_org_like_tokens(self) -> None:
+        candidates = _extract_order_id_candidates("to chuc nay xem DHLSC va ORD-12345 va 1320627")
+        self.assertEqual(candidates, ["ORD-12345", "1320627"])
+
     def test_duplicate_tool_calls_are_suppressed(self) -> None:
         tool_calls = [
             _FakeFunctionCall("get_order_detail", {"order_id": "1347944"}),
@@ -96,7 +100,7 @@ class OrchestratorRegressionTests(unittest.TestCase):
                 orchestrator = AIOrchestrator()
                 reply, tools_called, _ = orchestrator.chat("check orders")
 
-        self.assertIn("tool-calling cycle became too long", reply)
+        self.assertIn("could not fully synthesize", reply)
         self.assertEqual(call_count["get_order_detail"], 3)
         self.assertEqual(tools_called, ["get_order_detail", "get_order_detail", "get_order_detail"])
 

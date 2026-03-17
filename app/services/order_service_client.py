@@ -3,13 +3,14 @@
 Base URL : https://stag-api.gogox.co.kr/order
 Swagger  : https://stag-api.gogox.co.kr/order/swagger/index.html
 
-All requests are authenticated via a Bearer token obtained from the
-User Service through ``AuthTokenManager`` when needed. The client is
+All requests are authenticated via an admin Bearer token forwarded from
+the /chat request context through ``AuthTokenManager``. The client is
 read-only from a business perspective — it only queries and calculates data.
 """
 
 import logging
 import time
+from datetime import date, timedelta
 
 import httpx
 
@@ -26,12 +27,12 @@ class OrderServiceClient:
     """
     Read-only HTTP client for the GogoX Order Service.
 
-    Authentication is delegated to ``AuthTokenManager`` so the token is
-    shared with any other service client in this process.
+    Authentication is delegated to ``AuthTokenManager`` using the
+    request-scoped admin token set by the /chat handler.
 
     Error handling contract:
     - 404  → structured {"error": "ORDER_NOT_FOUND", ...}
-    - 401  → token refreshed and request retried once
+    - 401  → returned as ORDER_SERVICE_ERROR (token must be provided by caller)
     - network error → {"error": "NETWORK_ERROR", ...}
     - anything else → {"error": "ORDER_SERVICE_ERROR", ...}
     Never raises to the tool / AI layer.
@@ -44,7 +45,7 @@ class OrderServiceClient:
         self._http = httpx.Client(timeout=10.0)
 
     # ------------------------------------------------------------------
-    # Internal HTTP helpers with optional auth + retry-once for 401
+    # Internal HTTP helpers with optional auth
     # ------------------------------------------------------------------
 
     def _request(
@@ -58,7 +59,7 @@ class OrderServiceClient:
     ) -> dict | list:
         """Issue an HTTP request to ``{base_url}/api/v1{path}``.
 
-        If ``requires_auth`` is true, retries once after token refresh on 401.
+        If ``requires_auth`` is true, uses request-scoped admin token.
         Raises ``httpx.HTTPStatusError`` or ``httpx.RequestError`` on failure.
         """
         headers: dict[str, str] = {}
@@ -85,26 +86,6 @@ class OrderServiceClient:
             time.perf_counter() - t,
         )
 
-        if requires_auth and response.status_code == 401:
-            logger.warning("[HTTP %s] 401 on %s — invalidating token and retrying.", method, path)
-            self._token_mgr.invalidate()
-            self._token_mgr.ensure_token()
-            t = time.perf_counter()
-            response = self._http.request(
-                method,
-                url,
-                headers=self._token_mgr.bearer_header,
-                params=params,
-                json=json_body,
-            )
-            logger.info(
-                "[HTTP %s] retry %s  status=%s  elapsed=%.3fs",
-                method,
-                url,
-                response.status_code,
-                time.perf_counter() - t,
-            )
-
         response.raise_for_status()
         return response.json()
 
@@ -112,7 +93,6 @@ class OrderServiceClient:
         """
         Issue an authenticated GET to ``{base_url}/api/v1{path}``.
 
-        Retries once after re-authentication on HTTP 401.
         Raises ``httpx.HTTPStatusError`` or ``httpx.RequestError`` on failure.
         """
         return self._request("GET", path, params=params, requires_auth=True)
@@ -593,13 +573,96 @@ class OrderServiceClient:
         return {
             key: value
             for key, value in params.items()
-            if value is not None and value != ""
+            if value is not None and value != "" and value != []
         }
+
+    @staticmethod
+    def _normalize_date_yyyy_mm_dd(value: object) -> str | None:
+        """Normalize common date inputs to YYYY-MM-DD accepted by report APIs."""
+        if not isinstance(value, str):
+            return None
+        raw = value.strip()
+        if not raw:
+            return None
+
+        # Accept YYYY-MM-DD, YYYY/MM/DD, and datetime forms like YYYY-MM-DDTHH:MM:SS.
+        token = raw.split("T", 1)[0].replace("/", "-")
+        parts = token.split("-")
+        if len(parts) != 3:
+            return None
+        y, m, d = parts
+        if len(y) == 4 and m.isdigit() and d.isdigit():
+            try:
+                parsed = date(int(y), int(m), int(d))
+                return parsed.isoformat()
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _normalize_report_pay_values(value: object) -> list[str]:
+        """Normalize pay filters to accepted report values."""
+        allowed = {"cash", "credit", "card", "point", "brandpay"}
+
+        if value is None:
+            return sorted(allowed)
+
+        raw_items: list[str] = []
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"", "all", "*"}:
+                return sorted(allowed)
+            raw_items = [item.strip().lower() for item in text.split(",") if item.strip()]
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    raw_items.append(item.strip().lower())
+
+        normalized: list[str] = []
+        for item in raw_items:
+            mapped = "brandpay" if item == "brandPay" else item
+            if mapped in allowed and mapped not in normalized:
+                normalized.append(mapped)
+
+        return normalized or sorted(allowed)
+
+    def _normalize_report_params(self, params: dict | None) -> dict:
+        """Guarantee required query params for statement-of-use report endpoints."""
+        source = params if isinstance(params, dict) else {}
+        normalized = dict(source)
+
+        today = date.today()
+        default_from = (today - timedelta(days=2)).isoformat()
+        default_to = today.isoformat()
+
+        from_date = (
+            self._normalize_date_yyyy_mm_dd(source.get("fromDate"))
+            or self._normalize_date_yyyy_mm_dd(source.get("from_date"))
+            or default_from
+        )
+        to_date = (
+            self._normalize_date_yyyy_mm_dd(source.get("toDate"))
+            or self._normalize_date_yyyy_mm_dd(source.get("to_date"))
+            or default_to
+        )
+
+        pay = self._normalize_report_pay_values(source.get("pay"))
+
+        normalized["fromDate"] = from_date
+        normalized["toDate"] = to_date
+        normalized["pay"] = pay
+
+        # Remove snake_case aliases if present.
+        normalized.pop("from_date", None)
+        normalized.pop("to_date", None)
+
+        return self._clean_query_params(normalized)
 
     def _get_report_data(self, path: str, params: dict | None = None) -> dict:
         """Shared GET wrapper for report endpoints (non-download APIs only)."""
         try:
-            payload = self._get(path, params=self._clean_query_params(params))
+            normalized_params = self._normalize_report_params(params)
+            payload = self._get(path, params=normalized_params)
             data = self._unwrap_success_payload(payload)
             if isinstance(data, dict) and data.get("error"):
                 return data
@@ -652,11 +715,24 @@ class OrderServiceClient:
         Endpoint: GET /api/v1/orders/{orderId}
         Response shape: { "success": true, "data": {...}, "errors": null }
         """
+        normalized_id = (order_id or "").strip()
+        upper_id = normalized_id.upper()
+        # Guard against organization names or free-text accidentally routed here.
+        if not (
+            (upper_id.startswith("ORD-") and any(ch.isdigit() for ch in upper_id[4:]))
+            or (normalized_id.isdigit() and len(normalized_id) >= 5)
+        ):
+            return {
+                "error": "REQUEST_INVALID",
+                "detail": "order_id format is invalid. Use numeric id or ORD-* format.",
+                "order_id": order_id,
+            }
+
         try:
-            payload = self._get(f"/orders/{order_id}")
+            payload = self._get(f"/orders/{normalized_id}")
             if isinstance(payload, dict):
                 if not payload.get("success", True):
-                    logger.error("get_order: success=false for order_id=%s — %s", order_id, payload.get("errors"))
+                    logger.error("get_order: success=false for order_id=%s — %s", normalized_id, payload.get("errors"))
                     return {"error": "ORDER_SERVICE_ERROR", "detail": payload.get("errors")}
                 data = payload.get("data") or payload
                 if isinstance(data, dict):

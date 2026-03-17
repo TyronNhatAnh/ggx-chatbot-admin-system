@@ -13,6 +13,7 @@ from app.orchestrator.ai_orchestrator import AIOrchestrator
 from app.observability import get_request_id, reset_request_id, set_request_id
 from app.config import settings
 from app.schemas.chat_schema import ChatRequest, ChatResponse
+from app.services.auth_token_manager import reset_request_service_token, set_request_service_token
 
 # ---------------------------------------------------------------------------
 # Logging — configure once at process start so all modules inherit the format
@@ -245,6 +246,7 @@ async def chat(request: ChatRequest, http_request: Request):
         "..." if len(request.message) > 120 else "",
         request.conversation_id or "<new>",
     )
+    service_token_ref = set_request_service_token(request.service_token)
     try:
         reply, tools_called, conversation_id = get_orchestrator().chat(
             request.message,
@@ -262,3 +264,5 @@ async def chat(request: ChatRequest, http_request: Request):
 
         logger.error("[Chat    ] Unexpected error: %s: %s", type(exc).__name__, exc)
         raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        reset_request_service_token(service_token_ref)

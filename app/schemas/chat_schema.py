@@ -18,6 +18,15 @@ class ChatRequest(BaseModel):
             "across multiple /chat requests."
         ),
     )
+    service_token: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Bearer token forwarded to downstream user/order services for this request. "
+            "Accepts raw token or 'Bearer <token>'."
+        ),
+        examples=["Bearer eyJhbGciOi..."],
+    )
 
 
 class ChatResponse(BaseModel):

@@ -52,20 +52,6 @@ class UserServiceClient:
             time.perf_counter() - t,
         )
 
-        if requires_auth and response.status_code == 401:
-            logger.warning("[HTTP %s] 401 on %s - invalidating token and retrying.", method, path)
-            self._token_mgr.invalidate()
-            self._token_mgr.ensure_token()
-            t = time.perf_counter()
-            response = self._http.request(method, url, headers=self._token_mgr.bearer_header, params=params)
-            logger.info(
-                "[HTTP %s] retry %s  status=%s  elapsed=%.3fs",
-                method,
-                url,
-                response.status_code,
-                time.perf_counter() - t,
-            )
-
         response.raise_for_status()
         return response.json()
 

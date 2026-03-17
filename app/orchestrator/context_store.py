@@ -11,6 +11,7 @@ class ConversationTurn:
     user_message: str
     assistant_reply: str
     tools_called: list[str]
+    tool_results: dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
 
 
@@ -42,6 +43,7 @@ class ConversationStore(ABC):
         user_message: str,
         assistant_reply: str,
         tools_called: list[str],
+        tool_results: dict[str, Any] | None = None,
     ) -> ConversationState:
         """Append one turn to the conversation and return updated state."""
 
@@ -77,6 +79,7 @@ class InMemoryConversationStore(ConversationStore):
         user_message: str,
         assistant_reply: str,
         tools_called: list[str],
+        tool_results: dict[str, Any] | None = None,
     ) -> ConversationState:
         with self._lock:
             self._purge_expired_locked()
@@ -91,6 +94,7 @@ class InMemoryConversationStore(ConversationStore):
                     user_message=user_message,
                     assistant_reply=assistant_reply,
                     tools_called=list(tools_called),
+                    tool_results=tool_results or {},
                 )
             )
             if len(state.turns) > self._max_turns:

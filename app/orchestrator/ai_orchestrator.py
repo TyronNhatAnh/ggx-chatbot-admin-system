@@ -18,7 +18,9 @@ CONTEXT_HISTORY_TURNS = 4
 CONTEXT_TEXT_BUDGET = 900
 ORDER_CACHE_MAX_ITEMS = 24
 ORDER_CACHE_TTL_SECONDS = 60
-ORDER_ID_PATTERN = re.compile(r"\b(?:ORD-)?[A-Za-z0-9-]{5,}\b")
+# Accept explicit ORD-* IDs or numeric IDs only.
+# Prevent false positives like organization names (e.g. "DHLSC").
+ORDER_ID_PATTERN = re.compile(r"\b(?:ORD-[A-Za-z0-9-]{3,}|\d{5,})\b", re.IGNORECASE)
 
 _fallback_counters = {
     "max_tool_loop": 0,
@@ -58,11 +60,17 @@ def _normalize_order_id(value: str) -> str:
     raw = (value or "").strip()
     if not raw:
         return ""
-    if raw.upper().startswith("ORD-"):
-        return raw.upper()
-    if raw.isdigit():
+
+    upper = raw.upper()
+    if upper.startswith("ORD-"):
+        suffix = upper[4:]
+        return upper if suffix and any(ch.isdigit() for ch in suffix) else ""
+
+    if raw.isdigit() and len(raw) >= 5:
         return raw
-    return raw
+
+    # Reject alpha-only labels (common org names/shortcodes).
+    return ""
 
 
 def _extract_order_id_candidates(message: str) -> list[str]:
@@ -131,6 +139,50 @@ def _is_detail_order_payload(order: dict[str, Any] | None) -> bool:
     return "priceBreakdown" in order
 
 
+def _extract_context_hints(tool_results: dict[str, Any]) -> str:
+    """Extract useful context from previous tool results (report data, orders, etc.)."""
+    if not tool_results:
+        return ""
+
+    hints: list[str] = []
+
+    # Extract organization names from report results (org names as context for follow-ups)
+    for tool_name in ("get_statement_of_use_summary", "get_statement_of_use_detail"):
+        report_data = tool_results.get(tool_name)
+        if not isinstance(report_data, dict):
+            continue
+        rows = report_data.get("rows", [])
+        if not isinstance(rows, list):
+            continue
+        org_names: list[str] = []
+        for row in rows[:5]:  # First 5 orgs
+            if isinstance(row, dict):
+                org = row.get("organizationName") or row.get("organizationId")
+                if org and isinstance(org, str) and org not in org_names:
+                    org_names.append(org)
+        if org_names:
+            hints.append(f"Organizations in report: {', '.join(org_names)}")
+
+    # Extract order IDs from orders list (for follow-up context)
+    for tool_name in ("get_orders", "get_delayed_orders"):
+        orders_data = tool_results.get(tool_name)
+        if not isinstance(orders_data, dict):
+            continue
+        orders = orders_data.get("orders", [])
+        if not isinstance(orders, list):
+            continue
+        order_ids: list[str] = []
+        for order in orders[:3]:  # First 3 orders
+            if isinstance(order, dict):
+                oid = order.get("orderId")
+                if oid and isinstance(oid, str) and oid not in order_ids:
+                    order_ids.append(oid)
+        if order_ids:
+            hints.append(f"Recent orders: {', '.join(order_ids)}")
+
+    return "\n".join(hints) if hints else ""
+
+
 def _build_contextual_message(message: str, state: ConversationState) -> str:
     if not state.turns:
         return message
@@ -144,6 +196,11 @@ def _build_contextual_message(message: str, state: ConversationState) -> str:
         context_lines.append(f"- Assistant: {_trim_text(turn.assistant_reply.replace(chr(10), ' '), 260)}")
         if turn.tools_called:
             context_lines.append(f"- Tools used: {', '.join(turn.tools_called)}")
+        # Extract and include data from tool results (org names, orders, etc.)
+        if turn.tool_results:
+            hints = _extract_context_hints(turn.tool_results)
+            if hints:
+                context_lines.append(f"- Data returned: {hints}")
 
     context_text = "\n".join(context_lines)
     if len(context_text) > CONTEXT_TEXT_BUDGET:
@@ -268,6 +325,7 @@ class AIOrchestrator:
         logger.info("[Step 1/N] Gemini responded  elapsed=%.3fs", first_gemini_elapsed)
 
         tools_called: list[str] = []
+        tool_results_collected: dict[str, Any] = {}  # Collect tool results for context injection in next turn
         loop = 0
         gemini_calls = 1  # already made the initial call above
         gemini_elapsed_total = first_gemini_elapsed
@@ -368,6 +426,7 @@ class AIOrchestrator:
                     user_message=message,
                     assistant_reply=reply,
                     tools_called=tools_called,
+                    tool_results=tool_results_collected,
                 )
                 return (reply, tools_called, state.conversation_id)
 
@@ -465,6 +524,11 @@ class AIOrchestrator:
                         state.last_focus_order_id = actual_order_id
 
                 tools_called.append(tool_name)
+                # Collect result for context injection in next turn
+                if tool_name not in tool_results_collected:
+                    tool_results_collected[tool_name] = result
+                # Note: if same tool is called multiple times in one turn, we keep first result
+                # (usually sufficient for context, and avoids token bloat from repeated data)
 
                 tool_response_parts.append(
                     types.Part.from_function_response(
@@ -516,5 +580,6 @@ class AIOrchestrator:
             user_message=message,
             assistant_reply=reply,
             tools_called=tools_called,
+            tool_results=tool_results_collected,
         )
         return (reply, tools_called, state.conversation_id)
