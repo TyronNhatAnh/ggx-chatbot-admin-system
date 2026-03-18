@@ -1,320 +1,190 @@
 # AI Admin Assistant
 
-A read-only AI chatbot service for admin systems, built with FastAPI and
-Google Gemini. Operators can ask questions about orders, drivers, and system
-analytics in plain English. The AI fetches real data through internal tools
-and returns factual answers.
+Read-only AI chatbot service for internal logistics/admin operations, built with FastAPI and Google Gemini.
 
-The system combines two knowledge sources:
-1. **Live API calls** — real-time order/pricing data from backend services.
-2. **Indexed codebase knowledge** — offline-extracted enums, structs, handler source code, API routes, and call graphs from Go and React repos.
+The assistant answers questions about orders, drivers, organizations, and indexed code knowledge by combining:
+1. Live API tools (order-service, user-service)
+2. Offline indexed code intelligence (docs + graph + semantic search)
 
----
+## Current API Surface
 
-## Architecture
+- `GET /health`
+- `POST /chat`
 
+`/chat` response contract:
+
+```json
+{
+  "reply": "...",
+  "tools_called": ["get_order_detail"],
+  "conversation_id": "..."
+}
 ```
+
+`/chat` request fields currently accepted by runtime:
+
+```json
+{
+  "message": "required",
+  "conversation_id": "optional",
+  "service_token": "required (Bearer token for downstream services)"
+}
+```
+
+## Runtime Guardrails
+
+- API key authentication for `/chat`:
+  - `X-API-Key: <key>`
+  - or `Authorization: Bearer <chat-api-key>`
+- In-memory fixed-window rate limiting (configurable)
+- Explicit HTTP status mapping:
+  - `422` validation errors
+  - `429` Gemini quota / rate-limit errors
+  - `500` internal server errors
+- Tool loop protections in orchestrator:
+  - `MAX_TOOL_LOOPS = 3`
+  - duplicate tool-call suppression
+  - fallback answer when loop becomes unproductive
+
+## High-Level Architecture
+
+```text
 POST /chat
-    │
-    ▼
-app/main.py              ← FastAPI entry point
-    │
-    ▼
-orchestrator/
-  ai_orchestrator.py     ← tool-calling loop (send → detect → execute → reply)
-  prompt_builder.py      ← system prompt (read-only rules)
-    │
-    ▼
-llm/
-  gemini_client.py       ← configures Gemini chat sessions (google.genai)
-    │
-    ▼
-tools/
-  order_tools.py         ← get_order, search_orders, estimate/check-price tools
-  docs_tools.py          ← search_endpoints, get_handler_context
-  knowledge_tools.py     ← enum lookup, flow trace, struct, graph traversal
-
-  ┌─────────────────────────────────────────────────────┐
-  │  Offline indexing pipeline (not part of /chat)      │
-  │                                                     │
-  │  indexer/                                           │
-  │    runner.py         ← orchestrates 4-pass indexing │
-  │    parsers/go/       ← Go enum/flow/type/route ext  │
-  │    parsers/react/    ← React component/API parsers  │
-  │    store.py          ← SQLite knowledge store       │
-  │    vector_store.py   ← ChromaDB semantic search     │
-  │    linker.py         ← cross-service endpoint match │
-  └─────────────────────────────────────────────────────┘
+  -> app/main.py
+  -> app/orchestrator/ai_orchestrator.py
+  -> app/prompts/builder.py (modular prompt assembly)
+  -> app/llm/gemini_client.py
+  -> app/tools/*.py (tool wrappers)
+  -> app/services/*.py (external API integrations)
 ```
 
----
+Layering rules:
+- `app/main.py`: HTTP transport only
+- `app/orchestrator/`: tool-calling loop + context + summarization
+- `app/tools/`: thin function wrappers (schema from signatures/docstrings)
+- `app/services/`: external API calls + auth + payload normalization
 
 ## Setup
 
-**1. Clone the repo and enter the directory**
+1. Clone and enter project
 
 ```bash
 git clone <repo-url>
 cd ai-admin-assistant
 ```
 
-**2. Create your `.env` file**
+2. Configure environment
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and set your Gemini API key + chat secret:
+Required keys (minimum):
 
-```
-GEMINI_API_KEY=your-gemini-api-key-here
+```env
+GEMINI_API_KEY=your-gemini-api-key
 CHAT_API_KEY=replace-with-strong-random-secret
 ```
 
-`/chat` requires an admin bearer token in request body:
+Optional but commonly used:
 
-```json
-{
-  "message": "...",
-  "conversation_id": "optional",
-  "service_token": "Bearer <admin-access-token>"
-}
+```env
+MODEL_NAME=gemini-flash-latest
+CHAT_AUTH_ENABLED=true
+CHAT_RATE_LIMIT_ENABLED=true
+CHAT_RATE_LIMIT_REQUESTS=30
+CHAT_RATE_LIMIT_WINDOW_SECONDS=60
+CHAT_ORDER_CACHE_TTL_SECONDS=60
 ```
 
-For indexing, also set repo paths:
+Indexer repo paths:
 
-```
+```env
 ORDER_SERVICE_REPO_PATH=/path/to/ggx-kr-order-service
 USER_SERVICE_REPO_PATH=/path/to/ggx-kr-user-service
 WEB2_REPO_PATH=/path/to/ggx-kr-consumer-web
 ```
 
-Get a free Gemini key at <https://aistudio.google.com/app/apikey>.
-
-**3. Install dependencies**
+3. Install dependencies
 
 ```bash
 make install
 ```
 
----
-
-## Running the server
+## Run
 
 ```bash
-make run          # Production mode
-make debug        # Development mode (auto-reload)
-make docker-run   # Docker
+make run
+make debug
+make docker-run
 ```
 
-The server starts on `http://localhost:8000`. Swagger docs: `http://localhost:8000/docs`
+Server: `http://localhost:8000`
+Swagger: `http://localhost:8000/docs`
 
----
+## Tool Inventory (Current)
 
-## Codebase indexer
+Total registered tools: **50**
 
-The indexer is the offline pipeline that reads Go and React source repos and extracts structured knowledge into a SQLite store + ChromaDB vector index. This knowledge powers the AI's ability to answer code/architecture questions at runtime.
+- Order/report tools: 18
+- User/admin tools: 20
+- Docs tools: 3
+- Knowledge tools: 9
 
-### What gets extracted
+Important note:
+- `get_delayed_orders` is intentionally not registered to avoid duplicate logical calls with `get_orders(status='Transit')`.
 
-| Entity | Go | React |
-|---|---|---|
-| Enums / const groups | ✅ | ✅ |
-| Struct / interface definitions | ✅ | ✅ |
-| Handler → service → repo flows | ✅ | Component → API call flows |
-| HTTP routes (Gin router parsing) | ✅ | — |
-| Handler source code (CodeChunks) | ✅ | — |
-| Graph edges (calls, defines, handles) | ✅ | routes_to, calls_api, dispatches |
-| Cross-service edges (x_calls) | — | Matched by linker |
-| Vector embeddings (semantic search) | ✅ | ✅ |
+## Authentication Model
 
-### Index a new Go service (e.g. user-service)
+- `/chat` request must pass chat API key (header auth)
+- `/chat.service_token` is forwarded to downstream order/user service calls
+- No credential-based auto-login from environment
 
-**Step 1.** Add the repo path to `.env`:
-
-```
-USER_SERVICE_REPO_PATH=/path/to/ggx-kr-user-service
-```
-
-**Step 2.** Run the indexer:
+## Example Requests
 
 ```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: replace-with-strong-random-secret" \
+  -d '{
+    "message": "What is the status of order 12345?",
+    "conversation_id": null,
+    "service_token": "Bearer <admin-access-token>"
+  }'
+```
+
+## Codebase Indexer
+
+Indexer builds offline knowledge (SQLite + vector store) used by docs/knowledge tools.
+
+Main commands:
+
+```bash
+make index-order-service
 make index-user-service
-```
-
-Or use the generic command for any service:
-
-```bash
+make index-web2
 make index-service SERVICE_REPO=/path/to/repo SERVICE_NAME=my-service LANG=go
-```
-
-**Step 3.** Run the linker (matches React API calls → Go handlers across services):
-
-```bash
 make link
-```
-
-**Step 4.** (Optional) Seed persona tags after indexing order-service:
-
-```bash
+make index-all
 make seed-personas
 ```
 
-### Full pipeline (all services + link)
+`make index-all` runs order-service + web2 + user-service indexing, then linker.
 
-```bash
-make index-all
-```
-
-Reads `ORDER_SERVICE_REPO_PATH`, `WEB2_REPO_PATH`, `USER_SERVICE_REPO_PATH` from `.env` and runs:
-order-service → web2 → user-service → linker.
-
-### Adding a new pre-configured service shortcut
-
-To add a new Makefile shortcut (e.g. `make index-driver-service`):
-
-1. Add `DRIVER_SERVICE_REPO_PATH=/path/to/repo` to `.env` and `.env.example`
-2. Add to Makefile:
-   ```makefile
-   index-driver-service:
-   	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep DRIVER_SERVICE_REPO_PATH | cut -d= -f2)" --service driver-service --lang go --vectors
-   ```
-3. Add to `index-all` target if you want it included in the full pipeline.
-
----
-
-## How tool calling works
-
-The AI **never guesses** data. Gemini is given Python functions as "tools".
-When the user asks a question requiring data, Gemini calls the appropriate tool,
-the orchestrator executes it locally, and sends the result back to Gemini for
-the final answer.
-
-```
-User:      "What is the status of order 12345?"
-    │
-    ▼
-Gemini:    [tool call] get_order_detail(order_id="12345")
-    │
-    ▼
-Orchestrator executes → returns order data
-    │
-    ▼
-Gemini:    "Order 12345 is currently in Transit status."
-```
-
----
-
-## Available tools (42)
-
-### Order tools — live API (10)
-
-| Tool | Description |
-|---|---|
-| `get_order_detail(order_id)` | Fetch a single order by ID |
-| `get_orders(status)` | Find orders by status |
-| `get_order_payment_status(order_id)` | Payment status for an order |
-| `get_order_cancel_fee(order_id)` | Cancel fee for an order |
-| `get_order_statistics()` | Order counts grouped by status |
-| `get_coupons()` | List available coupons |
-| `estimate_guest_price(payload)` | Estimate price for guest flow |
-| `estimate_authenticated_price(payload)` | Estimate price for authenticated flow |
-| `check_driver_price(payload)` | Estimate price for a specific driver |
-| `estimate_guest_home_moving_price(payload)` | Estimate guest home-moving price |
-
-### User tools — live API (18)
-### User tools — live API (20)
-
-| Tool | Description |
-|---|---|
-| `get_withdraw_reasons()` | Get withdrawal reason list |
-| `get_tos_contents()` | Get guest terms-of-service contents |
-| `get_feature_flags()` | Get global feature flags |
-| `get_my_feature_flags()` | Get feature flags for current authenticated user |
-| `get_user_profile(user_id)` | Get user profile by ID (includes lastSignIn/lastAccessedAt when available) |
-| `get_my_user_profile()` | Get current authenticated user profile (includes lastSignIn/lastAccessedAt when available) |
-| `search_users(name, phone_number, email, page_index, page_size)` | Search users with paging |
-| `get_user_driver(user_id)` | Get driver-linked user profile by user ID |
-| `get_branch_by_id(branch_id)` | Get branch by ID |
-| `search_branches(org_name, branch_name, page_index, page_size)` | Search branches |
-| `get_organization_by_id(organization_id)` | Get organization by ID |
-| `search_organizations(organization_name, division, page_index, page_size)` | Search organizations |
-| `verify_client_token(token)` | Verify client token (read-only validation endpoint) |
-| `list_admin_roles(department_id)` | List admin roles (optional department filter) |
-| `list_admin_departments()` | List admin departments |
-| `list_admin_menus()` | List admin menus |
-| `get_admin_permissions(role_id)` | Get permissions by role |
-| `get_accessible_menu_tree(role_id)` | Get accessible menu tree by role |
-| `validate_b2c_org_code(org_code)` | Validate B2C organization code (B2B admin workflows) |
-| `verify_biz_registration_number(biz_number, user_id)` | Verify business registration number (compliance audits) |
-
-### Docs tools — indexed endpoint/handler knowledge (3)
-
-| Tool | Description |
-|---|---|
-| `list_available_docs()` | List available handlers, endpoints, indexed services |
-| `search_endpoints(keyword)` | Search BE endpoints by path/handler name |
-| `get_handler_context(name)` | Get Go handler source code + endpoint + service calls |
-
-### Knowledge tools — indexed codebase (9)
-
-| Tool | Description |
-|---|---|
-| `lookup_enum(name)` | Look up enum/const definitions |
-| `explain_status(code)` | Explain a numeric status code across all enums |
-| `trace_service_flow(handler)` | Trace handler → service → repo call chain |
-| `get_struct_definition(name)` | Look up Go struct fields and JSON tags |
-| `search_codebase(query)` | Semantic + full-text code search |
-| `traverse_graph(name, edge_types)` | Multi-hop graph traversal across code entities |
-| `find_api_consumers(endpoint)` | Find React components calling an API endpoint |
-| `trace_full_stack(endpoint)` | Full trace: React page → API → handler → service → repo |
-| `get_knowledge_stats()` | Summary stats of indexed knowledge |
-
-## Authentication model
-
-- The assistant no longer logs in to user-service using env credentials.
-- Downstream user/order-service calls always use the admin token provided by the caller in `/chat.service_token`.
-- If token is missing/invalid/expired, tools will return service errors (for example 401 mapped into service error payloads).
-
----
-
-## Example API requests
-
-```bash
-# Query an order
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: replace-with-strong-random-secret" \
-  -d '{"message": "What is the status of order 12345?", "service_token": "Bearer <admin-access-token>"}'
-
-# Ask about code
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: replace-with-strong-random-secret" \
-  -d '{"message": "How does the EstimateGuest handler work?", "service_token": "Bearer <admin-access-token>"}'
-
-# Follow-up with conversation continuity
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: replace-with-strong-random-secret" \
-  -d '{"message":"What about its cancel fee?","conversation_id":"<id-from-previous-response>","service_token":"Bearer <admin-access-token>"}'
-```
-
----
-
-## Makefile commands
+## Makefile Commands
 
 | Command | Description |
 |---|---|
-| `make install` | Create virtualenv and install dependencies |
-| `make run` | Start the server |
-| `make debug` | Start the server with hot-reload |
-| `make docker-run` | Build and run with Docker Compose |
-| `make index-order-service` | Index order-service |
-| `make index-user-service` | Index user-service |
-| `make index-web2` | Index web2 (React frontend) |
-| `make index-service` | Index any service: `SERVICE_REPO=... SERVICE_NAME=... LANG=...` |
-| `make link` | Run cross-service endpoint linker |
-| `make index-all` | Index all configured services + link |
-| `make seed-personas` | Seed persona tags on enums (after order-service index) |
-| `make clean` | Remove the virtualenv |
+| `make install` | Create venv and install dependencies |
+| `make deps` | Reinstall dependencies into existing venv |
+| `make run` | Run server |
+| `make debug` | Run server with auto-reload |
+| `make docker-run` | Run via Docker Compose |
+| `make index-service` | Generic index entry point |
+| `make index-order-service` | Index order-service repo |
+| `make index-user-service` | Index user-service repo |
+| `make index-web2` | Index web2 repo |
+| `make link` | Build cross-service endpoint links |
+| `make index-all` | Run all configured indexers + linker |
+| `make seed-personas` | Seed persona tags |
+| `make clean` | Remove virtual environment |

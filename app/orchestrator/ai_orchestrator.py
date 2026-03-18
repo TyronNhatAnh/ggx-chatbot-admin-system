@@ -34,6 +34,15 @@ _fallback_counters = {
 _fallback_counter_lock = threading.Lock()
 _HANGUL_CHAR_PATTERN = re.compile(r"[\uac00-\ud7a3]")
 _LATIN_CHAR_PATTERN = re.compile(r"[A-Za-z]")
+# U+1EA0-U+1EF9: Latin Extended Additional tone marks — almost exclusively Vietnamese.
+_VIETNAMESE_CHAR_PATTERN = re.compile(r"[\u1ea0-\u1ef9]")
+# Markers we inject ourselves; strip them from user input to prevent prompt injection.
+_INJECTION_PATTERN = re.compile(r"\[\s*(?:Instruction|Today's date)\s*:", re.IGNORECASE)
+
+
+def _sanitize_user_message(message: str) -> str:
+    """Neutralize user-supplied text that impersonates internal prompt directives."""
+    return _INJECTION_PATTERN.sub("[~", message)
 
 
 def _response_parts(response: types.GenerateContentResponse) -> list[types.Part]:
@@ -62,10 +71,16 @@ def _detect_user_language(message: str) -> str | None:
 
     Returns:
         "en" for English-leaning messages, "ko" for Korean-leaning messages,
+        "vi" for Vietnamese-leaning messages,
         or None when no clear signal exists.
     """
     if not message:
         return None
+
+    # Vietnamese check first: tone-mark characters (U+1EA0-U+1EF9) are
+    # almost exclusively Vietnamese and not shared by ko/en.
+    if _VIETNAMESE_CHAR_PATTERN.search(message):
+        return "vi"
 
     hangul_count = len(_HANGUL_CHAR_PATTERN.findall(message))
     latin_count = len(_LATIN_CHAR_PATTERN.findall(message))
@@ -91,11 +106,14 @@ def _reply_language_mismatch(user_language: str | None, reply: str) -> bool:
         return has_hangul
     if user_language == "ko":
         return has_latin and not has_hangul
+    if user_language == "vi":
+        # Vietnamese reply must contain Vietnamese diacritics; Korean is always wrong.
+        return has_hangul or not _VIETNAMESE_CHAR_PATTERN.search(reply)
     return False
 
 
 def _language_rewrite_prompt(user_language: str, reply: str) -> str:
-    target = "English" if user_language == "en" else "Korean"
+    target = {"en": "English", "ko": "Korean", "vi": "Vietnamese"}.get(user_language, "English")
     return (
         f"Rewrite the following assistant answer into {target} only. "
         "Preserve every fact exactly (numbers, IDs, dates, statuses, addresses, money values). "
@@ -681,8 +699,11 @@ class AIOrchestrator:
         # Auto-extract entities from user message into long-term memory
         self._memory.extract_and_store_entities(sid, message)
 
+        # Sanitize before embedding in LLM context to block prompt injection.
+        safe_message = _sanitize_user_message(message)
+
         # Build context using hybrid memory (summary + long-term + recent turns)
-        effective_message = build_context(sid, message, self._memory)
+        effective_message = build_context(sid, safe_message, self._memory)
         # Always inject today's date so Gemini can compute relative periods ("last 7 days", etc.)
         effective_message = f"[Today's date: {date.today().isoformat()}]\n\n{effective_message}"
 

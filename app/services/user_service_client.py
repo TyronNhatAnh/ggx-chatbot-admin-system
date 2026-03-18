@@ -13,7 +13,7 @@ import time
 import httpx
 
 from app.config import settings
-from app.services.auth_token_manager import get_token_manager
+from app.services.auth_token_manager import bearer_header, ensure_token
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,6 @@ class UserServiceClient:
 
     def __init__(self) -> None:
         self._base_url: str = settings.user_service_base_url.rstrip("/")
-        self._token_mgr = get_token_manager()
         self._http = httpx.Client(timeout=10.0)
 
     def _request(
@@ -38,8 +37,8 @@ class UserServiceClient:
     ) -> dict | list:
         headers: dict[str, str] = {}
         if requires_auth:
-            self._token_mgr.ensure_token()
-            headers = self._token_mgr.bearer_header
+            ensure_token()
+            headers = bearer_header()
 
         url = f"{self._base_url}{_API_PREFIX}{path}"
         t = time.perf_counter()

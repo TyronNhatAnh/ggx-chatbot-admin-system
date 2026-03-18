@@ -1,5 +1,6 @@
 import logging
 import math
+import re
 import threading
 import time
 import uuid
@@ -50,8 +51,11 @@ app = FastAPI(
 )
 
 _orchestrator: AIOrchestrator | None = None
+_orchestrator_lock = threading.Lock()
 _CHAT_API_KEY_HEADER = "x-api-key"
 _REQUEST_ID_HEADER = "x-request-id"
+# Only accept safe characters in the client-supplied request ID to prevent log injection.
+_SAFE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9\-]{1,64}$")
 
 
 class InMemoryFixedWindowRateLimiter:
@@ -71,6 +75,11 @@ class InMemoryFixedWindowRateLimiter:
             bucket = self._events[key]
             while bucket and bucket[0] <= cutoff:
                 bucket.popleft()
+
+            # Evict empty buckets to prevent unbounded memory growth from spoofed IPs.
+            stale_keys = [k for k, q in self._events.items() if not q and k != key]
+            for k in stale_keys:
+                del self._events[k]
 
             if len(bucket) >= self._max_requests:
                 retry_after = max(1, math.ceil(self._window_seconds - (now - bucket[0])))
@@ -106,9 +115,11 @@ def get_orchestrator() -> AIOrchestrator:
     """Return a singleton orchestrator instance, lazily created on first use."""
     global _orchestrator  # noqa: PLW0603
     if _orchestrator is None:
-        logger.info("[Startup] Initialising AIOrchestrator...")
-        _orchestrator = AIOrchestrator()
-        logger.info("[Startup] AIOrchestrator ready.")
+        with _orchestrator_lock:
+            if _orchestrator is None:
+                logger.info("[Startup] Initialising AIOrchestrator...")
+                _orchestrator = AIOrchestrator()
+                logger.info("[Startup] AIOrchestrator ready.")
     return _orchestrator
 
 
@@ -165,7 +176,9 @@ def _reset_chat_rate_limiter() -> None:
 def _client_identity(request: Request) -> str:
     forwarded = (request.headers.get("x-forwarded-for") or "").strip()
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        # Use the rightmost IP (appended by a trusted load balancer), not the
+        # leftmost which is client-controlled and trivially spoofed.
+        return forwarded.split(",")[-1].strip()
 
     if request.client and request.client.host:
         return request.client.host
@@ -192,7 +205,8 @@ def _enforce_chat_rate_limit(request: Request) -> None:
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start = time.perf_counter()
-    request_id = (request.headers.get(_REQUEST_ID_HEADER) or str(uuid.uuid4())).strip() or str(uuid.uuid4())
+    _raw_id = (request.headers.get(_REQUEST_ID_HEADER) or "").strip()
+    request_id = _raw_id if _SAFE_REQUEST_ID_RE.match(_raw_id) else str(uuid.uuid4())
     token = set_request_id(request_id)
     try:
         logger.info("[Request ] %s %s", request.method, request.url.path)
@@ -256,7 +270,7 @@ async def chat(request: ChatRequest, http_request: Request):
         return ChatResponse(reply=reply, tools_called=tools_called, conversation_id=conversation_id)
     except ValueError as exc:
         logger.error("[Chat    ] ValueError: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail="Internal server error")
     except Exception as exc:
         if _is_gemini_quota_error(exc):
             logger.warning("[Chat    ] Gemini quota exhausted: %s", exc)

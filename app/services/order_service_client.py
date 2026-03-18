@@ -15,7 +15,7 @@ from datetime import date, timedelta
 import httpx
 
 from app.config import settings
-from app.services.auth_token_manager import get_token_manager
+from app.services.auth_token_manager import bearer_header, ensure_token
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,6 @@ class OrderServiceClient:
 
     def __init__(self) -> None:
         self._base_url: str = settings.order_service_base_url.rstrip("/")
-        self._token_mgr = get_token_manager()
         # Persistent session — reuses TCP connections across tool calls.
         self._http = httpx.Client(timeout=10.0)
 
@@ -64,8 +63,8 @@ class OrderServiceClient:
         """
         headers: dict[str, str] = {}
         if requires_auth:
-            self._token_mgr.ensure_token()
-            headers = self._token_mgr.bearer_header
+            ensure_token()
+            headers = bearer_header()
 
         url = f"{self._base_url}{_API_PREFIX}{path}"
         logger.info("[HTTP %s] %s  params=%s", method, url, params)
@@ -655,7 +654,10 @@ class OrderServiceClient:
         # Normalize orgId: accept orgId or org_id.
         org_id = source.get("orgId") or source.get("org_id")
         if org_id is not None:
-            normalized["orgId"] = int(org_id)
+            try:
+                normalized["orgId"] = int(org_id)
+            except (TypeError, ValueError):
+                logger.warning("Invalid orgId value %r — ignoring", org_id)
             normalized.pop("org_id", None)
 
         # Remove snake_case aliases if present.
@@ -692,7 +694,10 @@ class OrderServiceClient:
         # Normalize orgId
         org_id = source.get("orgId") or source.get("org_id")
         if org_id is not None:
-            normalized["orgId"] = int(org_id)
+            try:
+                normalized["orgId"] = int(org_id)
+            except (TypeError, ValueError):
+                logger.warning("Invalid orgId value %r — ignoring", org_id)
             normalized.pop("org_id", None)
 
         # Normalize eTaxStatus (accept common aliases, keep canonical API key).
@@ -703,7 +708,10 @@ class OrderServiceClient:
             or source.get("e_tax_status")
         )
         if etax_status is not None:
-            normalized["eTaxStatus"] = int(etax_status)
+            try:
+                normalized["eTaxStatus"] = int(etax_status)
+            except (TypeError, ValueError):
+                logger.warning("Invalid eTaxStatus value %r — ignoring", etax_status)
 
         normalized.pop("etaxStatus", None)
         normalized.pop("etax_status", None)
