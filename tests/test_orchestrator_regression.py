@@ -51,7 +51,7 @@ class _FakeModel:
 
 class OrchestratorRegressionTests(unittest.TestCase):
     def test_extract_order_id_candidates_skips_org_like_tokens(self) -> None:
-        candidates = _extract_order_id_candidates("to chuc nay xem DHLSC va ORD-12345 va 1320627")
+        candidates = _extract_order_id_candidates("this organization view DHLSC and ORD-12345 and 1320627")
         self.assertEqual(candidates, ["ORD-12345", "1320627"])
 
     def test_duplicate_tool_calls_are_suppressed(self) -> None:

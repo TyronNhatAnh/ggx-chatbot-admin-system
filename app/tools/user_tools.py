@@ -37,17 +37,17 @@ def get_my_user_profile() -> dict:
 
 
 def search_users(
-    name: str = "",
-    phone_number: str = "",
-    email: str = "",
+    keyword: str = "",
+    organization_id: int = 0,
+    branch_id: int = 0,
     page_index: int = 1,
     page_size: int = 20,
 ) -> dict:
-    """Search users (GET /users/search). Read-only lookup by name/phone/email with paging."""
+    """Search users (GET /users/search). Searches by keyword (matches name/phone/email), with optional org/branch filter."""
     return get_user_client().search_users(
-        name=name or None,
-        phone_number=phone_number or None,
-        email=email or None,
+        keyword=keyword or None,
+        organization_id=organization_id if organization_id > 0 else None,
+        branch_id=branch_id if branch_id > 0 else None,
         page_index=page_index,
         page_size=page_size,
     )
@@ -64,15 +64,15 @@ def get_branch_by_id(branch_id: int) -> dict:
 
 
 def search_branches(
-    org_name: str = "",
-    branch_name: str = "",
+    keyword: str = "",
+    organization_id: int = 0,
     page_index: int = 1,
     page_size: int = 20,
 ) -> dict:
-    """Search branches (GET /branch/search)."""
+    """Search branches (GET /branch/search). Searches by keyword (branch name), with optional organization_id filter."""
     return get_user_client().search_branches(
-        org_name=org_name or None,
-        branch_name=branch_name or None,
+        keyword=keyword or None,
+        organization_id=organization_id if organization_id > 0 else None,
         page_index=page_index,
         page_size=page_size,
     )
@@ -84,15 +84,15 @@ def get_organization_by_id(organization_id: int) -> dict:
 
 
 def search_organizations(
-    organization_name: str = "",
-    division: str = "",
+    keyword: str = "",
+    org_division: str = "",
     page_index: int = 1,
     page_size: int = 20,
 ) -> dict:
-    """Search organizations (GET /organization/search)."""
+    """Search organizations (GET /organization/search). Searches by keyword (org name). Optional org_division filter: b2c, b2b, driver, customer."""
     return get_user_client().search_organizations(
-        organization_name=organization_name or None,
-        division=division or None,
+        keyword=keyword or None,
+        org_division=org_division or None,
         page_index=page_index,
         page_size=page_size,
     )

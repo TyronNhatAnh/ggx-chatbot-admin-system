@@ -3,21 +3,26 @@ import logging
 import re
 import threading
 import time
+from datetime import date
 from typing import Any
 
 from google.genai import types
 
 from app.config import settings
 from app.llm.gemini_client import create_gemini_model
-from app.orchestrator.context_store import CachedOrderRecord, ConversationState, InMemoryConversationStore
+from app.orchestrator.context_builder import build_context
+from app.orchestrator.context_store import CachedOrderRecord, ConversationState
+from app.orchestrator.memory_service import MemoryItem, MemoryService, MemoryType
+from app.orchestrator.summarizer import summarize_conversation
+from app.prompts.builder import build_system_prompt
 from app.tools import ALL_TOOL_FUNCTIONS, TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
 MAX_TOOL_LOOPS = 3      # max Gemini round-trips in tool loop → caps total Gemini calls at MAX_TOOL_LOOPS+1
-CONTEXT_HISTORY_TURNS = 4
-CONTEXT_TEXT_BUDGET = 900
 ORDER_CACHE_MAX_ITEMS = 24
 ORDER_CACHE_TTL_SECONDS = 60
+CONTEXT_HISTORY_TURNS = 5   # recent turns to include in contextual message
+CONTEXT_TEXT_BUDGET = 4000  # max chars for context text before truncation
 # Accept explicit ORD-* IDs or numeric IDs only.
 # Prevent false positives like organization names (e.g. "DHLSC").
 ORDER_ID_PATTERN = re.compile(r"\b(?:ORD-[A-Za-z0-9-]{3,}|\d{5,})\b", re.IGNORECASE)
@@ -146,29 +151,35 @@ def _extract_context_hints(tool_results: dict[str, Any]) -> str:
 
     hints: list[str] = []
 
-    # Extract organization names from report results (org names as context for follow-ups)
-    for tool_name in ("get_statement_of_use_summary", "get_statement_of_use_detail"):
-        report_data = tool_results.get(tool_name)
+    # Extract organization names + IDs from report results (for follow-up context)
+    for rpt_name in (
+        "get_statement_of_use_summary", "get_statement_of_use_detail",
+        "get_statement_of_use_driver_summary", "get_statement_of_use_driver_detail",
+    ):
+        report_data = tool_results.get(rpt_name)
         if not isinstance(report_data, dict):
             continue
         rows = report_data.get("rows", [])
         if not isinstance(rows, list):
             continue
-        org_names: list[str] = []
+        org_entries: list[str] = []
         for row in rows[:5]:  # First 5 orgs
             if isinstance(row, dict):
-                org = row.get("organizationName") or row.get("organizationId")
-                if org and isinstance(org, str) and org not in org_names:
-                    org_names.append(org)
-        if org_names:
-            hints.append(f"Organizations in report: {', '.join(org_names)}")
+                name = row.get("organizationName") or ""
+                oid = row.get("organizationId") or ""
+                if name and isinstance(name, str):
+                    label = f"{name} (id:{oid})" if oid else name
+                    if label not in org_entries:
+                        org_entries.append(label)
+        if org_entries:
+            hints.append(f"Organizations in report: {', '.join(org_entries)}")
 
     # Extract order IDs from orders list (for follow-up context)
     for tool_name in ("get_orders", "get_delayed_orders"):
         orders_data = tool_results.get(tool_name)
         if not isinstance(orders_data, dict):
             continue
-        orders = orders_data.get("orders", [])
+        orders = orders_data.get("orders", orders_data.get("delayed_orders", []))
         if not isinstance(orders, list):
             continue
         order_ids: list[str] = []
@@ -179,6 +190,17 @@ def _extract_context_hints(tool_results: dict[str, Any]) -> str:
                     order_ids.append(oid)
         if order_ids:
             hints.append(f"Recent orders: {', '.join(order_ids)}")
+
+    # Extract user profile data (for cross-turn reference reuse)
+    for usr_name in ("get_user_profile", "search_users"):
+        user_data = tool_results.get(usr_name)
+        if not isinstance(user_data, dict):
+            continue
+        uid = user_data.get("userId") or user_data.get("id")
+        uname = user_data.get("name") or user_data.get("userName")
+        if uid:
+            label = f"{uname} (id:{uid})" if uname else f"id:{uid}"
+            hints.append(f"User in context: {label}")
 
     return "\n".join(hints) if hints else ""
 
@@ -259,6 +281,285 @@ def _log_structured_metrics(
     logger.info("[Metrics  ] %s", json.dumps(payload, sort_keys=True))
 
 
+_REPORT_INTENT_KEYWORDS = (
+    # English
+    "statement",
+    "report",
+    "revenue",
+    "summary",
+    # Korean
+    "통계",
+    "보고서",
+    "매출",
+    "요약",
+    "1 week",
+    "this week",
+    "this month",
+)
+_REPORT_TOOL_NAMES = {
+    "get_statement_of_use_summary",
+    "get_statement_of_use_detail",
+    "get_statement_of_use_driver_summary",
+    "get_statement_of_use_driver_detail",
+    "get_b2b_tracking_service_detail",
+}
+
+_DATE_TOKEN_PATTERN = re.compile(r"\b(?:\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b")
+# Matches "7 days", "7일", "2 weeks", "3 months", "2주", "3달" etc. (English and Korean only)
+_NUMERIC_PERIOD_PATTERN = re.compile(
+    r"\b\d+\s*(?:day|days|week|weeks|month|months|일|주|달|개월)\b",
+    re.IGNORECASE,
+)
+_RELATIVE_DATE_KEYWORDS = (
+    "today",
+    "yesterday",
+    "this week",
+    "last week",
+    "this month",
+    "last month",
+    "this year",
+    "last year",
+    "week",
+    "month",
+    "year",
+    # Korean
+    "오늘",
+    "어제",
+    "이번 주",
+    "지난 주",
+    "이번 달",
+    "지난 달",
+    "이번 년",
+)
+
+
+_DETAIL_INTENT_KEYWORDS = (
+    # English
+    "detail",
+    "order id",
+    "orderid",
+    "per order",
+    "list order",
+    "list orders",
+    # Korean
+    "상세",
+    "주문 목록",
+    "주문 id",
+    "건별",
+)
+
+_SUMMARY_TOOL_NAMES = {
+    "get_statement_of_use_summary",
+    "get_statement_of_use_driver_summary",
+}
+
+# ---------------------------------------------------------------------------
+# Feature detection — keyword-based routing for modular prompt composition.
+# Maps each feature domain to keywords (English + Korean).
+# ---------------------------------------------------------------------------
+_FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "report-summary": (
+        "statement", "report", "revenue", "통계", "보고서", "매출", "요약",
+    ),
+    "order-lookup": (
+        "order", "delivery", "coupon", "cancel fee", "reorder", "shipping record",
+        "price estimate", "pricing", "주문", "배달", "배송", "쿠폰", "취소",
+    ),
+    "driver-tracking": (
+        "driver", "route", "tracking", "기사", "운전", "배차",
+    ),
+    "user-admin": (
+        "user profile", "organization", "branch", "admin role", "permission",
+        "feature flag", "department", "사용자", "조직", "지점", "권한",
+    ),
+    "knowledge-code": (
+        "enum", "status code", "struct", "handler", "service flow",
+        "endpoint", "codebase", "api consumer", "graph",
+    ),
+}
+
+
+def _detect_feature_key(message: str) -> str | None:
+    """Detect the most likely feature domain from the user's message.
+
+    Simple keyword scoring — no LLM call. Returns None when no clear match.
+    """
+    lower = (message or "").lower()
+    if not lower:
+        return None
+
+    best_key: str | None = None
+    best_score = 0
+    for feature, keywords in _FEATURE_KEYWORDS.items():
+        score = sum(1 for kw in keywords if kw in lower)
+        if score > best_score:
+            best_score = score
+            best_key = feature
+
+    return best_key
+
+
+def _looks_like_report_query(message: str) -> bool:
+    normalized = (message or "").lower().strip()
+    if not normalized:
+        return False
+    return any(keyword in normalized for keyword in _REPORT_INTENT_KEYWORDS)
+
+
+def _wants_detail_level(message: str) -> bool:
+    """True when the user's message implies order-level / per-row detail."""
+    normalized = (message or "").lower().strip()
+    if not normalized:
+        return False
+    return any(kw in normalized for kw in _DETAIL_INTENT_KEYWORDS)
+
+
+def _message_has_explicit_date_intent(message: str) -> bool:
+    """True when the current user message explicitly specifies a date/time filter."""
+    normalized = (message or "").lower().strip()
+    if not normalized:
+        return False
+
+    if _DATE_TOKEN_PATTERN.search(normalized):
+        return True
+
+    if _NUMERIC_PERIOD_PATTERN.search(normalized):
+        return True
+
+    return any(keyword in normalized for keyword in _RELATIVE_DATE_KEYWORDS)
+
+
+def _sanitize_report_tool_args(tool_name: str, tool_args: dict[str, Any], message: str) -> dict[str, Any]:
+    """Drop stale date args for report tools when the user did not specify any date in this turn.
+
+    This prevents Gemini from carrying old date ranges from prior context and
+    lets the service client apply dynamic defaults (last 3 days from today).
+    """
+    if tool_name not in _REPORT_TOOL_NAMES:
+        return tool_args
+    if _message_has_explicit_date_intent(message):
+        return tool_args
+
+    sanitized = dict(tool_args)
+    for key in ("from_date", "to_date", "fromDate", "toDate"):
+        sanitized.pop(key, None)
+    return sanitized
+
+
+def _build_report_note(
+    rows: list[dict],
+    tool_name: str,
+    *,
+    user_wants_detail: bool = False,
+    org_search_results: dict | None = None,
+    tool_had_org_filter: bool = False,
+) -> str:
+    """Build a smart _note for report tool results.
+
+    Extracts distinct organization names and flags potential ambiguity
+    (e.g. orgs sharing a common prefix) so Gemini can apply entity
+    resolution instead of guessing.
+
+    When a summary tool was called but the user asked for detail-level
+    data, injects a corrective instruction telling Gemini to call the
+    detail variant.
+
+    When search_organizations was already called but the report tool
+    was called without organization_id, reminds Gemini to answer from
+    the rows it already has (client-side filter by org name).
+    """
+    if not rows:
+        return "Report returned no rows for this filter/date range."
+
+    # Collect distinct orgs from the result set.
+    org_entries: dict[str, str] = {}  # orgName -> orgId
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("organizationName") or ""
+        oid = str(row.get("organizationId") or "")
+        if name and name not in org_entries:
+            org_entries[name] = oid
+
+    # If summary was called but user wanted detail, inject corrective note.
+    is_summary_tool = tool_name in _SUMMARY_TOOL_NAMES
+    if is_summary_tool and user_wants_detail:
+        detail_tool = tool_name.replace("_summary", "_detail")
+        return (
+            f"WARNING: You called {tool_name} (summary) but the user is asking for "
+            "detail-level data (order IDs, per-order payment, etc.). "
+            "Summary rows do NOT contain orderId or per-order fields. "
+            f"You MUST now call {detail_tool} with the same date/pay params "
+            "to get order-level rows. Do NOT answer from summary data alone."
+        )
+
+    parts = [
+        "Answer from these rows ONLY. Apply entity-resolution and answer-grounding rules.",
+    ]
+
+    # If search_organizations was called but report was not filtered by org_id,
+    # instruct Gemini to filter the rows client-side instead of re-calling.
+    if org_search_results and not tool_had_org_filter:
+        searched_orgs = org_search_results.get("organizations", [])
+        if isinstance(searched_orgs, list) and searched_orgs:
+            org_hints = []
+            for o in searched_orgs[:5]:
+                if isinstance(o, dict):
+                    oname = o.get("organizationName") or o.get("name") or ""
+                    oid = o.get("organizationId") or o.get("id") or ""
+                    if oname:
+                        org_hints.append(f"{oname} (id:{oid})")
+            if org_hints:
+                parts.append(
+                    "IMPORTANT: You already searched for organizations and found: "
+                    + ", ".join(org_hints)
+                    + ". The report data above contains ALL organizations. "
+                    "Filter rows by matching organizationName or organizationId to the user's query. "
+                    "Do NOT re-call this report tool — answer from these rows now."
+                )
+
+    if org_entries:
+        # Detect groups of similar names using multiple strategies:
+        # 1. Shared prefix (>=3 chars)
+        # 2. Case-insensitive substring containment
+        names = sorted(org_entries.keys())
+        similar_groups: list[list[str]] = []
+        used: set[str] = set()
+        for i, a in enumerate(names):
+            if a in used:
+                continue
+            group = [a]
+            a_lower = a.lower()
+            prefix_a = a_lower[:3]
+            for b in names[i + 1:]:
+                if b in used:
+                    continue
+                b_lower = b.lower()
+                # Match on shared prefix OR one name is a substring of the other
+                if b_lower[:3] == prefix_a or a_lower in b_lower or b_lower in a_lower:
+                    group.append(b)
+            if len(group) > 1:
+                similar_groups.append(group)
+                used.update(group)
+
+        org_list = ", ".join(f"{n} (id:{org_entries[n]})" for n in names[:15])
+        parts.append(f"Distinct organizations in result: {org_list}.")
+
+        if similar_groups:
+            warnings = []
+            for grp in similar_groups:
+                items = " vs ".join(f'"{n}" (id:{org_entries[n]})' for n in grp)
+                warnings.append(items)
+            parts.append(
+                "AMBIGUITY WARNING — similar organization names detected: "
+                + "; ".join(warnings)
+                + ". These are DIFFERENT entities. Try exact match first, then case-insensitive match. "
+                "If user query does not match exactly one name, list all candidates and ask user to clarify."
+            )
+
+    return " ".join(parts)
+
+
 class AIOrchestrator:
     """
     Manages the full conversation lifecycle with Gemini, including the
@@ -280,7 +581,7 @@ class AIOrchestrator:
         # system prompt, so it is safe to reuse across requests.
         logger.info("[Orchestrator] Loading Gemini model with %d tools...", len(ALL_TOOL_FUNCTIONS))
         self._model = create_gemini_model(ALL_TOOL_FUNCTIONS)
-        self._context_store = InMemoryConversationStore(ttl_seconds=1800, max_turns=12)
+        self._memory = MemoryService()
         logger.info("[Orchestrator] Gemini model ready.")
 
     def chat(self, message: str, conversation_id: str | None = None) -> tuple[str, list[str], str]:
@@ -305,17 +606,37 @@ class AIOrchestrator:
             ValueError: If Gemini requests a tool that is not in the registry.
         """
         total_start = time.perf_counter()
-        state = self._context_store.get_or_create(conversation_id)
+        session = self._memory.get_or_create(conversation_id)
+        sid = session.session_id
+
+        # Legacy order-cache state (conversation-level) — kept for cache hits
+        from app.orchestrator.context_store import InMemoryConversationStore
+        if not hasattr(self, '_order_state_store'):
+            self._order_state_store = InMemoryConversationStore(ttl_seconds=1800, max_turns=0)
+        state = self._order_state_store.get_or_create(sid)
         _evict_expired_order_cache(state)
 
         current_message_order_ids = _extract_order_id_candidates(message)
         if current_message_order_ids:
             state.last_focus_order_id = current_message_order_ids[0]
 
-        effective_message = _build_contextual_message(message, state)
+        # Auto-extract entities from user message into long-term memory
+        self._memory.extract_and_store_entities(sid, message)
+
+        # Build context using hybrid memory (summary + long-term + recent turns)
+        effective_message = build_context(sid, message, self._memory)
+        # Always inject today's date so Gemini can compute relative periods ("last 7 days", etc.)
+        effective_message = f"[Today's date: {date.today().isoformat()}]\n\n{effective_message}"
+
+        # Build a feature-specific system prompt for this request.
+        feature_key = _detect_feature_key(message)
+        system_prompt = build_system_prompt(feature_key=feature_key)
 
         # A fresh session per request keeps state isolated between users.
-        chat_session = self._model.start_chat(enable_automatic_function_calling=False)
+        chat_session = self._model.start_chat(
+            enable_automatic_function_calling=False,
+            system_instruction=system_prompt,
+        )
 
         # Step 1 — send the user message to Gemini
         logger.info("[Step 1/N] Sending user message to Gemini...")
@@ -331,6 +652,9 @@ class AIOrchestrator:
         gemini_elapsed_total = first_gemini_elapsed
         tool_elapsed_total = 0.0
         seen_calls: set[tuple[str, str]] = set()
+        # If Gemini tries to answer a report query without tools on the first pass,
+        # force one retry that explicitly asks for a report tool call.
+        report_tool_retry_used = False
         # Per-turn cache: orderId -> order dict from search_orders results.
         # Combined with conversation cache to avoid redundant HTTP calls.
         order_cache: dict[str, dict] = {}
@@ -350,13 +674,44 @@ class AIOrchestrator:
 
             # No tool calls → Gemini produced the final answer
             if not function_calls:
+                if (
+                    not tools_called
+                    and loop == 1
+                    and not report_tool_retry_used
+                    and _looks_like_report_query(message)
+                ):
+                    report_tool_retry_used = True
+                    logger.warning(
+                        "[Step %d  ] Report-like query answered without tools on first pass. Forcing one tool-call retry.",
+                        loop,
+                    )
+                    gemini_calls += 1
+                    t = time.perf_counter()
+                    if _wants_detail_level(message):
+                        retry_msg = (
+                            "This is a detail-level report query. You MUST call "
+                            "get_statement_of_use_detail (NOT summary) to get per-order rows "
+                            "with orderId, paymentMethod, etc. Do not answer from memory."
+                        )
+                    else:
+                        retry_msg = (
+                            "This is a report query. You MUST call an appropriate report tool first "
+                            "(get_statement_of_use_summary/detail or driver variants) before answering. "
+                            "Do not answer from memory."
+                        )
+                    response = chat_session.send_message(retry_msg)
+                    gemini_elapsed = time.perf_counter() - t
+                    gemini_elapsed_total += gemini_elapsed
+                    logger.info("[Step %d  ] Gemini retry response  elapsed=%.3fs", loop, gemini_elapsed)
+                    continue
+
                 elapsed = time.perf_counter() - total_start
                 logger.info(
                     "[Step %d  ] Gemini returned final answer  tools_called=%s  gemini_calls=%d  total_elapsed=%.3fs",
                     loop, tools_called, gemini_calls, elapsed,
                 )
                 _log_structured_metrics(
-                    conversation_id=state.conversation_id,
+                    conversation_id=sid,
                     tools_called=tools_called,
                     gemini_calls=gemini_calls,
                     gemini_latency_seconds=gemini_elapsed_total,
@@ -413,7 +768,7 @@ class AIOrchestrator:
                     "Please retry with a more specific query."
                 )
                 _log_structured_metrics(
-                    conversation_id=state.conversation_id,
+                    conversation_id=sid,
                     tools_called=tools_called,
                     gemini_calls=gemini_calls,
                     gemini_latency_seconds=gemini_elapsed_total,
@@ -421,14 +776,8 @@ class AIOrchestrator:
                     total_latency_seconds=total_elapsed,
                     fallback_reason="max_tool_loop_synthesized" if synthesis_reply else "max_tool_loop",
                 )
-                self._context_store.append_turn(
-                    state.conversation_id,
-                    user_message=message,
-                    assistant_reply=reply,
-                    tools_called=tools_called,
-                    tool_results=tool_results_collected,
-                )
-                return (reply, tools_called, state.conversation_id)
+                self._record_turn_and_summarize(sid, message, reply, tools_called, tool_results_collected)
+                return (reply, tools_called, sid)
 
             logger.info(
                 "[Step %d  ] Gemini requested %d tool(s): %s",
@@ -440,6 +789,7 @@ class AIOrchestrator:
             for fc in function_calls:
                 tool_name = fc.name
                 tool_args = dict(fc.args or {})
+                tool_args = _sanitize_report_tool_args(tool_name, tool_args, message)
                 call_key = (tool_name, json.dumps(tool_args, sort_keys=True, default=str))
 
                 if call_key in seen_calls:
@@ -495,6 +845,23 @@ class AIOrchestrator:
                     list(result.keys()) if isinstance(result, dict) else type(result).__name__,
                 )
 
+                # Retry once for transient network errors
+                if (
+                    isinstance(result, dict)
+                    and result.get("error") == "NETWORK_ERROR"
+                ):
+                    logger.warning("[Tool     ] %s returned NETWORK_ERROR — retrying once", tool_name)
+                    t = time.perf_counter()
+                    result = tool_fn(**tool_args)
+                    retry_elapsed = time.perf_counter() - t
+                    tool_elapsed_total += retry_elapsed
+                    logger.info(
+                        "[Tool     ] ← %s  retry elapsed=%.3fs  result_keys=%s",
+                        tool_name,
+                        retry_elapsed,
+                        list(result.keys()) if isinstance(result, dict) else type(result).__name__,
+                    )
+
                 # Populate per-turn cache from get_orders results.
                 # Also annotate the result so Gemini knows driverFee + location
                 # are already included — no get_order_detail call is needed.
@@ -523,6 +890,60 @@ class AIOrchestrator:
                         _put_order_cache(state, actual_order_id, result)
                         state.last_focus_order_id = actual_order_id
 
+                # Annotate search_organizations results so Gemini lists matching
+                # candidates with IDs instead of giving a generic "no match" response.
+                if tool_name == "search_organizations" and isinstance(result, dict):
+                    orgs = result.get("organizations", [])
+                    if isinstance(orgs, list) and orgs:
+                        org_labels = []
+                        for o in orgs[:10]:
+                            if isinstance(o, dict):
+                                oname = o.get("organizationName") or o.get("name") or ""
+                                oid = o.get("organizationId") or o.get("id") or ""
+                                if oname:
+                                    org_labels.append(f"{oname} (id:{oid})")
+                        if len(org_labels) == 1:
+                            result = {
+                                **result,
+                                "_note": (
+                                    f"Exactly ONE match found: {org_labels[0]}. "
+                                    "Proceed to call the report tool with this organization_id. "
+                                    "Do NOT ask the user to confirm when there is only one match."
+                                ),
+                            }
+                        elif len(org_labels) > 1:
+                            result = {
+                                **result,
+                                "_note": (
+                                    f"Multiple organizations match the query. Found: {', '.join(org_labels)}. "
+                                    "You MUST list these candidates to the user with their names and IDs, "
+                                    "and ask which one they mean. Do NOT pick one on their behalf."
+                                ),
+                            }
+                    elif isinstance(orgs, list) and len(orgs) == 0:
+                        result = {
+                            **result,
+                            "_note": (
+                                "No organizations matched the search query. "
+                                "Tell the user no match was found and suggest they check the org name or try a different search term."
+                            ),
+                        }
+
+                if tool_name in _REPORT_TOOL_NAMES and isinstance(result, dict):
+                    rows = result.get("rows")
+                    has_rows = isinstance(rows, list) and len(rows) > 0
+                    # Check if search_organizations was already called in this turn
+                    org_search_res = tool_results_collected.get("search_organizations")
+                    had_org_filter = bool(tool_args.get("organization_id") or tool_args.get("orgId"))
+                    note = _build_report_note(
+                        rows if has_rows else [],
+                        tool_name,
+                        user_wants_detail=_wants_detail_level(message),
+                        org_search_results=org_search_res,
+                        tool_had_org_filter=had_org_filter,
+                    )
+                    result = {**result, "_note": note}
+
                 tools_called.append(tool_name)
                 # Collect result for context injection in next turn
                 if tool_name not in tool_results_collected:
@@ -546,7 +967,7 @@ class AIOrchestrator:
                 _increment_fallback_counter("repetitive_tool_calls")
                 total_elapsed = time.perf_counter() - total_start
                 _log_structured_metrics(
-                    conversation_id=state.conversation_id,
+                    conversation_id=sid,
                     tools_called=tools_called,
                     gemini_calls=gemini_calls,
                     gemini_latency_seconds=gemini_elapsed_total,
@@ -554,13 +975,8 @@ class AIOrchestrator:
                     total_latency_seconds=total_elapsed,
                     fallback_reason="repetitive_tool_calls",
                 )
-                self._context_store.append_turn(
-                    state.conversation_id,
-                    user_message=message,
-                    assistant_reply=reply,
-                    tools_called=tools_called,
-                )
-                return (reply, tools_called, state.conversation_id)
+                self._record_turn_and_summarize(sid, message, reply, tools_called)
+                return (reply, tools_called, sid)
 
             # Send all tool results back to Gemini in one message
             gemini_calls += 1
@@ -575,11 +991,56 @@ class AIOrchestrator:
             logger.info("[Step %d  ] Gemini responded  elapsed=%.3fs", loop, gemini_elapsed)
 
         reply = _response_text(response)
-        self._context_store.append_turn(
-            state.conversation_id,
-            user_message=message,
-            assistant_reply=reply,
-            tools_called=tools_called,
-            tool_results=tool_results_collected,
+        self._record_turn_and_summarize(sid, message, reply, tools_called, tool_results_collected)
+        return (reply, tools_called, sid)
+
+    # -- Memory integration helpers ------------------------------------------
+
+    def _record_turn_and_summarize(
+        self,
+        session_id: str,
+        user_message: str,
+        assistant_reply: str,
+        tools_called: list[str],
+        tool_results: dict[str, Any] | None = None,
+    ) -> None:
+        """Record user + assistant turns, extract entities, and trigger summarization."""
+        self._memory.add_turn(
+            session_id, role="user", content=user_message,
         )
-        return (reply, tools_called, state.conversation_id)
+        self._memory.add_turn(
+            session_id,
+            role="assistant",
+            content=assistant_reply,
+            tools_called=tools_called,
+            tool_results=tool_results,
+        )
+
+        # Auto-extract entities from assistant reply
+        self._memory.extract_and_store_entities(session_id, assistant_reply)
+
+        # Store key decisions as long-term memory
+        for tool_name in tools_called:
+            self._memory.save_memory(
+                session_id,
+                MemoryItem(
+                    id=f"tool-{tool_name}-{time.time()}",
+                    type=MemoryType.FACT,
+                    content=f"Tool '{tool_name}' was called in this conversation.",
+                ),
+            )
+
+        # Summarize if threshold reached
+        if self._memory.needs_summarization(session_id):
+            session = self._memory.get_session(session_id)
+            if session:
+                # Summarize all turns that will be dropped
+                from app.orchestrator.memory_service import SHORT_TERM_MAX_TURNS
+                older_turns = session.turns[:-SHORT_TERM_MAX_TURNS] if len(session.turns) > SHORT_TERM_MAX_TURNS else []
+                if older_turns:
+                    logger.info(
+                        "[Memory] Summarizing %d older turns for session %s",
+                        len(older_turns), session_id,
+                    )
+                    new_summary = summarize_conversation(older_turns, session.summary)
+                    self._memory.apply_summary(session_id, new_summary)

@@ -15,6 +15,7 @@ def _build_report_params(
     from_date: str | None = None,
     to_date: str | None = None,
     pay: list[str] | str | None = None,
+    organization_id: int | None = None,
     params: dict | None = None,
 ) -> dict:
     """Merge explicit report args with optional params dict for compatibility."""
@@ -25,6 +26,30 @@ def _build_report_params(
         merged["to_date"] = to_date
     if pay is not None:
         merged["pay"] = pay
+    if organization_id is not None:
+        merged["orgId"] = organization_id
+    return merged
+
+def _build_driver_report_params(
+    *,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    organization_id: int | None = None,
+    driver_id: int | None = None,
+    driver_org: int | None = None,
+) -> dict:
+    """Build params for driver report endpoints (no pay param, adds driverType)."""
+    merged: dict = {}
+    if from_date is not None:
+        merged["from_date"] = from_date
+    if to_date is not None:
+        merged["to_date"] = to_date
+    if organization_id is not None:
+        merged["orgId"] = organization_id
+    if driver_id is not None:
+        merged["driverId"] = driver_id
+    if driver_org is not None:
+        merged["driverOrg"] = driver_org
     return merged
 
 
@@ -34,7 +59,7 @@ def get_order_detail(order_id: str) -> dict:
 
 
 def get_orders(status: str) -> dict:
-    """List orders by status (GET /orders). status: Pending|Active|Completed|Incompleted|Cancelled|Return|WaitingForPayment|Transit.
+    """List orders by status (GET /orders). status: pending|active|completed|incompleted|cancelled|return|waitingForPayment.
     Result includes orderId, price, driverFee, fromPlace, toPlace, driver — sufficient for most queries."""
     return get_order_client().get_orders(status)
 
@@ -43,7 +68,7 @@ def get_delayed_orders() -> dict:
     """
     Get all orders that are currently in transit (active delivery, may be delayed).
 
-    This queries orders with statusCd=Transit from the Order Service.
+    This queries orders with status=Transit from the Order Service.
 
     Returns:
         A dictionary with a list of in-transit orders and the total count.
@@ -85,16 +110,18 @@ def get_statement_of_use_summary(
     from_date: str | None = None,
     to_date: str | None = None,
     pay: list[str] | str | None = None,
+    organization_id: int | None = None,
 ) -> dict:
-    """Get full-system customer report summary.
+    """Get customer report summary. Optionally filter by one organization.
 
     Args:
         from_date: Start date (YYYY-MM-DD).
         to_date: End date (YYYY-MM-DD).
         pay: Payment filter(s), e.g. ["cash", "credit", "card", "point", "brandpay"].
+        organization_id: Org system ID to filter results to a single organization.
     """
     return get_order_client().get_statement_of_use_summary(
-        params=_build_report_params(from_date=from_date, to_date=to_date, pay=pay)
+        params=_build_report_params(from_date=from_date, to_date=to_date, pay=pay, organization_id=organization_id)
     )
 
 
@@ -102,54 +129,66 @@ def get_statement_of_use_detail(
     from_date: str | None = None,
     to_date: str | None = None,
     pay: list[str] | str | None = None,
-    params: dict | None = None,
+    organization_id: int | None = None,
 ) -> dict:
-    """Get full-system customer report detail rows.
+    """Get customer report detail rows (per-order). Optionally filter by one organization.
 
     Args:
         from_date: Start date (YYYY-MM-DD).
         to_date: End date (YYYY-MM-DD).
         pay: Payment filter(s), e.g. ["cash", "credit", "card", "point", "brandpay"].
-        params: Optional passthrough query params for paging/filter extensions.
+        organization_id: Org system ID to filter results to a single organization.
     """
     return get_order_client().get_statement_of_use_detail(
-        params=_build_report_params(from_date=from_date, to_date=to_date, pay=pay, params=params)
+        params=_build_report_params(from_date=from_date, to_date=to_date, pay=pay, organization_id=organization_id)
     )
 
 
 def get_statement_of_use_driver_summary(
     from_date: str | None = None,
     to_date: str | None = None,
-    pay: list[str] | str | None = None,
+    organization_id: int | None = None,
+    driver_id: int | None = None,
+    driver_org: int | None = None,
 ) -> dict:
-    """Get full-system driver report summary.
+    """Get driver report summary. No pay filter (driver reports don't support it).
 
     Args:
         from_date: Start date (YYYY-MM-DD).
         to_date: End date (YYYY-MM-DD).
-        pay: Payment filter(s), e.g. ["cash", "credit", "card", "point", "brandpay"].
+        organization_id: Org system ID to filter results.
+        driver_id: Filter by specific driver ID.
+        driver_org: Filter by driver's organization ID.
     """
     return get_order_client().get_statement_of_use_driver_summary(
-        params=_build_report_params(from_date=from_date, to_date=to_date, pay=pay)
+        params=_build_driver_report_params(
+            from_date=from_date, to_date=to_date,
+            organization_id=organization_id, driver_id=driver_id, driver_org=driver_org,
+        )
     )
 
 
 def get_statement_of_use_driver_detail(
     from_date: str | None = None,
     to_date: str | None = None,
-    pay: list[str] | str | None = None,
-    params: dict | None = None,
+    organization_id: int | None = None,
+    driver_id: int | None = None,
+    driver_org: int | None = None,
 ) -> dict:
-    """Get full-system driver report detail rows.
+    """Get driver report detail rows (per-order). No pay filter (driver reports don't support it).
 
     Args:
         from_date: Start date (YYYY-MM-DD).
         to_date: End date (YYYY-MM-DD).
-        pay: Payment filter(s), e.g. ["cash", "credit", "card", "point", "brandpay"].
-        params: Optional passthrough query params for paging/filter extensions.
+        organization_id: Org system ID to filter results.
+        driver_id: Filter by specific driver ID.
+        driver_org: Filter by driver's organization ID.
     """
     return get_order_client().get_statement_of_use_driver_detail(
-        params=_build_report_params(from_date=from_date, to_date=to_date, pay=pay, params=params)
+        params=_build_driver_report_params(
+            from_date=from_date, to_date=to_date,
+            organization_id=organization_id, driver_id=driver_id, driver_org=driver_org,
+        )
     )
 
 

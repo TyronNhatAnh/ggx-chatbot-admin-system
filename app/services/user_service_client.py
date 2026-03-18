@@ -244,20 +244,23 @@ class UserServiceClient:
     def search_users(
         self,
         *,
-        name: str | None = None,
-        phone_number: str | None = None,
-        email: str | None = None,
+        keyword: str | None = None,
+        organization_id: int | None = None,
+        branch_id: int | None = None,
         page_index: int = 1,
         page_size: int = 20,
     ) -> dict:
-        """GET /api/v1/users/search."""
+        """GET /api/v1/users/search.
+
+        Actual backend params (Go form tags): keyword, organizationId, branchId.
+        """
         params: dict[str, object] = {"pageIndex": page_index, "pageSize": page_size}
-        if name:
-            params["name"] = name
-        if phone_number:
-            params["phoneNumber"] = phone_number
-        if email:
-            params["email"] = email
+        if keyword:
+            params["keyword"] = keyword
+        if organization_id:
+            params["organizationId"] = organization_id
+        if branch_id:
+            params["branchId"] = branch_id
 
         try:
             payload = self._request("GET", "/users/search", params=params, requires_auth=True)
@@ -266,9 +269,11 @@ class UserServiceClient:
 
             data = payload.get("data") if isinstance(payload, dict) else payload
             rows = data if isinstance(data, list) else []
+            meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
             return {
                 "users": [self._slim_user_profile(u) for u in rows if isinstance(u, dict)],
                 "count": len(rows),
+                "total_count": meta.get("totalCount", len(rows)),
                 "query": params,
             }
         except httpx.HTTPStatusError as exc:
@@ -326,17 +331,20 @@ class UserServiceClient:
     def search_branches(
         self,
         *,
-        org_name: str | None = None,
-        branch_name: str | None = None,
+        keyword: str | None = None,
+        organization_id: int | None = None,
         page_index: int = 1,
         page_size: int = 20,
     ) -> dict:
-        """GET /api/v1/branch/search."""
+        """GET /api/v1/branch/search.
+
+        Actual backend params (Go form tags): keyword, organizationId.
+        """
         params: dict[str, object] = {"pageIndex": page_index, "pageSize": page_size}
-        if org_name:
-            params["orgName"] = org_name
-        if branch_name:
-            params["branchName"] = branch_name
+        if keyword:
+            params["keyword"] = keyword
+        if organization_id:
+            params["organizationId"] = organization_id
 
         try:
             payload = self._request("GET", "/branch/search", params=params, requires_auth=True)
@@ -344,7 +352,8 @@ class UserServiceClient:
                 return {"error": "USER_SERVICE_ERROR", "detail": payload.get("errors")}
             data = payload.get("data") if isinstance(payload, dict) else payload
             rows = data if isinstance(data, list) else []
-            return {"branches": rows, "count": len(rows), "query": params}
+            meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+            return {"branches": rows, "count": len(rows), "total_count": meta.get("totalCount", len(rows)), "query": params}
         except httpx.HTTPStatusError as exc:
             logger.error("search_branches HTTP %s - %s", exc.response.status_code, exc.response.text)
             return {"error": "USER_SERVICE_ERROR", "detail": str(exc)}
@@ -378,17 +387,21 @@ class UserServiceClient:
     def search_organizations(
         self,
         *,
-        organization_name: str | None = None,
-        division: str | None = None,
+        keyword: str | None = None,
+        org_division: str | None = None,
         page_index: int = 1,
         page_size: int = 20,
     ) -> dict:
-        """GET /api/v1/organization/search."""
+        """GET /api/v1/organization/search.
+
+        Actual backend params (Go form tags): keyword, orgDivision.
+        Valid orgDivision values: b2c, b2b, driver, customer.
+        """
         params: dict[str, object] = {"pageIndex": page_index, "pageSize": page_size}
-        if organization_name:
-            params["organizationName"] = organization_name
-        if division:
-            params["division"] = division
+        if keyword:
+            params["keyword"] = keyword
+        if org_division:
+            params["orgDivision"] = org_division
 
         try:
             payload = self._request("GET", "/organization/search", params=params, requires_auth=True)
@@ -396,7 +409,8 @@ class UserServiceClient:
                 return {"error": "USER_SERVICE_ERROR", "detail": payload.get("errors")}
             data = payload.get("data") if isinstance(payload, dict) else payload
             rows = data if isinstance(data, list) else []
-            return {"organizations": rows, "count": len(rows), "query": params}
+            meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+            return {"organizations": rows, "count": len(rows), "total_count": meta.get("totalCount", len(rows)), "query": params}
         except httpx.HTTPStatusError as exc:
             logger.error("search_organizations HTTP %s - %s", exc.response.status_code, exc.response.text)
             return {"error": "USER_SERVICE_ERROR", "detail": str(exc)}

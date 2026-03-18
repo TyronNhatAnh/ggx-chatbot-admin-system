@@ -1,35 +1,35 @@
-# 📋 Order Service API Audit — Chi Tiết
+# 📋 Order Service API Audit — Detailed Report
 
-## 🎯 Mục tiêu
-Audit APIs trong order-service theo Web2 flow để:
-1. Xác định APIs thực sự được sử dụng (không chỉ GET/POST bừa bãi)
-2. Phân tích ý nghĩa của từng API
-3. Thêm các tools hữu ích vào orchestrator
+## 🎯 Objective
+Audit APIs in order-service based on Web2 flow to:
+1. Identify APIs that are actually used (not just arbitrary GET/POST)
+2. Analyze the purpose of each API
+3. Add useful tools to the orchestrator
 
-## 🔍 Kết quả: 3 Tools Mới
+## 🔍 Result: 3 New Tools
 
 ### ✅ Tool #1: `get_order_route(order_id)` 
 **Endpoint**: `GET /orders/{orderId}/route`
 
-**Khi nào dùng:**
-- "Tuyến đường giao hàng là gì?" 
-- "Điểm dừng tiếp theo ở đâu?"
-- "Chi tiết waypoints của đơn hàng này?"
-- Theo dõi tiến trình giao hàng real-time
+**When to use:**
+- "What is the delivery route?" 
+- "Where is the next stop?"
+- "What are the waypoint details for this order?"
+- Track delivery progress in real-time
 
-**Dữ liệu trả về:**
-- Danh sách waypoints có thứ tự
-- Status của từng waypoint (Pending, Completed, Failed)
-- Tọa độ GPS, khoảng cách
-- Thời gian yêu cầu, thời gian đến
+**Data returned:**
+- Ordered list of waypoints
+- Status of each waypoint (Pending, Completed, Failed)
+- GPS coordinates, distance
+- Time requested, time of arrival
 
-**Khác với `get_order_detail`:**
-- `get_order_detail` trả về waypoints như một phần của order
-- `get_order_route` chuyên trả về route với dữ liệu live updates
+**Difference from `get_order_detail`:**
+- `get_order_detail` returns waypoints as part of the order
+- `get_order_route` specifically returns route with live update data
 
-**Ví dụ:**
+**Example:**
 ```
-getorder_route("ORD-12345") 
+get_order_route("ORD-12345") 
 → waypoints: [
     {arrangement: 1, status: "Completed", address: "Seoul Tower", lat: 37.55, lon: 126.98},
     {arrangement: 2, status: "Failed", address: "Busan Port", lat: 35.09, lon: 129.03}
@@ -41,20 +41,20 @@ getorder_route("ORD-12345")
 ### ✅ Tool #2: `get_order_shipping_records(keyword)` 
 **Endpoint**: `GET /orders/shipping-records?keyword=...`
 
-**Khi nào dùng:**
-- "Những địa chỉ nào mình đã giao hàng?"
-- "Gợi ý địa chỉ gần đây để tạo đơn mới"
-- Customer muốn xem lịch sử đích đến
+**When to use:**
+- "Which addresses have I shipped to?"
+- "Suggest recent addresses for creating a new order"
+- Customer wants to see destination history
 
-**Dữ liệu trả về:**
-- Danh sách các waypoint từ **các đơn đã hoàn thành**
-- Địa chỉ, tọa độ GPS, tên địa điểm
-- Dùng để gợi ý khi user tạo đơn mới
+**Data returned:**
+- List of waypoints from **completed orders**
+- Address, GPS coordinates, location name
+- Used to provide suggestions when user creates a new order
 
-**Use case thực tế:**
-Web2 frontend gọi `.getRecentAddresses()` để show dropdown suggestion khi user nhập "To" address.
+**Real-world use case:**
+Web2 frontend calls `.getRecentAddresses()` to show dropdown suggestions when user enters "To" address.
 
-**Ví dụ:**
+**Example:**
 ```
 get_order_shipping_records("Seoul")
 → records: [
@@ -68,21 +68,21 @@ get_order_shipping_records("Seoul")
 ### ✅ Tool #3: `get_order_reorder_info(order_id)` 
 **Endpoint**: `GET /orders/{orderId}/reorder`
 
-**Khi nào dùng:**
-- "Tôi muốn đặt lại đơn hàng này"
-- "Dữ liệu để reorder là gì?"
-- "Hàng hóa trước đây là gì?"
+**When to use:**
+- "I want to reorder this order"
+- "What is the data for reordering?"
+- "What goods were in this order?"
 
-**Dữ liệu trả về:**
-- Origin & destination từ order cũ
-- Danh sách hàng hóa (goods)
-- Thời gian hẹn
-- Ghi chú/remarks
+**Data returned:**
+- Origin & destination from old order
+- List of goods
+- Appointment time
+- Notes/remarks
 
-**Use case thực tế:**
-Khi customer click button "Reorder", Web2 phải fetch dữ liệu để pre-fill form.
+**Real-world use case:**
+When customer clicks "Reorder" button, Web2 needs to fetch data to pre-fill the form.
 
-**Ví dụ:**
+**Example:**
 ```
 get_order_reorder_info("ORD-12345")
 → {
@@ -96,52 +96,52 @@ get_order_reorder_info("ORD-12345")
 
 ---
 
-## 🚫 APIs Loại Bỏ (& Lí do)
+## 🚫 APIs Excluded (& Reason)
 
-| API | Lí do |
-|-----|-------|
-| `GET /guest/orders/{orgId}/{orderId}` | Guest-only → không cần cho authenticated admin assistant |
-| `GET /guest/mobis/orders/{orderId}` | Niche Mobis B2B integration → quá specific |
-| `GET /guest/orders/route/{orderId}` | Guest-only → có `get_order_route` authenticated rồi |
-| `GET /orders/{orderId}/admin` | Admin-only detail path → có thể thêm sau nếu cần |
+| API | Reason |
+|-----|--------|
+| `GET /guest/orders/{orgId}/{orderId}` | Guest-only → not needed for authenticated admin assistant |
+| `GET /guest/mobis/orders/{orderId}` | Niche Mobis B2B integration → too specific |
+| `GET /guest/orders/route/{orderId}` | Guest-only → use `get_order_route` authenticated instead |
+| `GET /orders/{orderId}/admin` | Admin-only detail path → can add later if needed |
 | `GET /order-da/{orderId}` | Too niche (DA context) |
 | `GET /order-control/search` | Separate admin operations concern |
-| `GET /guest/etax/*` endpoints | E-Tax invoice flow → không phải admin assistant scope |
+| `GET /guest/etax/*` endpoints | E-Tax invoice flow → out of admin assistant scope |
 
 ---
 
-## 🤔 Insights từ Audit
+## 🤔 Insights from Audit
 
-### 1️⃣ POST endpoints không phải luôn là CREATE
-Ví dụ:
-- `/guest/check-tip` → Đây là **READ** operation (check expected tip, không tạo)
-- `/guest/check-price-driver` → Đây là **READ** operation (estimate giá, không tạo)
-- `/guest/estimate` → Đây là **READ** operation (tính giá, không tạo)
+### 1️⃣ POST endpoints are not always CREATE operations
+Examples:
+- `/guest/check-tip` → This is a **READ** operation (check expected tip, not creating)
+- `/guest/check-price-driver` → This is a **READ** operation (estimate price, not creating)
+- `/guest/estimate` → This is a **READ** operation (calculate price, not creating)
 
-✅ Đã xử lý đúng: có tools `estimate_guest_price`, `check_driver_price`
+✅ Handled correctly: tools `estimate_guest_price`, `check_driver_price`
 
 ### 2️⃣ Guest vs Authenticated API Paths
 **Pattern:**
-- `/guest/...` endpoints → không cần auth, trả về public data
-- Authenticated endpoints → cần Bearer token, trả về user-specific data
+- `/guest/...` endpoints → no auth required, returns public data
+- Authenticated endpoints → requires Bearer token, returns user-specific data
 
-**Quyết định:** Admin assistant chỉ cần authenticated paths (không cần guest paths vì admin không phải guest user)
+**Decision:** Admin assistant only needs authenticated paths (no guest paths since admin is not a guest user)
 
-### 3️⃣ Web2 vs Admin Use Cases Khác Nhau
+### 3️⃣ Web2 vs Admin Use Cases Differ
 **Web2 (Customer):**
-- Tìm order, tính giá, track, reorder, giới hạn coupons
+- Find order, calculate price, track, reorder, apply coupons
 
 **Admin:**
-- Status, hủy, thanh toán, thống kê, báo cáo
+- Status, cancel, payment, statistics, reporting
 
-✅ Current tool set cover cả 2 perspectives.
+✅ Current tool set covers both perspectives.
 
-### 4️⃣ Payload Optimization Quan Trọng
-Theo copilot-instructions.md, target latency: **3-6 seconds/request**
+### 4️⃣ Payload Optimization is Important
+Per copilot-instructions.md, target latency: **3-6 seconds/request**
 
 Token efficiency rules:
-- Tất cả new tools sử dụng `_slim_*` methods
-- Waypoints, goods, prices có compact representation
+- All new tools use `_slim_*` methods
+- Waypoints, goods, prices have compact representation
 - No returning raw, unprocessed nested objects
 
 ---
@@ -149,42 +149,42 @@ Token efficiency rules:
 ## 📁 Files Modified
 
 ### 1. `app/services/order_service_client.py`
-**Thêm 3 methods:**
+**Added 3 methods:**
 ```python
 def get_order_route(order_id: str) -> dict
 def get_order_shipping_records(keyword: str = "") -> dict
 def get_order_reorder_info(order_id: str) -> dict
 ```
 
-**Pattern tuân theo:**
-- Try-except với error handling (404, network, other)
-- Logging với HTTP status + elapsed time
+**Pattern followed:**
+- Try-except with error handling (404, network, other)
+- Logging with HTTP status + elapsed time
 - Payload unwrapping & slimming
-- Consistent return format: `{"error": ..., "detail": ...}` hoặc data dict
+- Consistent return format: `{"error": ..., "detail": ...}` or data dict
 
 ### 2. `app/tools/order_tools.py`
-**Thêm 3 function wrappers:**
+**Added 3 function wrappers:**
 ```python
 def get_order_route(order_id: str) -> dict
 def get_order_shipping_records(keyword: str = "") -> dict
 def get_order_reorder_info(order_id: str) -> dict
 ```
 
-**Docstrings hướng dẫn:**
-- Khi nào dùng (use case ngắn)
-- Endpoint nào được gọi (GET ...)
-- Dữ liệu trả về là gì
+**Docstring guidance:**
+- When to use (short use case)
+- Which endpoint is called (GET ...)
+- What data is returned
 
 ### 3. `app/tools/__init__.py`
-**Cập nhật:**
-- Import 3 tools mới từ `order_tools`
-- Thêm vào `ALL_TOOL_FUNCTIONS` list
+**Updated:**
+- Import 3 new tools from `order_tools`
+- Add to `ALL_TOOL_FUNCTIONS` list
 
 ### 4. `app/orchestrator/prompt_builder.py`
-**Cập nhật system prompt:**
-- Thêm hướng dẫn khi nào gọi từng tool mới
+**Updated system prompt:**
+- Add guidance for when to call each new tool
 - Include use cases ("are you asking about...", "what if user says...")
-- Clarify khác biệt vs tools tương tự
+- Clarify differences vs similar tools
 
 ---
 
@@ -206,7 +206,7 @@ def get_order_reorder_info(order_id: str) -> dict
 
 ## 🎯 Next Steps (Optional)
 
-Future enhancements (out of scope cho audit này):
+Future enhancements (out of scope for this audit):
 1. `GET /orders/{orderId}/admin` - Admin-specific detail view
 2. `GET /order-control/search` - Advanced order filtering
 3. Statement-of-use reporting endpoints

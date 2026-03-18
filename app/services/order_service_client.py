@@ -652,7 +652,51 @@ class OrderServiceClient:
         normalized["toDate"] = to_date
         normalized["pay"] = pay
 
+        # Normalize orgId: accept orgId or org_id.
+        org_id = source.get("orgId") or source.get("org_id")
+        if org_id is not None:
+            normalized["orgId"] = int(org_id)
+            normalized.pop("org_id", None)
+
         # Remove snake_case aliases if present.
+        normalized.pop("from_date", None)
+        normalized.pop("to_date", None)
+
+        return self._clean_query_params(normalized)
+
+    def _normalize_driver_report_params(self, params: dict | None) -> dict:
+        """Normalize params for driver report endpoints (no pay field, requires driverType)."""
+        source = params if isinstance(params, dict) else {}
+        normalized = dict(source)
+
+        today = date.today()
+        default_from = (today - timedelta(days=2)).isoformat()
+        default_to = today.isoformat()
+
+        from_date = (
+            self._normalize_date_yyyy_mm_dd(source.get("fromDate"))
+            or self._normalize_date_yyyy_mm_dd(source.get("from_date"))
+            or default_from
+        )
+        to_date = (
+            self._normalize_date_yyyy_mm_dd(source.get("toDate"))
+            or self._normalize_date_yyyy_mm_dd(source.get("to_date"))
+            or default_to
+        )
+
+        normalized["fromDate"] = from_date
+        normalized["toDate"] = to_date
+        # driverType is required (binding:"oneof=normalDriver")
+        normalized.setdefault("driverType", "normalDriver")
+
+        # Normalize orgId
+        org_id = source.get("orgId") or source.get("org_id")
+        if org_id is not None:
+            normalized["orgId"] = int(org_id)
+            normalized.pop("org_id", None)
+
+        # Driver reports do NOT accept pay — remove if provided.
+        normalized.pop("pay", None)
         normalized.pop("from_date", None)
         normalized.pop("to_date", None)
 
@@ -663,13 +707,21 @@ class OrderServiceClient:
         try:
             normalized_params = self._normalize_report_params(params)
             payload = self._get(path, params=normalized_params)
+
+            # Preserve meta from PagingSuccessResponse before unwrapping.
+            meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+
             data = self._unwrap_success_payload(payload)
             if isinstance(data, dict) and data.get("error"):
                 return data
 
+            # Go marshals empty slices as null → data is None after unwrap.
+            if data is None:
+                return {"rows": [], "count": 0, "total_count": meta.get("totalCount", 0)}
+
             if isinstance(data, list):
                 rows = data[:100]
-                return {"rows": rows, "count": len(data)}
+                return {"rows": rows, "count": len(data), "total_count": meta.get("totalCount", len(data))}
 
             if isinstance(data, dict):
                 rows = (
@@ -685,7 +737,7 @@ class OrderServiceClient:
                         for k, v in data.items()
                         if k not in ("rows", "list", "items", "data")
                     }
-                    return {"rows": slim_rows, "count": len(rows), **extras}
+                    return {"rows": slim_rows, "count": len(rows), "total_count": meta.get("totalCount", len(rows)), **extras}
                 return data
 
             return {"raw": data}
@@ -702,6 +754,58 @@ class OrderServiceClient:
             return {"error": "NETWORK_ERROR", "detail": str(exc)}
         except Exception as exc:  # noqa: BLE001
             logger.error("report endpoint %s unexpected error — %s: %s", path, type(exc).__name__, exc)
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
+    def _get_driver_report_data(self, path: str, params: dict | None = None) -> dict:
+        """GET wrapper for driver report endpoints (uses driver-specific param normalization)."""
+        try:
+            normalized_params = self._normalize_driver_report_params(params)
+            payload = self._get(path, params=normalized_params)
+
+            meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+
+            data = self._unwrap_success_payload(payload)
+            if isinstance(data, dict) and data.get("error"):
+                return data
+
+            if data is None:
+                return {"rows": [], "count": 0, "total_count": meta.get("totalCount", 0)}
+
+            if isinstance(data, list):
+                rows = data[:100]
+                return {"rows": rows, "count": len(data), "total_count": meta.get("totalCount", len(data))}
+
+            if isinstance(data, dict):
+                rows = (
+                    data.get("rows")
+                    or data.get("list")
+                    or data.get("items")
+                    or data.get("data")
+                )
+                if isinstance(rows, list):
+                    slim_rows = rows[:100]
+                    extras = {
+                        k: v
+                        for k, v in data.items()
+                        if k not in ("rows", "list", "items", "data")
+                    }
+                    return {"rows": slim_rows, "count": len(rows), "total_count": meta.get("totalCount", len(rows)), **extras}
+                return data
+
+            return {"raw": data}
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "driver report endpoint %s HTTP %s — body: %s",
+                path,
+                exc.response.status_code,
+                exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("driver report endpoint %s network error — %s", path, exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error("driver report endpoint %s unexpected error — %s: %s", path, type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
     # ------------------------------------------------------------------
@@ -767,17 +871,17 @@ class OrderServiceClient:
         """
         List orders filtered by status code.
 
-        Endpoint: GET /api/v1/orders?statusCd={status}
+        Endpoint: GET /api/v1/orders?status={status}
         Response shape: { "success": true, "data": [...] or {...}, "errors": null }
-        Valid status values: Pending, Active, Completed, Incompleted,
-        Cancelled, Return, WaitingForPayment, Transit.
+        Valid status values: pending, active, completed, incompleted,
+        cancelled, return, waitingForPayment.
         Returns {"orders": [...], "count": N}.
         """
         try:
-            payload = self._get("/orders", params={"statusCd": status, "pageSize": 10})
+            payload = self._get("/orders", params={"status": status, "pageSize": 10})
             if isinstance(payload, dict):
                 if not payload.get("success", True):
-                    logger.error("search_orders: success=false statusCd=%s — %s", status, payload.get("errors"))
+                    logger.error("search_orders: success=false status=%s — %s", status, payload.get("errors"))
                     return {"error": "ORDER_SERVICE_ERROR", "detail": payload.get("errors")}
                 data = payload.get("data", payload)
             else:
@@ -791,16 +895,16 @@ class OrderServiceClient:
             return {"orders": [self._slim_order(o) for o in orders], "count": count}
         except httpx.HTTPStatusError as exc:
             logger.error(
-                "search_orders HTTP %s for statusCd=%s — body: %s",
+                "search_orders HTTP %s for status=%s — body: %s",
                 exc.response.status_code, status, exc.response.text,
             )
             return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
         except httpx.RequestError as exc:
-            logger.error("search_orders network error statusCd=%s — %s", status, exc)
+            logger.error("search_orders network error status=%s — %s", status, exc)
             return {"error": "NETWORK_ERROR", "detail": str(exc)}
         except Exception as exc:  # noqa: BLE001
             logger.error(
-                "search_orders unexpected error statusCd=%s — %s: %s",
+                "search_orders unexpected error status=%s — %s: %s",
                 status, type(exc).__name__, exc,
             )
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
@@ -809,12 +913,12 @@ class OrderServiceClient:
         """
         List all orders currently in Transit (in-transit / delayed).
 
-        Endpoint: GET /api/v1/orders?statusCd=Transit
+        Endpoint: GET /api/v1/orders?status=Transit
         Response shape: { "success": true, "data": [...] or {...}, "errors": null }
         Returns {"delayed_orders": [...], "count": N}.
         """
         try:
-            payload = self._get("/orders", params={"statusCd": "Transit", "pageSize": 10})
+            payload = self._get("/orders", params={"status": "Transit", "pageSize": 10})
             if isinstance(payload, dict):
                 if not payload.get("success", True):
                     logger.error("get_delayed_orders: success=false — %s", payload.get("errors"))
@@ -936,12 +1040,12 @@ class OrderServiceClient:
         return self._get_report_data("/report/statement-of-use/detail", params=params)
 
     def get_statement_of_use_driver_summary(self, params: dict | None = None) -> dict:
-        """GET /api/v1/report/statement-of-use-driver/summary (full-system driver report)."""
-        return self._get_report_data("/report/statement-of-use-driver/summary", params=params)
+        """GET /api/v1/report/statement-of-use-driver/summary (driver report — no pay param, requires driverType)."""
+        return self._get_driver_report_data("/report/statement-of-use-driver/summary", params=params)
 
     def get_statement_of_use_driver_detail(self, params: dict | None = None) -> dict:
-        """GET /api/v1/report/statement-of-use-driver/detail (full-system driver report)."""
-        return self._get_report_data("/report/statement-of-use-driver/detail", params=params)
+        """GET /api/v1/report/statement-of-use-driver/detail (driver report — no pay param, requires driverType)."""
+        return self._get_driver_report_data("/report/statement-of-use-driver/detail", params=params)
 
     def get_b2b_tracking_service_detail(self, params: dict | None = None) -> dict:
         """GET /api/v1/report/b2b-tracking-service/detail."""

@@ -22,7 +22,7 @@ state.turns.append(ConversationTurn(
 ))
 
 # Next turn where user asks about org
-msg = _build_contextual_message("xem DHLSC", state)
+msg = _build_contextual_message("view DHLSC", state)
 
 # Verify org names are injected  
 success = ("DHLSC" in msg and "ABC Corp" in msg and "Data returned:" in msg)

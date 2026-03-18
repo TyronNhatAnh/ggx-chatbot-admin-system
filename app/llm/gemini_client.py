@@ -1,3 +1,5 @@
+import logging
+
 from dataclasses import dataclass
 
 from google import genai
@@ -5,6 +7,11 @@ from google.genai import types
 
 from app.config import settings
 from app.orchestrator.prompt_builder import build_system_prompt
+
+# Suppress noisy SDK info log about JSON Schema conversion.
+# This is an informational message from google-genai when auto-generating
+# tool schemas from Python functions — not an error.
+logging.getLogger("google_genai.types").setLevel(logging.WARNING)
 
 
 @dataclass
@@ -16,10 +23,20 @@ class GeminiChatFactory:
     tools: list
     system_instruction: str
 
-    def start_chat(self, enable_automatic_function_calling: bool = False):
-        """Create a new chat session with deterministic function-calling behavior."""
+    def start_chat(
+        self,
+        enable_automatic_function_calling: bool = False,
+        system_instruction: str | None = None,
+    ):
+        """Create a new chat session with deterministic function-calling behavior.
+
+        Args:
+            enable_automatic_function_calling: Let the SDK auto-call tools.
+            system_instruction: Override the factory default system prompt.
+                                Pass a per-request prompt built by PromptBuilder.
+        """
         config = types.GenerateContentConfig(
-            system_instruction=self.system_instruction,
+            system_instruction=system_instruction or self.system_instruction,
             tools=self.tools,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(
                 disable=not enable_automatic_function_calling
