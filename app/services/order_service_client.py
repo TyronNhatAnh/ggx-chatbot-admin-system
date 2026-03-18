@@ -695,6 +695,20 @@ class OrderServiceClient:
             normalized["orgId"] = int(org_id)
             normalized.pop("org_id", None)
 
+        # Normalize eTaxStatus (accept common aliases, keep canonical API key).
+        etax_status = (
+            source.get("eTaxStatus")
+            or source.get("etaxStatus")
+            or source.get("etax_status")
+            or source.get("e_tax_status")
+        )
+        if etax_status is not None:
+            normalized["eTaxStatus"] = int(etax_status)
+
+        normalized.pop("etaxStatus", None)
+        normalized.pop("etax_status", None)
+        normalized.pop("e_tax_status", None)
+
         # Driver reports do NOT accept pay — remove if provided.
         normalized.pop("pay", None)
         normalized.pop("from_date", None)

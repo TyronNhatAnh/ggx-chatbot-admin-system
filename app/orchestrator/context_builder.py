@@ -26,8 +26,25 @@ MAX_CONTEXT_TOKENS = 8000
 # Remaining 45% is reserved for system prompt, tool schemas, and output.
 INPUT_TOKEN_BUDGET = int(MAX_CONTEXT_TOKENS * 0.55)       # ~4400
 
-# Rough chars-per-token ratio (conservative for English + JSON).
-CHARS_PER_TOKEN = 4
+# Rough chars-per-token ratios.
+# English/ASCII averages ~4 chars per token; CJK (Korean, Chinese, Japanese)
+# averages ~1.5 chars per token due to multi-byte encoding and subword splits.
+CHARS_PER_TOKEN_ASCII = 4
+CHARS_PER_TOKEN_CJK = 1.5
+
+# CJK Unicode ranges for detection
+_CJK_RANGES = (
+    (0x3000, 0x9FFF),    # CJK Unified, Hiragana, Katakana, Bopomofo, etc.
+    (0xAC00, 0xD7AF),    # Hangul Syllables
+    (0xF900, 0xFAFF),    # CJK Compatibility Ideographs
+    (0x1100, 0x11FF),    # Hangul Jamo
+)
+
+
+def _is_cjk(ch: str) -> bool:
+    cp = ord(ch)
+    return any(lo <= cp <= hi for lo, hi in _CJK_RANGES)
+
 
 # Safety: never drop the latest N turns regardless of budget.
 MIN_PROTECTED_TURNS = 2
@@ -42,7 +59,11 @@ class ContextBlock:
 
 
 def estimate_tokens(text: str) -> int:
-    return max(1, len(text) // CHARS_PER_TOKEN)
+    """Estimate token count with CJK-aware heuristic."""
+    cjk_chars = sum(1 for ch in text if _is_cjk(ch))
+    ascii_chars = len(text) - cjk_chars
+    tokens = ascii_chars / CHARS_PER_TOKEN_ASCII + cjk_chars / CHARS_PER_TOKEN_CJK
+    return max(1, int(tokens))
 
 
 def build_context(

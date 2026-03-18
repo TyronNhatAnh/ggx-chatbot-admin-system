@@ -5,6 +5,7 @@ pydantic-settings
 google-genai
 python-dotenv
 httpx
+google-api-core
 # Feature exploration pipeline (offline scripts only)
 pyyaml
 # Semantic code search (optional — indexer works without these, falls back to FTS5)

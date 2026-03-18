@@ -2,11 +2,12 @@
 APP=app.main:app
 PORT=8000
 VENV=.venv
+PYTHON=python3.11
 
 # ===== SETUP =====
 
 install:
-	python3 -m venv $(VENV)
+	$(PYTHON) -m venv $(VENV)
 	. $(VENV)/bin/activate && pip install -r requirements.txt
 
 deps:

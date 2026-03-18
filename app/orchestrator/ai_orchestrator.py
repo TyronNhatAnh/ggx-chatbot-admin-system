@@ -3,6 +3,7 @@ import logging
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import Any
 
@@ -12,7 +13,7 @@ from app.config import settings
 from app.llm.gemini_client import create_gemini_model
 from app.orchestrator.context_builder import build_context
 from app.orchestrator.context_store import CachedOrderRecord, ConversationState
-from app.orchestrator.memory_service import MemoryItem, MemoryService, MemoryType
+from app.orchestrator.memory_service import MemoryService
 from app.orchestrator.summarizer import summarize_conversation
 from app.prompts.builder import build_system_prompt
 from app.tools import ALL_TOOL_FUNCTIONS, TOOL_REGISTRY
@@ -21,8 +22,6 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_LOOPS = 3      # max Gemini round-trips in tool loop → caps total Gemini calls at MAX_TOOL_LOOPS+1
 ORDER_CACHE_MAX_ITEMS = 24
 ORDER_CACHE_TTL_SECONDS = 60
-CONTEXT_HISTORY_TURNS = 5   # recent turns to include in contextual message
-CONTEXT_TEXT_BUDGET = 4000  # max chars for context text before truncation
 # Accept explicit ORD-* IDs or numeric IDs only.
 # Prevent false positives like organization names (e.g. "DHLSC").
 ORDER_ID_PATTERN = re.compile(r"\b(?:ORD-[A-Za-z0-9-]{3,}|\d{5,})\b", re.IGNORECASE)
@@ -203,44 +202,6 @@ def _extract_context_hints(tool_results: dict[str, Any]) -> str:
             hints.append(f"User in context: {label}")
 
     return "\n".join(hints) if hints else ""
-
-
-def _build_contextual_message(message: str, state: ConversationState) -> str:
-    if not state.turns:
-        return message
-
-    recent_turns = state.turns[-CONTEXT_HISTORY_TURNS:]
-    context_lines: list[str] = [
-        "Recent conversation context (for continuity):",
-    ]
-    for turn in recent_turns:
-        context_lines.append(f"- User: {_trim_text(turn.user_message.replace(chr(10), ' '), 220)}")
-        context_lines.append(f"- Assistant: {_trim_text(turn.assistant_reply.replace(chr(10), ' '), 260)}")
-        if turn.tools_called:
-            context_lines.append(f"- Tools used: {', '.join(turn.tools_called)}")
-        # Extract and include data from tool results (org names, orders, etc.)
-        if turn.tool_results:
-            hints = _extract_context_hints(turn.tool_results)
-            if hints:
-                context_lines.append(f"- Data returned: {hints}")
-
-    context_text = "\n".join(context_lines)
-    if len(context_text) > CONTEXT_TEXT_BUDGET:
-        context_text = context_text[-CONTEXT_TEXT_BUDGET:]
-
-    focus_hint = ""
-    if state.last_focus_order_id:
-        focus_hint = (
-            f"Conversation focus hint: current order_id is {state.last_focus_order_id}. "
-            "For follow-up questions without explicit ID, use this order first."
-        )
-
-    return (
-        f"{context_text}\n\n"
-        f"{focus_hint}\n\n"
-        "Current user message (highest priority):\n"
-        f"{message}"
-    )
 
 
 def _increment_fallback_counter(counter_name: str) -> int:
@@ -582,6 +543,8 @@ class AIOrchestrator:
         logger.info("[Orchestrator] Loading Gemini model with %d tools...", len(ALL_TOOL_FUNCTIONS))
         self._model = create_gemini_model(ALL_TOOL_FUNCTIONS)
         self._memory = MemoryService()
+        from app.orchestrator.context_store import InMemoryConversationStore
+        self._order_state_store = InMemoryConversationStore(ttl_seconds=1800, max_turns=0)
         logger.info("[Orchestrator] Gemini model ready.")
 
     def chat(self, message: str, conversation_id: str | None = None) -> tuple[str, list[str], str]:
@@ -610,9 +573,6 @@ class AIOrchestrator:
         sid = session.session_id
 
         # Legacy order-cache state (conversation-level) — kept for cache hits
-        from app.orchestrator.context_store import InMemoryConversationStore
-        if not hasattr(self, '_order_state_store'):
-            self._order_state_store = InMemoryConversationStore(ttl_seconds=1800, max_turns=0)
         state = self._order_state_store.get_or_create(sid)
         _evict_expired_order_cache(state)
 
@@ -786,25 +746,27 @@ class AIOrchestrator:
 
             # Execute each requested tool and collect the results
             tool_response_parts = []
+
+            # Separate tool calls into cache-servable, parallel-eligible, and deferred
+            dedup_calls: list[tuple[str, dict]] = []  # (tool_name, tool_args)
             for fc in function_calls:
                 tool_name = fc.name
                 tool_args = dict(fc.args or {})
                 tool_args = _sanitize_report_tool_args(tool_name, tool_args, message)
                 call_key = (tool_name, json.dumps(tool_args, sort_keys=True, default=str))
-
                 if call_key in seen_calls:
                     logger.warning("[Tool     ] skipping duplicate tool call %s(%s)", tool_name, tool_args)
                     continue
-
                 seen_calls.add(call_key)
+                dedup_calls.append((tool_name, tool_args))
 
-                # Serve get_order_detail from per-turn cache if get_orders already
-                # fetched this order — avoids a redundant HTTP round-trip.
+            # Phase 1: serve get_order_detail from cache where possible
+            pending_calls: list[tuple[str, dict]] = []
+            for tool_name, tool_args in dedup_calls:
                 if tool_name == "get_order_detail":
                     requested_order_id = _normalize_order_id(str(tool_args.get("order_id", "")))
                     if requested_order_id:
                         state.last_focus_order_id = requested_order_id
-
                     cached_order = order_cache.get(requested_order_id)
                     if cached_order is None and requested_order_id:
                         cached_order = _get_cached_order(state, requested_order_id)
@@ -814,8 +776,6 @@ class AIOrchestrator:
                             requested_order_id or tool_args.get("order_id"),
                         )
                         tools_called.append(tool_name)
-                        # Wrap in a note so Gemini treats this as complete data
-                        # and does not request the same order again.
                         enriched = {**cached_order, "_note": "full record from order service"}
                         tool_response_parts.append(
                             types.Part.from_function_response(
@@ -824,19 +784,54 @@ class AIOrchestrator:
                             )
                         )
                         continue
+                pending_calls.append((tool_name, tool_args))
 
-                logger.info("[Tool     ] → %s(%s)", tool_name, tool_args)
-                t = time.perf_counter()
-
-                tool_fn = TOOL_REGISTRY.get(tool_name)
+            # Phase 2: execute pending tools in parallel when multiple are requested
+            def _execute_tool(t_name: str, t_args: dict) -> tuple[str, dict, float]:
+                tool_fn = TOOL_REGISTRY.get(t_name)
                 if tool_fn is None:
                     raise ValueError(
-                        f"LLM requested unknown tool: '{tool_name}'. "
+                        f"LLM requested unknown tool: '{t_name}'. "
                         "This should not happen — check that all tools are registered."
                     )
+                t0 = time.perf_counter()
+                res = tool_fn(**t_args)
+                elapsed = time.perf_counter() - t0
+                # Retry once for transient network errors
+                if isinstance(res, dict) and res.get("error") == "NETWORK_ERROR":
+                    logger.warning("[Tool     ] %s returned NETWORK_ERROR — retrying once", t_name)
+                    t0 = time.perf_counter()
+                    res = tool_fn(**t_args)
+                    elapsed += time.perf_counter() - t0
+                return t_name, res, elapsed
 
-                result = tool_fn(**tool_args)
-                tool_elapsed = time.perf_counter() - t
+            # Results in submission order for deterministic Gemini input
+            executed_results: list[tuple[str, dict, dict, float]] = []  # (name, args, result, elapsed)
+
+            if len(pending_calls) > 1:
+                # Parallel execution — cap workers to avoid overwhelming external services
+                with ThreadPoolExecutor(max_workers=min(4, len(pending_calls))) as executor:
+                    future_to_idx = {
+                        executor.submit(_execute_tool, tn, ta): i
+                        for i, (tn, ta) in enumerate(pending_calls)
+                    }
+                    result_by_idx: dict[int, tuple[str, dict, dict, float]] = {}
+                    for future in as_completed(future_to_idx):
+                        idx = future_to_idx[future]
+                        tn, ta = pending_calls[idx]
+                        res_name, res_data, res_elapsed = future.result()
+                        result_by_idx[idx] = (res_name, ta, res_data, res_elapsed)
+                    # Preserve original order
+                    for i in range(len(pending_calls)):
+                        executed_results.append(result_by_idx[i])
+            elif len(pending_calls) == 1:
+                tn, ta = pending_calls[0]
+                logger.info("[Tool     ] → %s(%s)", tn, ta)
+                res_name, res_data, res_elapsed = _execute_tool(tn, ta)
+                executed_results.append((res_name, ta, res_data, res_elapsed))
+
+            # Phase 3: post-process results (cache population, annotation)
+            for tool_name, tool_args, result, tool_elapsed in executed_results:
                 tool_elapsed_total += tool_elapsed
                 logger.info(
                     "[Tool     ] ← %s  elapsed=%.3fs  result_keys=%s",
@@ -844,23 +839,6 @@ class AIOrchestrator:
                     tool_elapsed,
                     list(result.keys()) if isinstance(result, dict) else type(result).__name__,
                 )
-
-                # Retry once for transient network errors
-                if (
-                    isinstance(result, dict)
-                    and result.get("error") == "NETWORK_ERROR"
-                ):
-                    logger.warning("[Tool     ] %s returned NETWORK_ERROR — retrying once", tool_name)
-                    t = time.perf_counter()
-                    result = tool_fn(**tool_args)
-                    retry_elapsed = time.perf_counter() - t
-                    tool_elapsed_total += retry_elapsed
-                    logger.info(
-                        "[Tool     ] ← %s  retry elapsed=%.3fs  result_keys=%s",
-                        tool_name,
-                        retry_elapsed,
-                        list(result.keys()) if isinstance(result, dict) else type(result).__name__,
-                    )
 
                 # Populate per-turn cache from get_orders results.
                 # Also annotate the result so Gemini knows driverFee + location
@@ -1019,28 +997,35 @@ class AIOrchestrator:
         # Auto-extract entities from assistant reply
         self._memory.extract_and_store_entities(session_id, assistant_reply)
 
-        # Store key decisions as long-term memory
-        for tool_name in tools_called:
-            self._memory.save_memory(
-                session_id,
-                MemoryItem(
-                    id=f"tool-{tool_name}-{time.time()}",
-                    type=MemoryType.FACT,
-                    content=f"Tool '{tool_name}' was called in this conversation.",
-                ),
-            )
-
-        # Summarize if threshold reached
+        # Summarize in background if threshold reached (avoid blocking response)
         if self._memory.needs_summarization(session_id):
             session = self._memory.get_session(session_id)
             if session:
-                # Summarize all turns that will be dropped
                 from app.orchestrator.memory_service import SHORT_TERM_MAX_TURNS
                 older_turns = session.turns[:-SHORT_TERM_MAX_TURNS] if len(session.turns) > SHORT_TERM_MAX_TURNS else []
-                if older_turns:
+                # Skip trivial summaries — wait until there's enough to compress
+                if len(older_turns) >= 2:
+                    existing_summary = session.summary
                     logger.info(
-                        "[Memory] Summarizing %d older turns for session %s",
+                        "[Memory] Scheduling background summarization of %d older turns for session %s",
                         len(older_turns), session_id,
                     )
-                    new_summary = summarize_conversation(older_turns, session.summary)
-                    self._memory.apply_summary(session_id, new_summary)
+                    thread = threading.Thread(
+                        target=self._summarize_background,
+                        args=(session_id, list(older_turns), existing_summary),
+                        daemon=True,
+                    )
+                    thread.start()
+
+    def _summarize_background(
+        self,
+        session_id: str,
+        older_turns: list,
+        existing_summary: str,
+    ) -> None:
+        """Run summarization off the critical path."""
+        try:
+            new_summary = summarize_conversation(older_turns, existing_summary)
+            self._memory.apply_summary(session_id, new_summary)
+        except Exception:
+            logger.exception("[Memory] Background summarization failed for session %s", session_id)

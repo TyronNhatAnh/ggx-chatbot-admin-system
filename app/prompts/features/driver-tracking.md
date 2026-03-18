@@ -3,7 +3,24 @@
 Driver-specific tools:
 - get_user_driver(user_id) → driver profile linked to a user account.
 - get_statement_of_use_driver_summary / _detail → driver-side report data.
-  Params: from_date, to_date, organization_id, driver_id, driver_org. No pay filter.
+  Params: from_date, to_date, organization_id, driver_id, driver_org, etax_status. No pay filter.
+
+E-Tax status codes for etax_status:
+- 1 SUBMITED
+- 2 TEMPORARILY_SAVED
+- 3 CANCELED
+- 4 NOT_SENT
+- 5 TRANSMITTING
+- 6 TRANSMISSION_SUCCEED
+- 7 TRANSMISSION_FAILED
+- 8 SUBMITED_FAILED
+- 9 REVISED
+- 10 REVISED_FAILED
+- 11 REVISED_SIX
+- 12 REVISED_SEVEN
+- 13 REVISED_OTHER
+- 14 ALL
+- 15 NOT_REVISED
 
 Driver-related order fields:
 - get_orders results include driver name, vehicle type, and assignment status.
