@@ -115,12 +115,15 @@ def get_statement_of_use_summary(
     pay: list[str] | str | None = None,
     organization_id: int | None = None,
 ) -> dict:
-    """Get customer report summary. Optionally filter by one organization.
+    """Get customer report summary (aggregated by organization). Returns orderCount, totalRevenue, paymentBreakdown — NO per-order rows.
+    Use for overview/aggregate questions. For per-order data with orderId, use get_statement_of_use_detail instead.
 
     Args:
-        from_date: Start date (YYYY-MM-DD).
-        to_date: End date (YYYY-MM-DD).
-        pay: Payment filter(s), e.g. ["cash", "credit", "card", "point", "brandpay"].
+        from_date: Start date (YYYY-MM-DD). Omit to use backend default (last 3 days).
+        to_date: End date (YYYY-MM-DD). Omit to use backend default.
+        pay: Payment types to include. Omit (None) to include ALL types automatically.
+             Valid values: "cash", "credit", "card", "point", "brandpay".
+             Do NOT call lookup_enum to discover these — use them directly.
         organization_id: Org system ID to filter results to a single organization.
     """
     return get_order_client().get_statement_of_use_summary(
@@ -134,12 +137,16 @@ def get_statement_of_use_detail(
     pay: list[str] | str | None = None,
     organization_id: int | None = None,
 ) -> dict:
-    """Get customer report detail rows (per-order). Optionally filter by one organization.
+    """Get customer report detail rows (per-order). Returns orderId, paymentMethod, revenue per order.
+    Use when user asks for per-order breakdown, specific order IDs, or order-level payment data.
+    For aggregate totals only, use get_statement_of_use_summary instead.
 
     Args:
-        from_date: Start date (YYYY-MM-DD).
-        to_date: End date (YYYY-MM-DD).
-        pay: Payment filter(s), e.g. ["cash", "credit", "card", "point", "brandpay"].
+        from_date: Start date (YYYY-MM-DD). Omit to use backend default (last 3 days).
+        to_date: End date (YYYY-MM-DD). Omit to use backend default.
+        pay: Payment types to include. Omit (None) to include ALL types automatically.
+             Valid values: "cash", "credit", "card", "point", "brandpay".
+             Do NOT call lookup_enum to discover these — use them directly.
         organization_id: Org system ID to filter results to a single organization.
     """
     return get_order_client().get_statement_of_use_detail(

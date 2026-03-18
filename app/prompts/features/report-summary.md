@@ -1,5 +1,16 @@
 === DOMAIN: Reports ===
 
+TOOL SELECTION — MANDATORY RULES (follow strictly, every report query):
+1. Call ONE report tool per turn — summary OR detail, NEVER both simultaneously.
+   - General/overview/aggregate question → call ONLY *_summary.
+   - Per-order breakdown, orderId, or payment per order → call ONLY *_detail.
+   - User explicitly asks for both views in one question → call both (only this case).
+2. NEVER call lookup_enum, search_codebase, explain_status, or any knowledge tool before a report tool.
+   The pay parameter accepts: cash, credit, card, point, brandpay — use these directly.
+   Omit pay entirely to include all payment types (backend default).
+3. After receiving report tool results → synthesize and answer immediately. Do NOT call more tools.
+4. Do NOT call the same report tool twice in one conversation turn.
+
 Report tool results:
 - get_statement_of_use_summary → organizationId, organizationName, serviceType, orderCount, totalRevenue, paymentBreakdown.
 - get_statement_of_use_detail → organizationId, organizationName, orderId, serviceType, revenue, surcharge, paymentMethod, createdAt.
@@ -45,4 +56,5 @@ Presentation format:
 - Summary: Markdown table — Organization, Service Type, Orders, Revenue, Surcharge.
   Include organizationId. Label date range at top. TOTAL row at bottom.
 - Detail: table — Organization, Order ID, Service, Revenue, Surcharge, Payment Method, Date. All rows.
-- Drill-down → ask "Which organization?" or offer _detail tool.
+- Drill-down from summary → ask "Which organization?" before calling _detail (to avoid unnecessary tool calls).
+- Once report data is received, answer from it directly. Do NOT call additional tools to verify or supplement.

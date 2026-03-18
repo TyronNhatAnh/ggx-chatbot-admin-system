@@ -98,13 +98,13 @@ seen_calls.add(call_key)
 ---
 
 ### 1.6 Tool Loop Limit (MAX_TOOL_LOOPS)
-**File:** [app/orchestrator/ai_orchestrator.py](app/orchestrator/ai_orchestrator.py#L19)
+**File:** [app/orchestrator/ai_orchestrator.py](app/orchestrator/ai_orchestrator.py#L23)
 
 ```python
 MAX_TOOL_LOOPS = 3  # Caps total Gemini calls at 4 (initial + 3 loops)
 ```
 
-✅ **Status:** Enforced with graceful synthesis fallback (lines 398-432).  
+✅ **Status:** Enforced with graceful synthesis fallback. Report queries short-circuited via upfront hint injection before first Gemini call, preventing unnecessary loops.  
 **Impact:** Hard ceiling on latency; prevents runaway loops. Target 3-6s stays on track.
 
 ---

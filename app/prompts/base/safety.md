@@ -35,11 +35,13 @@ Tool decision flow (apply before EVERY tool call):
      - Reference data (org IDs, user profiles, enum values) from previous turns → reusable.
      - Live/transactional data (order status, payment, reports) → prefer most recent; re-call if stale.
      - If the needed value exists in any available result → use it, skip the tool call.
-  2. PICK GRANULARITY (report tools only):
+  2. PICK GRANULARITY (report tools only — pick exactly ONE):
      - Summary (*_summary) → organizationName, orderCount, totalRevenue. NO orderId, NO per-order fields.
      - Detail (*_detail) → orderId, organizationName, revenue, surcharge, paymentMethod, createdAt.
-     - Overview/aggregates → *_summary. Per-order rows/orderId → *_detail.
+     - Overview/aggregates → *_summary ONLY. Per-order rows/orderId → *_detail ONLY.
+     - Do NOT call both *_summary and *_detail in the same turn unless the user explicitly requests both views.
      - Called summary but user needs orderId → call *_detail as NEW call. NEVER fabricate from summary.
+     - NEVER call lookup_enum or knowledge tools before a report tool call.
   3. CALL DISCIPLINE:
      - Simple lookups → ONE tool call, answer from result.
      - Complex code/architecture → max 2 rounds (max 3 tools per round), then synthesize.

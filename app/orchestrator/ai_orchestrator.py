@@ -4,6 +4,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from datetime import date
 from typing import Any
 
@@ -31,6 +32,8 @@ _fallback_counters = {
     "repetitive_tool_calls": 0,
 }
 _fallback_counter_lock = threading.Lock()
+_HANGUL_CHAR_PATTERN = re.compile(r"[\uac00-\ud7a3]")
+_LATIN_CHAR_PATTERN = re.compile(r"[A-Za-z]")
 
 
 def _response_parts(response: types.GenerateContentResponse) -> list[types.Part]:
@@ -52,6 +55,88 @@ def _response_text(response: types.GenerateContentResponse) -> str:
         if part.text:
             texts.append(part.text)
     return "\n".join(texts).strip()
+
+
+def _detect_user_language(message: str) -> str | None:
+    """Detect preferred response language from the current user message.
+
+    Returns:
+        "en" for English-leaning messages, "ko" for Korean-leaning messages,
+        or None when no clear signal exists.
+    """
+    if not message:
+        return None
+
+    hangul_count = len(_HANGUL_CHAR_PATTERN.findall(message))
+    latin_count = len(_LATIN_CHAR_PATTERN.findall(message))
+
+    if hangul_count == 0 and latin_count == 0:
+        return None
+    if hangul_count > latin_count:
+        return "ko"
+    if latin_count > 0:
+        return "en"
+    return None
+
+
+def _reply_language_mismatch(user_language: str | None, reply: str) -> bool:
+    """True when assistant reply likely violates the user's language choice."""
+    if not user_language or not reply:
+        return False
+
+    has_hangul = bool(_HANGUL_CHAR_PATTERN.search(reply))
+    has_latin = bool(_LATIN_CHAR_PATTERN.search(reply))
+
+    if user_language == "en":
+        return has_hangul
+    if user_language == "ko":
+        return has_latin and not has_hangul
+    return False
+
+
+def _language_rewrite_prompt(user_language: str, reply: str) -> str:
+    target = "English" if user_language == "en" else "Korean"
+    return (
+        f"Rewrite the following assistant answer into {target} only. "
+        "Preserve every fact exactly (numbers, IDs, dates, statuses, addresses, money values). "
+        "Do not add, remove, or infer information. "
+        "Keep Markdown structure (tables/lists/headings) when present. "
+        "Return only the rewritten answer.\n\n"
+        "[assistant_answer_start]\n"
+        f"{reply}\n"
+        "[assistant_answer_end]"
+    )
+
+
+def _enforce_reply_language(
+    *,
+    chat_session,
+    user_message: str,
+    reply: str,
+) -> tuple[str, float, bool]:
+    """Rewrite final reply to the user's language only when mismatch is detected.
+
+    Returns:
+        (final_reply, extra_gemini_elapsed_seconds, made_extra_gemini_call)
+    """
+    user_language = _detect_user_language(user_message)
+    if not _reply_language_mismatch(user_language, reply):
+        return reply, 0.0, False
+
+    if not user_language:
+        return reply, 0.0, False
+
+    logger.warning(
+        "[LangGuard] Reply language mismatch detected (user_lang=%s). Rewriting final answer.",
+        user_language,
+    )
+    t = time.perf_counter()
+    rewritten_response = chat_session.send_message(_language_rewrite_prompt(user_language, reply))
+    elapsed = time.perf_counter() - t
+    rewritten_reply = _response_text(rewritten_response).strip()
+    if not rewritten_reply:
+        return reply, elapsed, True
+    return rewritten_reply, elapsed, True
 
 
 def _trim_text(value: str, limit: int) -> str:
@@ -414,6 +499,7 @@ def _build_report_note(
     user_wants_detail: bool = False,
     org_search_results: dict | None = None,
     tool_had_org_filter: bool = False,
+    detail_tool_already_called: bool = False,
 ) -> str:
     """Build a smart _note for report tool results.
 
@@ -423,7 +509,8 @@ def _build_report_note(
 
     When a summary tool was called but the user asked for detail-level
     data, injects a corrective instruction telling Gemini to call the
-    detail variant.
+    detail variant — UNLESS the detail tool was already called in the
+    same batch.
 
     When search_organizations was already called but the report tool
     was called without organization_id, reminds Gemini to answer from
@@ -443,8 +530,9 @@ def _build_report_note(
             org_entries[name] = oid
 
     # If summary was called but user wanted detail, inject corrective note.
+    # UNLESS the detail tool was already called in this batch (prevents duplicate requests).
     is_summary_tool = tool_name in _SUMMARY_TOOL_NAMES
-    if is_summary_tool and user_wants_detail:
+    if is_summary_tool and user_wants_detail and not detail_tool_already_called:
         detail_tool = tool_name.replace("_summary", "_detail")
         return (
             f"WARNING: You called {tool_name} (summary) but the user is asking for "
@@ -452,6 +540,16 @@ def _build_report_note(
             "Summary rows do NOT contain orderId or per-order fields. "
             f"You MUST now call {detail_tool} with the same date/pay params "
             "to get order-level rows. Do NOT answer from summary data alone."
+        )
+    
+    # If summary tool was called AND the detail variant was already called/collected,
+    # remind Gemini that detail data is available and should NOT be called again.
+    if is_summary_tool and detail_tool_already_called:
+        return (
+            "Both summary and detail results are now available. "
+            "Use the detail rows (which contain orderId, paymentMethod, etc.) "
+            "to answer questions about individual orders. "
+            "Do NOT call the detail tool again — use the data you already have."
         )
 
     parts = [
@@ -592,6 +690,23 @@ class AIOrchestrator:
         feature_key = _detect_feature_key(message)
         system_prompt = build_system_prompt(feature_key=feature_key)
 
+        # For report queries: inject a direct tool instruction into the user message.
+        # This prevents the costly pattern of: Gemini answers text → retry call → lookup_enum call → report call.
+        # By hinting upfront, Gemini calls the right report tool on the very first try.
+        if feature_key == "report-summary":
+            if _wants_detail_level(message):
+                effective_message += (
+                    "\n\n[Instruction: Call get_statement_of_use_detail immediately. "
+                    "pay values: cash, credit, card, point, brandpay — omit pay to include all types. "
+                    "Do not call lookup_enum or any other tool first.]"
+                )
+            else:
+                effective_message += (
+                    "\n\n[Instruction: Call get_statement_of_use_summary immediately. "
+                    "pay values: cash, credit, card, point, brandpay — omit pay to include all types. "
+                    "Do not call lookup_enum or any other tool first.]"
+                )
+
         # A fresh session per request keeps state isolated between users.
         chat_session = self._model.start_chat(
             enable_automatic_function_calling=False,
@@ -649,15 +764,17 @@ class AIOrchestrator:
                     t = time.perf_counter()
                     if _wants_detail_level(message):
                         retry_msg = (
-                            "This is a detail-level report query. You MUST call "
-                            "get_statement_of_use_detail (NOT summary) to get per-order rows "
-                            "with orderId, paymentMethod, etc. Do not answer from memory."
+                            "This is a detail-level report query. Call get_statement_of_use_detail IMMEDIATELY "
+                            "(NOT summary, NOT lookup_enum, NOT any other tool first). "
+                            "Valid pay values: cash, credit, card, point, brandpay — use directly, do not look them up. "
+                            "Omit pay to include all types."
                         )
                     else:
                         retry_msg = (
-                            "This is a report query. You MUST call an appropriate report tool first "
-                            "(get_statement_of_use_summary/detail or driver variants) before answering. "
-                            "Do not answer from memory."
+                            "This is a report query. Call get_statement_of_use_summary IMMEDIATELY. "
+                            "Do NOT call lookup_enum, search_codebase, or any other tool first. "
+                            "Valid pay values: cash, credit, card, point, brandpay — use directly, do not look them up. "
+                            "Omit pay to include all types. Do not answer from memory."
                         )
                     response = chat_session.send_message(retry_msg)
                     gemini_elapsed = time.perf_counter() - t
@@ -669,15 +786,6 @@ class AIOrchestrator:
                 logger.info(
                     "[Step %d  ] Gemini returned final answer  tools_called=%s  gemini_calls=%d  total_elapsed=%.3fs",
                     loop, tools_called, gemini_calls, elapsed,
-                )
-                _log_structured_metrics(
-                    conversation_id=sid,
-                    tools_called=tools_called,
-                    gemini_calls=gemini_calls,
-                    gemini_latency_seconds=gemini_elapsed_total,
-                    tool_latency_seconds=tool_elapsed_total,
-                    total_latency_seconds=elapsed,
-                    fallback_reason=None,
                 )
                 break
 
@@ -810,9 +918,12 @@ class AIOrchestrator:
 
             if len(pending_calls) > 1:
                 # Parallel execution — cap workers to avoid overwhelming external services
+                def _execute_tool_in_context(ctx, t_name: str, t_args: dict) -> tuple[str, dict, float]:
+                    return ctx.run(_execute_tool, t_name, t_args)
+
                 with ThreadPoolExecutor(max_workers=min(4, len(pending_calls))) as executor:
                     future_to_idx = {
-                        executor.submit(_execute_tool, tn, ta): i
+                        executor.submit(_execute_tool_in_context, copy_context(), tn, ta): i
                         for i, (tn, ta) in enumerate(pending_calls)
                     }
                     result_by_idx: dict[int, tuple[str, dict, dict, float]] = {}
@@ -913,12 +1024,18 @@ class AIOrchestrator:
                     # Check if search_organizations was already called in this turn
                     org_search_res = tool_results_collected.get("search_organizations")
                     had_org_filter = bool(tool_args.get("organization_id") or tool_args.get("orgId"))
+                    # Check if the detail variant of this tool was already called in this batch
+                    detail_called = False
+                    if tool_name in _SUMMARY_TOOL_NAMES:
+                        detail_tool_name = tool_name.replace("_summary", "_detail")
+                        detail_called = detail_tool_name in tool_results_collected
                     note = _build_report_note(
                         rows if has_rows else [],
                         tool_name,
                         user_wants_detail=_wants_detail_level(message),
                         org_search_results=org_search_res,
                         tool_had_org_filter=had_org_filter,
+                        detail_tool_already_called=detail_called,
                     )
                     result = {**result, "_note": note}
 
@@ -969,6 +1086,27 @@ class AIOrchestrator:
             logger.info("[Step %d  ] Gemini responded  elapsed=%.3fs", loop, gemini_elapsed)
 
         reply = _response_text(response)
+        rewritten_reply, rewrite_elapsed, made_rewrite_call = _enforce_reply_language(
+            chat_session=chat_session,
+            user_message=message,
+            reply=reply,
+        )
+        if made_rewrite_call:
+            gemini_calls += 1
+            gemini_elapsed_total += rewrite_elapsed
+            logger.info("[LangGuard] Language rewrite applied  elapsed=%.3fs", rewrite_elapsed)
+        reply = rewritten_reply
+
+        total_elapsed = time.perf_counter() - total_start
+        _log_structured_metrics(
+            conversation_id=sid,
+            tools_called=tools_called,
+            gemini_calls=gemini_calls,
+            gemini_latency_seconds=gemini_elapsed_total,
+            tool_latency_seconds=tool_elapsed_total,
+            total_latency_seconds=total_elapsed,
+            fallback_reason=None,
+        )
         self._record_turn_and_summarize(sid, message, reply, tools_called, tool_results_collected)
         return (reply, tools_called, sid)
 

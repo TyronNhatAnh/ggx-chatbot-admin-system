@@ -132,9 +132,24 @@ def build_context(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+_REPORT_TOOL_NAMES = frozenset({
+    "get_statement_of_use_summary",
+    "get_statement_of_use_detail",
+    "get_statement_of_use_driver_summary",
+    "get_statement_of_use_driver_detail",
+    "get_b2b_tracking_service_detail",
+})
+
+
 def _format_turn(turn: Turn) -> str:
     role_label = turn.role.capitalize()
-    line = f"- {role_label}: {turn.content[:500]}"
+    # For report turns: skip the assistant's formatted table body — only the tool name
+    # matters for continuity. The table can be hundreds of chars and just bloats context.
+    is_report_turn = bool(turn.tools_called and any(t in _REPORT_TOOL_NAMES for t in turn.tools_called))
+    if role_label == "Assistant" and is_report_turn:
+        line = f"- {role_label}: [report result delivered]"
+    else:
+        line = f"- {role_label}: {turn.content[:500]}"
     if turn.tools_called:
         line += f"\n  Tools: {', '.join(turn.tools_called)}"
     return line
