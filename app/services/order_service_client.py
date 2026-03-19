@@ -911,6 +911,166 @@ class OrderServiceClient:
         """GET /api/v1/report/statement-of-use-driver/detail (driver report — no pay param, requires driverType)."""
         return self._get_driver_report_data("/report/statement-of-use-driver/detail", params=params)
 
+    def _normalize_admin_panel_params(self, params: dict | None) -> dict:
+        """Map Python snake_case params to the camelCase query params expected by /admin/orders."""
+        source = params if isinstance(params, dict) else {}
+        out: dict = {}
+
+        # Pagination
+        if source.get("limit") is not None:
+            out["limit"] = int(source["limit"])
+        if source.get("offset") is not None:
+            out["offset"] = int(source["offset"])
+
+        # ID filters
+        _scalar_int = [
+            ("order_request_id", "orderRequestId"),
+            ("organization_id", "organizationId"),
+            ("branch_id", "branchId"),
+            ("user_id", "userId"),
+            ("driver_id", "driverId"),
+            ("request_vehicle_pool_id", "requestVehiclePoolId"),
+            ("delivery_vehicle_pool_id", "deliveryVehiclePoolId"),
+        ]
+        for src_key, dst_key in _scalar_int:
+            val = source.get(src_key)
+            if val is not None:
+                try:
+                    out[dst_key] = int(val)
+                except (TypeError, ValueError):
+                    logger.warning("Invalid %s value %r — ignoring", src_key, val)
+
+        # String filters
+        _scalar_str = [
+            ("external_order_id", "externalOrderId"),
+            ("keyword", "keyword"),
+            ("phone_number", "phoneNumber"),
+            ("driver_phone_number", "driverPhoneNumber"),
+            ("organization", "organization"),
+            ("branch", "branch"),
+            ("address", "address"),
+            ("sort_by", "sortBy"),
+            ("sort_order", "sortOrder"),
+        ]
+        for src_key, dst_key in _scalar_str:
+            val = source.get(src_key)
+            if val is not None and str(val).strip():
+                out[dst_key] = str(val).strip()
+
+        # Date range filters
+        _date_pairs = [
+            ("appointment_from", "appointmentFrom"),
+            ("appointment_to", "appointmentTo"),
+            ("created_from", "createdFrom"),
+            ("created_to", "createdTo"),
+            ("pickup_from", "pickupFrom"),
+            ("pickup_to", "pickupTo"),
+            ("completed_from", "completedFrom"),
+            ("completed_to", "completedTo"),
+        ]
+        for src_key, dst_key in _date_pairs:
+            normalized = self._normalize_date_yyyy_mm_dd(source.get(src_key))
+            if normalized:
+                out[dst_key] = normalized
+
+        # Array filters
+        def _to_int_list(val: object) -> list[int]:
+            if val is None:
+                return []
+            items = val if isinstance(val, list) else [val]
+            result = []
+            for item in items:
+                try:
+                    result.append(int(item))
+                except (TypeError, ValueError):
+                    pass
+            return result
+
+        def _to_str_list(val: object) -> list[str]:
+            if val is None:
+                return []
+            items = val if isinstance(val, list) else [val]
+            return [str(i).strip() for i in items if str(i).strip()]
+
+        status_cd = _to_int_list(source.get("status_cd"))
+        if status_cd:
+            out["statusCd"] = status_cd
+
+        order_type = _to_str_list(source.get("order_type"))
+        if order_type:
+            out["orderType"] = order_type
+
+        pay_cd = _to_int_list(source.get("pay_cd"))
+        if pay_cd:
+            out["payCd"] = pay_cd
+
+        group_type_cd = _to_int_list(source.get("group_type_cd"))
+        if group_type_cd:
+            out["groupTypeCd"] = group_type_cd
+
+        # Boolean flags
+        for src_key, dst_key in [
+            ("is_express", "isExpress"),
+            ("is_round_trip", "isRoundTrip"),
+            ("is_multiple_waypoint", "isMultipleWaypoint"),
+            ("is_hub", "isHub"),
+        ]:
+            val = source.get(src_key)
+            if val is not None:
+                out[dst_key] = bool(val)
+
+        return self._clean_query_params(out)
+
+    def get_orders_admin_panel(self, params: dict | None = None) -> dict:
+        """GET /api/v1/admin/orders — full order list for the admin panel (ALL statuses)."""
+        try:
+            normalized = self._normalize_admin_panel_params(params)
+            payload = self._get("/admin/orders", params=normalized)
+
+            meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+            data = self._unwrap_success_payload(payload)
+
+            if isinstance(data, dict) and data.get("error"):
+                return data
+
+            if data is None:
+                return {"orders": [], "count": 0, "total_count": meta.get("totalCount", 0)}
+
+            # Response shape: {orders: [...], pagination: {...}}
+            if isinstance(data, dict):
+                orders = data.get("orders") or data.get("rows") or data.get("list") or data.get("data")
+                pagination = data.get("pagination", {})
+                if isinstance(orders, list):
+                    return {
+                        "orders": orders[:50],
+                        "count": len(orders),
+                        "total_count": (
+                            pagination.get("total")
+                            or pagination.get("totalCount")
+                            or meta.get("totalCount", len(orders))
+                        ),
+                        "pagination": pagination,
+                    }
+                return data
+
+            if isinstance(data, list):
+                return {"orders": data[:50], "count": len(data), "total_count": meta.get("totalCount", len(data))}
+
+            return {"raw": data}
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "get_orders_admin_panel HTTP %s — body: %s",
+                exc.response.status_code,
+                exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("get_orders_admin_panel network error — %s", exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error("get_orders_admin_panel unexpected error — %s: %s", type(exc).__name__, exc)
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
     # ------------------------------------------------------------------
     # Price estimation API methods (read-only business operations)
     # ------------------------------------------------------------------
@@ -918,6 +1078,30 @@ class OrderServiceClient:
     def estimate_guest(self, payload: dict) -> dict:
         """POST /api/v1/guest/estimate."""
         return self._call_price_endpoint("/guest/estimate", payload=payload, requires_auth=False)
+
+    def get_tax_invoice_states(self, mgt_keys: list[str]) -> dict:
+        """POST /api/v1/etax/tax-invoice-states — check Barobill/NTS e-tax transmission states."""
+        try:
+            payload = self._post("/etax/tax-invoice-states", json_body={"mgtKeys": mgt_keys}, requires_auth=True)
+            data = self._unwrap_success_payload(payload)
+            if isinstance(data, dict) and data.get("error"):
+                return data
+            if isinstance(data, dict):
+                return data
+            return {"raw": data}
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "get_tax_invoice_states HTTP %s — body: %s",
+                exc.response.status_code,
+                exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("get_tax_invoice_states network error — %s", exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error("get_tax_invoice_states unexpected error — %s: %s", type(exc).__name__, exc)
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
     def check_driver_price(self, payload: dict) -> dict:
         """POST /api/v1/guest/check-price-driver."""

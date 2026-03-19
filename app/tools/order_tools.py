@@ -190,4 +190,86 @@ def estimate_guest_home_moving_price(payload: dict) -> dict:
     return get_order_client().estimate_guest_home_moving(payload)
 
 
+def get_orders_admin_panel(
+    keyword: str | None = None,
+    status_cd: list[int] | None = None,
+    order_type: list[str] | None = None,
+    pay_cd: list[int] | None = None,
+    appointment_from: str | None = None,
+    appointment_to: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+    organization_id: int | None = None,
+    branch_id: int | None = None,
+    user_id: int | None = None,
+    driver_id: int | None = None,
+    phone_number: str | None = None,
+    order_request_id: int | None = None,
+    external_order_id: str | None = None,
+    sort_by: str | None = None,
+    sort_order: str | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
+) -> dict:
+    """Get ALL orders from the admin panel (GET /admin/orders). Returns orders across ALL statuses.
+    Use this for general order listing, not for completed/cancelled reports.
+    For aggregated revenue reports, use get_statement_of_use_summary/detail instead.
+
+    Args:
+        keyword: Free-text search across order fields.
+        status_cd: Filter by status codes (e.g. [1] for Pending, [4] for InTransit, [5] for Completed).
+                   Multiple values = OR. Omit for all statuses.
+        order_type: Filter by order type strings (e.g. ["Quick", "Delivery", "HomeMoving"]).
+        pay_cd: Filter by payment method codes.
+        appointment_from: Appointment date range start (YYYY-MM-DD).
+        appointment_to: Appointment date range end (YYYY-MM-DD).
+        created_from: Order creation date range start (YYYY-MM-DD).
+        created_to: Order creation date range end (YYYY-MM-DD).
+        organization_id: Filter by organization (system ID).
+        branch_id: Filter by branch ID.
+        user_id: Filter by customer user ID.
+        driver_id: Filter by assigned driver ID.
+        phone_number: Filter by customer phone number.
+        order_request_id: Look up a specific order by its internal integer ID.
+        external_order_id: Look up by external order ID string.
+        sort_by: Field to sort by (e.g. "createdAt", "appointmentAt").
+        sort_order: Sort direction: "asc" or "desc".
+        limit: Max number of results (default: backend default, typically 20).
+        offset: Pagination offset.
+    """
+    return get_order_client().get_orders_admin_panel(
+        params={
+            "keyword": keyword,
+            "status_cd": status_cd,
+            "order_type": order_type,
+            "pay_cd": pay_cd,
+            "appointment_from": appointment_from,
+            "appointment_to": appointment_to,
+            "created_from": created_from,
+            "created_to": created_to,
+            "organization_id": organization_id,
+            "branch_id": branch_id,
+            "user_id": user_id,
+            "driver_id": driver_id,
+            "phone_number": phone_number,
+            "order_request_id": order_request_id,
+            "external_order_id": external_order_id,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+            "limit": limit,
+            "offset": offset,
+        }
+    )
+
+
+def get_tax_invoice_states(mgt_keys: list[str]) -> dict:
+    """Check Barobill/NTS e-tax transmission states for a list of management keys (POST /etax/tax-invoice-states).
+    Use when user asks about e-tax invoice status, NTS submission result, or etax transmission.
+
+    Args:
+        mgt_keys: List of Barobill management key strings to check (e.g. ["20240101-1", "20240101-2"]).
+    """
+    return get_order_client().get_tax_invoice_states(mgt_keys)
+
+
 

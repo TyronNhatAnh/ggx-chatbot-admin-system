@@ -20,10 +20,12 @@ from app.tools.order_tools import (
     estimate_guest_price,
     get_order_cancel_fee,
     get_order_payment_status,
+    get_orders_admin_panel,
     get_statement_of_use_detail,
     get_statement_of_use_driver_detail,
     get_statement_of_use_driver_summary,
     get_statement_of_use_summary,
+    get_tax_invoice_states,
 )
 from app.tools.user_tools import (
     get_accessible_menu_tree,
@@ -46,6 +48,8 @@ from app.tools.user_tools import (
 ALL_TOOL_FUNCTIONS: list = [
     get_order_payment_status,
     get_order_cancel_fee,
+    get_orders_admin_panel,
+    get_tax_invoice_states,
     get_statement_of_use_summary,
     get_statement_of_use_detail,
     get_statement_of_use_driver_summary,
