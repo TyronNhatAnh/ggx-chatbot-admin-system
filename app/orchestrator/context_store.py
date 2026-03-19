@@ -16,17 +16,9 @@ class ConversationTurn:
 
 
 @dataclass
-class CachedOrderRecord:
-    order: dict[str, Any]
-    cached_at: float = field(default_factory=time.time)
-
-
-@dataclass
 class ConversationState:
     conversation_id: str
     turns: list[ConversationTurn] = field(default_factory=list)
-    order_cache: dict[str, CachedOrderRecord] = field(default_factory=dict)
-    last_focus_order_id: str | None = None
     updated_at: float = field(default_factory=time.time)
 
 

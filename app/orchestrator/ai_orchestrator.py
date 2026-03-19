@@ -13,7 +13,7 @@ from google.genai import types
 from app.config import settings
 from app.llm.gemini_client import create_gemini_model
 from app.orchestrator.context_builder import build_context
-from app.orchestrator.context_store import CachedOrderRecord, ConversationState
+from app.orchestrator.context_store import ConversationState
 from app.orchestrator.memory_service import MemoryService
 from app.orchestrator.summarizer import summarize_conversation
 from app.prompts.builder import build_system_prompt
@@ -21,8 +21,6 @@ from app.tools import ALL_TOOL_FUNCTIONS, TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
 MAX_TOOL_LOOPS = 3      # max Gemini round-trips in tool loop → caps total Gemini calls at MAX_TOOL_LOOPS+1
-ORDER_CACHE_MAX_ITEMS = 24
-ORDER_CACHE_TTL_SECONDS = 60
 # Accept explicit ORD-* IDs or numeric IDs only.
 # Prevent false positives like organization names (e.g. "DHLSC").
 ORDER_ID_PATTERN = re.compile(r"\b(?:ORD-[A-Za-z0-9-]{3,}|\d{5,})\b", re.IGNORECASE)
@@ -194,58 +192,6 @@ def _extract_order_id_candidates(message: str) -> list[str]:
     return unique
 
 
-def _resolve_order_cache_ttl_seconds() -> int:
-    configured = int(getattr(settings, "chat_order_cache_ttl_seconds", ORDER_CACHE_TTL_SECONDS))
-    return max(30, configured)
-
-
-def _evict_expired_order_cache(state: ConversationState) -> None:
-    if not state.order_cache:
-        return
-    cutoff = time.time() - _resolve_order_cache_ttl_seconds()
-    expired_keys = [
-        oid
-        for oid, record in state.order_cache.items()
-        if record.cached_at < cutoff
-    ]
-    for oid in expired_keys:
-        state.order_cache.pop(oid, None)
-
-
-def _put_order_cache(state: ConversationState, order_id: str, order: dict[str, Any]) -> None:
-    oid = _normalize_order_id(order_id)
-    if not oid or not isinstance(order, dict):
-        return
-
-    state.order_cache[oid] = CachedOrderRecord(order=order)
-
-    while len(state.order_cache) > ORDER_CACHE_MAX_ITEMS:
-        oldest_key = min(state.order_cache, key=lambda k: state.order_cache[k].cached_at)
-        state.order_cache.pop(oldest_key, None)
-
-
-def _get_cached_order(state: ConversationState, order_id: str) -> dict | None:
-    oid = _normalize_order_id(order_id)
-    if not oid:
-        return None
-    record = state.order_cache.get(oid)
-    if record is None:
-        return None
-
-    if record.cached_at < (time.time() - _resolve_order_cache_ttl_seconds()):
-        state.order_cache.pop(oid, None)
-        return None
-    return record.order
-
-
-def _is_detail_order_payload(order: dict[str, Any] | None) -> bool:
-    """True when cached payload is detailed enough for get_order_detail responses."""
-    if not isinstance(order, dict):
-        return False
-    # get_order_detail always returns this key (possibly empty list).
-    return "priceBreakdown" in order
-
-
 def _extract_context_hints(tool_results: dict[str, Any]) -> str:
     """Extract useful context from previous tool results (report data, orders, etc.)."""
     if not tool_results:
@@ -275,23 +221,6 @@ def _extract_context_hints(tool_results: dict[str, Any]) -> str:
                         org_entries.append(label)
         if org_entries:
             hints.append(f"Organizations in report: {', '.join(org_entries)}")
-
-    # Extract order IDs from orders list (for follow-up context)
-    for tool_name in ("get_orders", "get_delayed_orders"):
-        orders_data = tool_results.get(tool_name)
-        if not isinstance(orders_data, dict):
-            continue
-        orders = orders_data.get("orders", orders_data.get("delayed_orders", []))
-        if not isinstance(orders, list):
-            continue
-        order_ids: list[str] = []
-        for order in orders[:3]:  # First 3 orders
-            if isinstance(order, dict):
-                oid = order.get("orderId")
-                if oid and isinstance(oid, str) and oid not in order_ids:
-                    order_ids.append(oid)
-        if order_ids:
-            hints.append(f"Recent orders: {', '.join(order_ids)}")
 
     # Extract user profile data (for cross-turn reference reuse)
     for usr_name in ("get_user_profile", "search_users"):
@@ -659,8 +588,6 @@ class AIOrchestrator:
         logger.info("[Orchestrator] Loading Gemini model with %d tools...", len(ALL_TOOL_FUNCTIONS))
         self._model = create_gemini_model(ALL_TOOL_FUNCTIONS)
         self._memory = MemoryService()
-        from app.orchestrator.context_store import InMemoryConversationStore
-        self._order_state_store = InMemoryConversationStore(ttl_seconds=1800, max_turns=0)
         logger.info("[Orchestrator] Gemini model ready.")
 
     def chat(self, message: str, conversation_id: str | None = None) -> tuple[str, list[str], str]:
@@ -687,14 +614,6 @@ class AIOrchestrator:
         total_start = time.perf_counter()
         session = self._memory.get_or_create(conversation_id)
         sid = session.session_id
-
-        # Legacy order-cache state (conversation-level) — kept for cache hits
-        state = self._order_state_store.get_or_create(sid)
-        _evict_expired_order_cache(state)
-
-        current_message_order_ids = _extract_order_id_candidates(message)
-        if current_message_order_ids:
-            state.last_focus_order_id = current_message_order_ids[0]
 
         # Auto-extract entities from user message into long-term memory
         self._memory.extract_and_store_entities(sid, message)
@@ -751,9 +670,6 @@ class AIOrchestrator:
         # If Gemini tries to answer a report query without tools on the first pass,
         # force one retry that explicitly asks for a report tool call.
         report_tool_retry_used = False
-        # Per-turn cache: orderId -> order dict from search_orders results.
-        # Combined with conversation cache to avoid redundant HTTP calls.
-        order_cache: dict[str, dict] = {}
 
         # Tool-calling loop — Gemini may request tools before producing a final answer.
         while True:
@@ -889,31 +805,8 @@ class AIOrchestrator:
                 seen_calls.add(call_key)
                 dedup_calls.append((tool_name, tool_args))
 
-            # Phase 1: serve get_order_detail from cache where possible
-            pending_calls: list[tuple[str, dict]] = []
-            for tool_name, tool_args in dedup_calls:
-                if tool_name == "get_order_detail":
-                    requested_order_id = _normalize_order_id(str(tool_args.get("order_id", "")))
-                    if requested_order_id:
-                        state.last_focus_order_id = requested_order_id
-                    cached_order = order_cache.get(requested_order_id)
-                    if cached_order is None and requested_order_id:
-                        cached_order = _get_cached_order(state, requested_order_id)
-                    if _is_detail_order_payload(cached_order):
-                        logger.info(
-                            "[Tool     ] → get_order_detail(%s)  CACHE HIT — skipping HTTP call",
-                            requested_order_id or tool_args.get("order_id"),
-                        )
-                        tools_called.append(tool_name)
-                        enriched = {**cached_order, "_note": "full record from order service"}
-                        tool_response_parts.append(
-                            types.Part.from_function_response(
-                                name=tool_name,
-                                response={"result": json.dumps(enriched, default=str)},
-                            )
-                        )
-                        continue
-                pending_calls.append((tool_name, tool_args))
+            # Phase 1: execute all pending tools (no cache)
+            pending_calls: list[tuple[str, dict]] = list(dedup_calls)
 
             # Phase 2: execute pending tools in parallel when multiple are requested
             def _execute_tool(t_name: str, t_args: dict) -> tuple[str, dict, float]:
@@ -962,7 +855,7 @@ class AIOrchestrator:
                 res_name, res_data, res_elapsed = _execute_tool(tn, ta)
                 executed_results.append((res_name, ta, res_data, res_elapsed))
 
-            # Phase 3: post-process results (cache population, annotation)
+            # Phase 3: post-process results (annotation)
             for tool_name, tool_args, result, tool_elapsed in executed_results:
                 tool_elapsed_total += tool_elapsed
                 logger.info(
@@ -971,34 +864,6 @@ class AIOrchestrator:
                     tool_elapsed,
                     list(result.keys()) if isinstance(result, dict) else type(result).__name__,
                 )
-
-                # Populate per-turn cache from get_orders results.
-                # Also annotate the result so Gemini knows driverFee + location
-                # are already included — no get_order_detail call is needed.
-                if tool_name == "get_orders" and isinstance(result, dict):
-                    for order in result.get("orders", []):
-                        if isinstance(order, dict):
-                            oid = _normalize_order_id(str(order.get("orderId") or ""))
-                            if oid:
-                                order_cache[oid] = order
-                                _put_order_cache(state, oid, order)
-                    if current_message_order_ids:
-                        state.last_focus_order_id = current_message_order_ids[0]
-                    result = {
-                        **result,
-                        "_note": (
-                            "Each order already contains price, driverFee, fromPlace, toPlace, driver, vehicle, goods (when available), and payment summary (when available). "
-                            "Use these fields directly for location/driver fee/vehicle/goods/payment questions. "
-                            "If any requested field is missing or empty for the target order, call get_order_detail(order_id) to fetch full detail."
-                        ),
-                    }
-
-                if tool_name == "get_order_detail" and isinstance(result, dict):
-                    requested_order_id = _normalize_order_id(str(tool_args.get("order_id", "")))
-                    actual_order_id = _normalize_order_id(str(result.get("orderId") or requested_order_id))
-                    if actual_order_id:
-                        _put_order_cache(state, actual_order_id, result)
-                        state.last_focus_order_id = actual_order_id
 
                 # Annotate search_organizations results so Gemini lists matching
                 # candidates with IDs instead of giving a generic "no match" response.

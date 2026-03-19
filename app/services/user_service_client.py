@@ -131,115 +131,6 @@ class UserServiceClient:
             logger.error("get_user_profile unexpected error - %s: %s", type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
-    def get_my_user_profile(self) -> dict:
-        """GET /api/v1/users/me."""
-        try:
-            payload = self._request("GET", "/users/me", requires_auth=True)
-            data = self._unwrap_success_payload(payload)
-            if isinstance(data, dict) and data.get("error"):
-                return data
-
-            user = self._find_user_record(data)
-            if not user:
-                return {"error": "USER_NOT_FOUND", "detail": "No current-user profile found"}
-
-            result = self._slim_user_profile(user)
-            result["source"] = "GET /api/v1/users/me"
-            return result
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return {"error": "USER_NOT_FOUND"}
-            logger.error("get_my_user_profile HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "USER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("get_my_user_profile network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("get_my_user_profile unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
-    def get_withdraw_reasons(self) -> dict:
-        """GET /api/v1/withdraw-reasons."""
-        try:
-            payload = self._request("GET", "/withdraw-reasons", requires_auth=True)
-            data = self._unwrap_success_payload(payload)
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            reasons = data if isinstance(data, list) else []
-            return {"withdraw_reasons": reasons, "count": len(reasons)}
-        except httpx.HTTPStatusError as exc:
-            logger.error("get_withdraw_reasons HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "USER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("get_withdraw_reasons network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("get_withdraw_reasons unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
-    def get_tos_contents(self) -> dict:
-        """GET /api/v1/guest/tos-contents."""
-        try:
-            payload = self._request("GET", "/guest/tos-contents", requires_auth=False)
-            data = self._unwrap_success_payload(payload)
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            if isinstance(data, list):
-                return {"tos_contents": data, "count": len(data)}
-            return data if isinstance(data, dict) else {"raw": data}
-        except httpx.HTTPStatusError as exc:
-            logger.error("get_tos_contents HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "USER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("get_tos_contents network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("get_tos_contents unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
-    def get_feature_flags(self) -> dict:
-        """GET /api/v1/feature/flag."""
-        try:
-            payload = self._request("GET", "/feature/flag", requires_auth=True)
-            data = self._unwrap_success_payload(payload)
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            if isinstance(data, list):
-                return {"feature_flags": data, "count": len(data)}
-            return data if isinstance(data, dict) else {"raw": data}
-        except httpx.HTTPStatusError as exc:
-            logger.error("get_feature_flags HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "USER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("get_feature_flags network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("get_feature_flags unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
-    def get_my_feature_flags(self) -> dict:
-        """GET /api/v1/auth/feature/flag."""
-        try:
-            payload = self._request("GET", "/auth/feature/flag", requires_auth=True)
-            data = self._unwrap_success_payload(payload)
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            if isinstance(data, list):
-                return {"feature_flags": data, "count": len(data), "scope": "current_user"}
-            if isinstance(data, dict):
-                data["scope"] = "current_user"
-                return data
-            return {"raw": data, "scope": "current_user"}
-        except httpx.HTTPStatusError as exc:
-            logger.error("get_my_feature_flags HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "USER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("get_my_feature_flags network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("get_my_feature_flags unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
     def search_users(
         self,
         *,
@@ -420,24 +311,6 @@ class UserServiceClient:
             logger.error("search_organizations unexpected error - %s: %s", type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
-    def verify_client_token(self, token: str) -> dict:
-        """GET /api/v1/auth/client-token/verify?token=... (read-only verification)."""
-        try:
-            payload = self._request("GET", "/auth/client-token/verify", params={"token": token}, requires_auth=False)
-            data = self._unwrap_success_payload(payload)
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            return {"verified": True, "result": data}
-        except httpx.HTTPStatusError as exc:
-            logger.error("verify_client_token HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "USER_SERVICE_ERROR", "detail": str(exc), "verified": False}
-        except httpx.RequestError as exc:
-            logger.error("verify_client_token network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc), "verified": False}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("verify_client_token unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc), "verified": False}
-
     def list_admin_roles(self, department_id: int | None = None) -> dict:
         """GET /api/v1/admin/roles[?departmentId=...]."""
         params = {"departmentId": department_id} if department_id is not None else None
@@ -522,24 +395,6 @@ class UserServiceClient:
             return {"error": "NETWORK_ERROR", "detail": str(exc), "role_id": role_id}
         except Exception as exc:  # noqa: BLE001
             logger.error("get_accessible_menu_tree unexpected error - %s: %s", type(exc).__name__, exc)
-
-    def validate_b2c_org_code(self, org_code: str) -> dict:
-        """GET /api/v1/auth/b2c/org-code/validate?orgCode=..."""
-        try:
-            payload = self._request("GET", "/auth/b2c/org-code/validate", params={"orgCode": org_code}, requires_auth=True)
-            data = self._unwrap_success_payload(payload)
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            return {"valid": True, "org_code": org_code, "result": data} if data else {"valid": False, "org_code": org_code}
-        except httpx.HTTPStatusError as exc:
-            logger.error("validate_b2c_org_code HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "USER_SERVICE_ERROR", "detail": str(exc), "valid": False}
-        except httpx.RequestError as exc:
-            logger.error("validate_b2c_org_code network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc), "valid": False}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("validate_b2c_org_code unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc), "valid": False}
 
     def verify_biz_registration_number(self, biz_number: str, user_id: int | None = None) -> dict:
         """GET /api/v1/guest/etax/verify_biz_registration_number/{biz_number}[?userId=...]"""
