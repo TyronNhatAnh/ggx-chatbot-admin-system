@@ -1163,7 +1163,7 @@ class AIOrchestrator:
                 from app.orchestrator.memory_service import SHORT_TERM_MAX_TURNS
                 older_turns = session.turns[:-SHORT_TERM_MAX_TURNS] if len(session.turns) > SHORT_TERM_MAX_TURNS else []
                 # Skip trivial summaries — wait until there's enough to compress
-                if len(older_turns) >= 2:
+                if len(older_turns) >= 2 and self._memory.begin_summarization(session_id):
                     existing_summary = session.summary
                     logger.info(
                         "[Memory] Scheduling background summarization of %d older turns for session %s",
@@ -1188,3 +1188,5 @@ class AIOrchestrator:
             self._memory.apply_summary(session_id, new_summary)
         except Exception:
             logger.exception("[Memory] Background summarization failed for session %s", session_id)
+        finally:
+            self._memory.end_summarization(session_id)

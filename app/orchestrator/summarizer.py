@@ -7,6 +7,7 @@ discarding filler text.
 """
 
 import logging
+import threading
 from typing import TYPE_CHECKING
 
 from google import genai
@@ -18,6 +19,18 @@ if TYPE_CHECKING:
     from app.orchestrator.memory_service import Turn
 
 logger = logging.getLogger(__name__)
+
+# Module-level cached client — avoid creating a new HTTP connection on every call.
+_client_lock = threading.Lock()
+_cached_client: genai.Client | None = None
+
+
+def _get_client() -> genai.Client:
+    global _cached_client
+    with _client_lock:
+        if _cached_client is None:
+            _cached_client = genai.Client(api_key=settings.gemini_api_key)
+        return _cached_client
 
 # The summarization prompt — aggressive compression, factual only.
 _SUMMARIZE_SYSTEM = (
@@ -60,18 +73,22 @@ def summarize_conversation(
         parts.append(f"[{prefix}] {t.content}")
         if t.tools_called:
             parts.append(f"  Tools: {', '.join(t.tools_called)}")
+        if t.tool_results:
+            for tool_name, result in t.tool_results.items():
+                snippet = str(result)[:200].replace("\n", " ")
+                parts.append(f"  Result({tool_name}): {snippet}")
 
     user_content = "\n".join(parts)
 
     try:
-        client = genai.Client(api_key=settings.gemini_api_key)
+        client = _get_client()
         response = client.models.generate_content(
             model=settings.model_name,
             contents=user_content,
             config=types.GenerateContentConfig(
                 system_instruction=_SUMMARIZE_SYSTEM,
                 temperature=0.2,
-                max_output_tokens=400,
+                max_output_tokens=280,  # ≤200 words × ~1.4 tokens/word
             ),
         )
         summary = (response.text or "").strip()
@@ -88,11 +105,15 @@ def summarize_conversation(
     return _fallback_summary(turns, existing_summary)
 
 
+_FALLBACK_SUMMARY_MAX_CHARS = 800
+
+
 def _fallback_summary(turns: list["Turn"], existing_summary: str) -> str:
     """Deterministic fallback when LLM is unavailable."""
     lines: list[str] = []
     if existing_summary:
-        lines.append(existing_summary)
+        # Cap prior summary to keep total size bounded
+        lines.append(existing_summary[:400])
     for t in turns:
         prefix = "U" if t.role == "user" else "A"
         snippet = t.content[:150].replace("\n", " ")

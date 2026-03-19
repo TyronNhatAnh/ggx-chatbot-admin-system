@@ -72,6 +72,8 @@ class SessionState:
     memory: list[MemoryItem] = field(default_factory=list)
     # Turns added since last summarization
     turns_since_summary: int = 0
+    # Guard against concurrent background summarization threads
+    summarization_in_progress: bool = False
     # Housekeeping
     updated_at: float = field(default_factory=time.time)
 
@@ -165,6 +167,26 @@ class MemoryService:
             if state is None:
                 return False
             return state.turns_since_summary >= self._summarize_threshold
+
+    def begin_summarization(self, session_id: str) -> bool:
+        """Atomically mark summarization as in-progress.
+
+        Returns True when the caller should proceed with summarization,
+        False when another thread is already running it for this session.
+        """
+        with self._lock:
+            state = self._sessions.get(session_id)
+            if state is None or state.summarization_in_progress:
+                return False
+            state.summarization_in_progress = True
+            return True
+
+    def end_summarization(self, session_id: str) -> None:
+        """Clear the in-progress guard set by begin_summarization."""
+        with self._lock:
+            state = self._sessions.get(session_id)
+            if state is not None:
+                state.summarization_in_progress = False
 
     def apply_summary(self, session_id: str, summary: str) -> None:
         """Replace older turns with the new running summary.
