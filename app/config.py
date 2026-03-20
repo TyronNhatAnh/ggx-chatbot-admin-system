@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     driver_service_base_url: str = "https://stag-api.gogox.co.kr/driver"
 
     # ---------------------------------------------------------------------------
+    # Common Service — read-only common data
+    # Swagger: https://stag-api.gogox.co.kr/common/swagger/index.html
+    # ---------------------------------------------------------------------------
+    common_service_base_url: str = "https://stag-api.gogox.co.kr/common"
+
+    # ---------------------------------------------------------------------------
     # /chat endpoint guardrails
     # ---------------------------------------------------------------------------
     chat_auth_enabled: bool = True

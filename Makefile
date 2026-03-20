@@ -40,6 +40,9 @@ index-user-service:
 index-driver-service:
 	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep DRIVER_SERVICE_REPO_PATH | cut -d= -f2)" --service driver-service --lang go --vectors
 
+index-common-service:
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep COMMON_SERVICE_REPO_PATH | cut -d= -f2)" --service common-service --lang go --vectors
+
 index-web2:
 	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep WEB2_REPO_PATH | cut -d= -f2)" --service web2 --lang react --vectors
 
@@ -49,12 +52,13 @@ link:
 	. $(VENV)/bin/activate && python -m indexer.linker
 
 # Index all configured services + run linker in one command
-# Reads ORDER_SERVICE_REPO_PATH, WEB2_REPO_PATH, USER_SERVICE_REPO_PATH from .env
+# Reads ORDER_SERVICE_REPO_PATH, WEB2_REPO_PATH, USER_SERVICE_REPO_PATH, DRIVER_SERVICE_REPO_PATH, COMMON_SERVICE_REPO_PATH from .env
 index-all:
 	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep ORDER_SERVICE_REPO_PATH | cut -d= -f2)" --service order-service --lang go --vectors
 	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep WEB2_REPO_PATH | cut -d= -f2)" --service web2 --lang react --vectors
 	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep USER_SERVICE_REPO_PATH | cut -d= -f2)" --service user-service --lang go --vectors
 	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep DRIVER_SERVICE_REPO_PATH | cut -d= -f2)" --service driver-service --lang go --vectors
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep COMMON_SERVICE_REPO_PATH | cut -d= -f2)" --service common-service --lang go --vectors
 	. $(VENV)/bin/activate && python -m indexer.linker
 
 # Seed persona tags (one-time, run after re-indexing order-service)

@@ -95,6 +95,7 @@ CHAT_RATE_LIMIT_ENABLED=true
 CHAT_RATE_LIMIT_REQUESTS=30
 CHAT_RATE_LIMIT_WINDOW_SECONDS=60
 CHAT_ORDER_CACHE_TTL_SECONDS=60
+COMMON_SERVICE_BASE_URL=https://stag-api.gogox.co.kr/common
 ```
 
 Indexer repo paths:
@@ -102,6 +103,8 @@ Indexer repo paths:
 ```env
 ORDER_SERVICE_REPO_PATH=/path/to/ggx-kr-order-service
 USER_SERVICE_REPO_PATH=/path/to/ggx-kr-user-service
+DRIVER_SERVICE_REPO_PATH=/path/to/ggx-kr-driver-service
+COMMON_SERVICE_REPO_PATH=/path/to/ggx-kr-common-service
 WEB2_REPO_PATH=/path/to/ggx-kr-consumer-web
 ```
 
@@ -162,6 +165,8 @@ Main commands:
 ```bash
 make index-order-service
 make index-user-service
+make index-driver-service
+make index-common-service
 make index-web2
 make index-service SERVICE_REPO=/path/to/repo SERVICE_NAME=my-service LANG=go
 make link
@@ -169,7 +174,7 @@ make index-all
 make seed-personas
 ```
 
-`make index-all` runs order-service + web2 + user-service indexing, then linker.
+`make index-all` runs order-service + web2 + user-service + driver-service + common-service indexing, then linker.
 
 ## Makefile Commands
 
@@ -183,6 +188,8 @@ make seed-personas
 | `make index-service` | Generic index entry point |
 | `make index-order-service` | Index order-service repo |
 | `make index-user-service` | Index user-service repo |
+| `make index-driver-service` | Index driver-service repo |
+| `make index-common-service` | Index common-service repo |
 | `make index-web2` | Index web2 repo |
 | `make link` | Build cross-service endpoint links |
 | `make index-all` | Run all configured indexers + linker |

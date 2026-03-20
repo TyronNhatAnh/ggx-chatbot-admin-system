@@ -270,6 +270,10 @@ _FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "user profile", "organization", "branch", "admin role", "permission",
         "feature flag", "department", "사용자", "조직", "지점", "권한",
     ),
+    "common-data": (
+        "vehicle pool", "vehicle service", "vehicle prices", "address search",
+        "home moving", "ads", "common service", "차량", "차종", "주소", "이사",
+    ),
     "knowledge-code": (
         "enum", "status code", "struct", "handler", "service flow",
         "endpoint", "codebase", "api consumer", "graph",

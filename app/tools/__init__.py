@@ -6,6 +6,17 @@ from app.tools.driver_tools import (
     search_drivers,
     check_driver_price,
 )
+from app.tools.common_tools import (
+    get_addresses,
+    get_common_vehicle_pools,
+    get_services_by_vehicle_pool,
+    get_vehicle_prices,
+    list_guest_ads,
+    list_home_moving_goods_categories,
+    list_home_moving_vehicles,
+    search_api_address_details,
+    search_api_addresses,
+)
 from app.tools.docs_tools import (
     get_handler_context,
     list_available_docs,
@@ -79,6 +90,16 @@ ALL_TOOL_FUNCTIONS: list = [
     get_admin_permissions,
     get_accessible_menu_tree,
     verify_biz_registration_number,
+    # common tools — read-only common-service queries
+    get_vehicle_prices,
+    get_common_vehicle_pools,
+    get_services_by_vehicle_pool,
+    get_addresses,
+    search_api_addresses,
+    search_api_address_details,
+    list_guest_ads,
+    list_home_moving_goods_categories,
+    list_home_moving_vehicles,
     # driver tools — read-only driver-service queries
     get_driver,
     search_drivers,
