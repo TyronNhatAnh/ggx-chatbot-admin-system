@@ -1,3 +1,11 @@
+from app.tools.driver_tools import (
+    get_driver,
+    get_driver_location_history,
+    get_vehicle_pools,
+    search_driver_report,
+    search_drivers,
+    check_driver_price,
+)
 from app.tools.docs_tools import (
     get_handler_context,
     list_available_docs,
@@ -71,6 +79,13 @@ ALL_TOOL_FUNCTIONS: list = [
     get_admin_permissions,
     get_accessible_menu_tree,
     verify_biz_registration_number,
+    # driver tools — read-only driver-service queries
+    get_driver,
+    search_drivers,
+    get_driver_location_history,
+    search_driver_report,
+    check_driver_price,
+    get_vehicle_pools,
     # docs tools — two-tier knowledge (endpoint search → handler source code)
     list_available_docs,
     search_endpoints,

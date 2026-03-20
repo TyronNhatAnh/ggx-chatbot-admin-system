@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     order_service_base_url: str = "https://stag-api.gogox.co.kr/order"
 
     # ---------------------------------------------------------------------------
+    # Driver Service — read-only driver data
+    # Swagger: https://stag-api.gogox.co.kr/driver/swagger/index.html
+    # ---------------------------------------------------------------------------
+    driver_service_base_url: str = "https://stag-api.gogox.co.kr/driver"
+
+    # ---------------------------------------------------------------------------
     # /chat endpoint guardrails
     # ---------------------------------------------------------------------------
     chat_auth_enabled: bool = True
