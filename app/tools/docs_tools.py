@@ -14,7 +14,12 @@ All data is served from the indexer's SQLite knowledge store.
 All paths are validated to prevent traversal attacks.
 """
 
+import logging
+
+from app.limits import truncate_list
 from indexer.store import get_knowledge_store
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -26,23 +31,27 @@ def list_available_docs() -> dict:
     Returns feature requirement docs, handler names, and indexed service stats.
     Call this first to discover what is available before loading heavy content.
     """
-    store = get_knowledge_store()
-    stats = store.get_stats()
-    handlers = store.list_handlers()
-
-    return {
-        "handler_contexts": handlers,
-        "indexed_services": stats.get("services", []),
-        "stats": {
-            "endpoints": stats.get("edge_types", {}).get("handles", 0),
-            "handlers": len(handlers),
-            "flows": stats.get("flows", 0),
-            "enums": stats.get("enums", 0),
-            "structs": stats.get("structs", 0),
-        },
-        "tip": "Use search_endpoints(keyword) to query endpoints, "
-               "get_handler_context(name) for handler source code.",
-    }
+    try:
+        store = get_knowledge_store()
+        stats = store.get_stats()
+        all_handlers = store.list_handlers()
+        handlers = truncate_list(all_handlers)
+        return {
+            "handler_contexts": handlers,
+            "indexed_services": truncate_list(stats.get("services", [])),
+            "stats": {
+                "endpoints": stats.get("edge_types", {}).get("handles", 0),
+                "handlers": len(all_handlers),
+                "flows": stats.get("flows", 0),
+                "enums": stats.get("enums", 0),
+                "structs": stats.get("structs", 0),
+            },
+            "tip": "Use search_endpoints(keyword) to query endpoints, "
+                   "get_handler_context(name) for handler source code.",
+        }
+    except Exception as e:
+        logger.exception("[docs_tools] list_available_docs failed: %s", e)
+        return {"error": "KNOWLEDGE_ERROR", "message": "Failed to load documentation index."}
 
 
 # ---------------------------------------------------------------------------
@@ -58,8 +67,13 @@ def search_endpoints(keyword: str) -> dict:
     if not keyword or not keyword.strip():
         return {"error": "MISSING_KEYWORD", "message": "Provide a non-empty search keyword."}
 
-    store = get_knowledge_store()
-    results = store.search_endpoints(keyword)
+    try:
+        store = get_knowledge_store()
+        raw_results = store.search_endpoints(keyword)
+        results = truncate_list(raw_results)
+    except Exception as e:
+        logger.exception("[docs_tools] search_endpoints failed: %s", e)
+        return {"error": "KNOWLEDGE_ERROR", "message": "Failed to search endpoints."}
 
     if not results:
         return {
@@ -71,7 +85,7 @@ def search_endpoints(keyword: str) -> dict:
 
     return {
         "keyword": keyword,
-        "total_matches": len(results),
+        "total_matches": len(raw_results),
         "results": results,
     }
 
@@ -87,26 +101,31 @@ def get_handler_context(handler_name: str) -> dict:
     Call list_available_docs() first to see valid handler names.
     handler_name examples: EstimateGuest, GetOrderDetail, CancelOrderB2C
     """
-    safe = handler_name.strip() if handler_name else ""
+    safe = handler_name.strip().replace("\x00", "") if handler_name else ""
     if not safe or "/" in safe or "\\" in safe or ".." in safe:
-        store = get_knowledge_store()
+        try:
+            available = get_knowledge_store().list_handlers()
+        except Exception:
+            available = []
         return {
             "error": "INVALID_HANDLER_NAME",
             "message": "Handler name must be a plain name (no slashes or '..').",
-            "available_handlers": store.list_handlers(),
+            "available_handlers": available,
         }
 
-    store = get_knowledge_store()
-    result = store.get_handler_context(safe)
-
-    if not result:
-        return {
-            "error": "HANDLER_NOT_FOUND",
-            "message": f"No handler found for '{safe}'.",
-            "available_handlers": store.list_handlers(),
-        }
-
-    return result
+    try:
+        store = get_knowledge_store()
+        result = store.get_handler_context(safe)
+        if not result:
+            return {
+                "error": "HANDLER_NOT_FOUND",
+                "message": f"No handler found for '{safe}'.",
+                "available_handlers": store.list_handlers(),
+            }
+        return result
+    except Exception as e:
+        logger.exception("[docs_tools] get_handler_context failed: %s", e)
+        return {"error": "KNOWLEDGE_ERROR", "message": "Failed to load handler context."}
 
 
 

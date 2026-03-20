@@ -15,6 +15,7 @@ from datetime import date, timedelta
 import httpx
 
 from app.config import settings
+from app.limits import MAX_LIST_RESULTS, clamp_list_limit, truncate_list
 from app.services.auth_token_manager import bearer_header, ensure_token
 
 logger = logging.getLogger(__name__)
@@ -742,8 +743,8 @@ class OrderServiceClient:
                 return {"rows": [], "count": 0, "total_count": meta.get("totalCount", 0)}
 
             if isinstance(data, list):
-                rows = data[:100]
-                return {"rows": rows, "count": len(data), "total_count": meta.get("totalCount", len(data))}
+                rows = truncate_list(data)
+                return {"rows": rows, "count": len(rows), "total_count": meta.get("totalCount", len(data))}
 
             if isinstance(data, dict):
                 rows = (
@@ -753,13 +754,18 @@ class OrderServiceClient:
                     or data.get("data")
                 )
                 if isinstance(rows, list):
-                    slim_rows = rows[:100]
+                    slim_rows = truncate_list(rows)
                     extras = {
                         k: v
                         for k, v in data.items()
                         if k not in ("rows", "list", "items", "data")
                     }
-                    return {"rows": slim_rows, "count": len(rows), "total_count": meta.get("totalCount", len(rows)), **extras}
+                    return {
+                        "rows": slim_rows,
+                        "count": len(slim_rows),
+                        "total_count": meta.get("totalCount", len(rows)),
+                        **extras,
+                    }
                 return data
 
             return {"raw": data}
@@ -794,8 +800,8 @@ class OrderServiceClient:
                 return {"rows": [], "count": 0, "total_count": meta.get("totalCount", 0)}
 
             if isinstance(data, list):
-                rows = data[:100]
-                return {"rows": rows, "count": len(data), "total_count": meta.get("totalCount", len(data))}
+                rows = truncate_list(data)
+                return {"rows": rows, "count": len(rows), "total_count": meta.get("totalCount", len(data))}
 
             if isinstance(data, dict):
                 rows = (
@@ -805,13 +811,18 @@ class OrderServiceClient:
                     or data.get("data")
                 )
                 if isinstance(rows, list):
-                    slim_rows = rows[:100]
+                    slim_rows = truncate_list(rows)
                     extras = {
                         k: v
                         for k, v in data.items()
                         if k not in ("rows", "list", "items", "data")
                     }
-                    return {"rows": slim_rows, "count": len(rows), "total_count": meta.get("totalCount", len(rows)), **extras}
+                    return {
+                        "rows": slim_rows,
+                        "count": len(slim_rows),
+                        "total_count": meta.get("totalCount", len(rows)),
+                        **extras,
+                    }
                 return data
 
             return {"raw": data}
@@ -916,11 +927,10 @@ class OrderServiceClient:
         source = params if isinstance(params, dict) else {}
         out: dict = {}
 
-        # Pagination
-        if source.get("limit") is not None:
-            out["limit"] = int(source["limit"])
+        # Pagination — API uses pageSize / pageIndex (0-based), not limit / offset.
+        out["pageSize"] = clamp_list_limit(source.get("limit"), default=MAX_LIST_RESULTS)
         if source.get("offset") is not None:
-            out["offset"] = int(source["offset"])
+            out["pageIndex"] = int(source["offset"])
 
         # ID filters
         _scalar_int = [
@@ -1019,6 +1029,15 @@ class OrderServiceClient:
             if val is not None:
                 out[dst_key] = bool(val)
 
+        # Safety net: if no date filter AND no targeted ID/keyword filter, default to last 7 days
+        # on appointmentFrom/To to prevent full-table scans that time out on large datasets.
+        _has_date = any(k in out for k in ("appointmentFrom", "appointmentTo", "createdFrom", "createdTo", "pickupFrom", "pickupTo", "completedFrom", "completedTo"))
+        _has_targeted = any(k in out for k in ("orderRequestId", "externalOrderId", "userId", "driverId", "phoneNumber", "keyword"))
+        if not _has_date and not _has_targeted:
+            today = date.today()
+            out["appointmentFrom"] = (today - timedelta(days=7)).isoformat()
+            out["appointmentTo"] = today.isoformat()
+
         return self._clean_query_params(out)
 
     def get_orders_admin_panel(self, params: dict | None = None) -> dict:
@@ -1041,9 +1060,10 @@ class OrderServiceClient:
                 orders = data.get("orders") or data.get("rows") or data.get("list") or data.get("data")
                 pagination = data.get("pagination", {})
                 if isinstance(orders, list):
+                    slim_orders = truncate_list(orders)
                     return {
-                        "orders": orders[:50],
-                        "count": len(orders),
+                        "orders": slim_orders,
+                        "count": len(slim_orders),
                         "total_count": (
                             pagination.get("total")
                             or pagination.get("totalCount")
@@ -1054,7 +1074,12 @@ class OrderServiceClient:
                 return data
 
             if isinstance(data, list):
-                return {"orders": data[:50], "count": len(data), "total_count": meta.get("totalCount", len(data))}
+                slim_orders = truncate_list(data)
+                return {
+                    "orders": slim_orders,
+                    "count": len(slim_orders),
+                    "total_count": meta.get("totalCount", len(data)),
+                }
 
             return {"raw": data}
         except httpx.HTTPStatusError as exc:

@@ -17,8 +17,7 @@ Driver report rules:
 etax_status codes: 1=SUBMITED 2=TEMPORARILY_SAVED 3=CANCELED 4=NOT_SENT 5=TRANSMITTING 6=TRANSMISSION_SUCCEED 7=TRANSMISSION_FAILED 8=SUBMITED_FAILED 9=REVISED 10=REVISED_FAILED 11=REVISED_SIX 12=REVISED_SEVEN 13=REVISED_OTHER 14=ALL 15=NOT_REVISED
 
 Driver-related order fields:
-- get_orders results include driver name, vehicle type, and assignment status.
-- get_order_route(order_id) → live route/waypoints for driver tracking.
+- get_orders_admin_panel results include driver name, vehicle type, and assignment status.
 
 Driver persona:
 - "Order/Driver" statuses = driver assignment lifecycle (Assigned → Released → Return).

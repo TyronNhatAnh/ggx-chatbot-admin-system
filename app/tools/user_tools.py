@@ -5,6 +5,8 @@ Read-only wrappers around UserServiceClient.
 
 from app.services.user_service_client import get_user_client
 
+from app.limits import MAX_LIST_RESULTS
+
 
 def get_user_profile(user_id: int) -> dict:
     """Get user profile by user ID (GET /users?id=). Includes lastSignIn and lastAccessedAt when available."""
@@ -16,7 +18,7 @@ def search_users(
     organization_id: int = 0,
     branch_id: int = 0,
     page_index: int = 1,
-    page_size: int = 20,
+    page_size: int = MAX_LIST_RESULTS,
 ) -> dict:
     """Search users (GET /users/search). Searches by keyword (matches name/phone/email), with optional org/branch filter."""
     return get_user_client().search_users(
@@ -42,7 +44,7 @@ def search_branches(
     keyword: str = "",
     organization_id: int = 0,
     page_index: int = 1,
-    page_size: int = 20,
+    page_size: int = MAX_LIST_RESULTS,
 ) -> dict:
     """Search branches (GET /branch/search). Searches by keyword (branch name), with optional organization_id filter."""
     return get_user_client().search_branches(
@@ -62,7 +64,7 @@ def search_organizations(
     keyword: str = "",
     org_division: str = "",
     page_index: int = 1,
-    page_size: int = 20,
+    page_size: int = MAX_LIST_RESULTS,
 ) -> dict:
     """Search organizations (GET /organization/search). Searches by keyword (org name). Optional org_division filter: b2c, b2b, driver, customer."""
     return get_user_client().search_organizations(

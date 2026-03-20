@@ -3,7 +3,10 @@
 Order list tool (ALL statuses — admin panel view):
 - get_orders_admin_panel(...) → GET /admin/orders. Returns orders in ANY status (pending, in-transit, completed, cancelled, etc.).
   Use for: "list orders", "find orders by keyword/phone/driver/org", "orders today", order search by date range.
+  Result cap: max 5 orders per call (use pagination for more).
   Key filters: keyword, status_cd, order_type, pay_cd, appointment_from/to, created_from/to, organization_id, branch_id, user_id, driver_id, phone_number, order_request_id, external_order_id, limit, offset, sort_by, sort_order.
+  Date filter rule: ALWAYS use appointment_from/appointment_to for queries like "orders today", "orders this week", "orders for [date]".
+    Use created_from/created_to ONLY when the user explicitly asks for orders *created* on a date (e.g. "orders placed today", "orders created this week").
   DO NOT use for revenue/financial aggregations — use report tools for that.
 
 Report tools (completed/cancelled orders — financial aggregation):

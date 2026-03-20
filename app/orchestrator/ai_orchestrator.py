@@ -30,10 +30,6 @@ _fallback_counters = {
     "repetitive_tool_calls": 0,
 }
 _fallback_counter_lock = threading.Lock()
-_HANGUL_CHAR_PATTERN = re.compile(r"[\uac00-\ud7a3]")
-_LATIN_CHAR_PATTERN = re.compile(r"[A-Za-z]")
-# U+1EA0-U+1EF9: Latin Extended Additional tone marks — almost exclusively Vietnamese.
-_VIETNAMESE_CHAR_PATTERN = re.compile(r"[\u1ea0-\u1ef9]")
 # Markers we inject ourselves; strip them from user input to prevent prompt injection.
 _INJECTION_PATTERN = re.compile(r"\[\s*(?:Instruction|Today's date)\s*:", re.IGNORECASE)
 
@@ -62,97 +58,6 @@ def _response_text(response: types.GenerateContentResponse) -> str:
         if part.text:
             texts.append(part.text)
     return "\n".join(texts).strip()
-
-
-def _detect_user_language(message: str) -> str | None:
-    """Detect preferred response language from the current user message.
-
-    Returns:
-        "en" for English-leaning messages, "ko" for Korean-leaning messages,
-        "vi" for Vietnamese-leaning messages,
-        or None when no clear signal exists.
-    """
-    if not message:
-        return None
-
-    # Vietnamese check first: tone-mark characters (U+1EA0-U+1EF9) are
-    # almost exclusively Vietnamese and not shared by ko/en.
-    if _VIETNAMESE_CHAR_PATTERN.search(message):
-        return "vi"
-
-    hangul_count = len(_HANGUL_CHAR_PATTERN.findall(message))
-    latin_count = len(_LATIN_CHAR_PATTERN.findall(message))
-
-    if hangul_count == 0 and latin_count == 0:
-        return None
-    if hangul_count > latin_count:
-        return "ko"
-    if latin_count > 0:
-        return "en"
-    return None
-
-
-def _reply_language_mismatch(user_language: str | None, reply: str) -> bool:
-    """True when assistant reply likely violates the user's language choice."""
-    if not user_language or not reply:
-        return False
-
-    has_hangul = bool(_HANGUL_CHAR_PATTERN.search(reply))
-    has_latin = bool(_LATIN_CHAR_PATTERN.search(reply))
-
-    if user_language == "en":
-        return has_hangul
-    if user_language == "ko":
-        return has_latin and not has_hangul
-    if user_language == "vi":
-        # Vietnamese reply must contain Vietnamese diacritics; Korean is always wrong.
-        return has_hangul or not _VIETNAMESE_CHAR_PATTERN.search(reply)
-    return False
-
-
-def _language_rewrite_prompt(user_language: str, reply: str) -> str:
-    target = {"en": "English", "ko": "Korean", "vi": "Vietnamese"}.get(user_language, "English")
-    return (
-        f"Rewrite the following assistant answer into {target} only. "
-        "Preserve every fact exactly (numbers, IDs, dates, statuses, addresses, money values). "
-        "Do not add, remove, or infer information. "
-        "Keep Markdown structure (tables/lists/headings) when present. "
-        "Return only the rewritten answer.\n\n"
-        "[assistant_answer_start]\n"
-        f"{reply}\n"
-        "[assistant_answer_end]"
-    )
-
-
-def _enforce_reply_language(
-    *,
-    chat_session,
-    user_message: str,
-    reply: str,
-) -> tuple[str, float, bool]:
-    """Rewrite final reply to the user's language only when mismatch is detected.
-
-    Returns:
-        (final_reply, extra_gemini_elapsed_seconds, made_extra_gemini_call)
-    """
-    user_language = _detect_user_language(user_message)
-    if not _reply_language_mismatch(user_language, reply):
-        return reply, 0.0, False
-
-    if not user_language:
-        return reply, 0.0, False
-
-    logger.warning(
-        "[LangGuard] Reply language mismatch detected (user_lang=%s). Rewriting final answer.",
-        user_language,
-    )
-    t = time.perf_counter()
-    rewritten_response = chat_session.send_message(_language_rewrite_prompt(user_language, reply))
-    elapsed = time.perf_counter() - t
-    rewritten_reply = _response_text(rewritten_response).strip()
-    if not rewritten_reply:
-        return reply, elapsed, True
-    return rewritten_reply, elapsed, True
 
 
 def _trim_text(value: str, limit: int) -> str:
@@ -972,16 +877,6 @@ class AIOrchestrator:
             logger.info("[Step %d  ] Gemini responded  elapsed=%.3fs", loop, gemini_elapsed)
 
         reply = _response_text(response)
-        rewritten_reply, rewrite_elapsed, made_rewrite_call = _enforce_reply_language(
-            chat_session=chat_session,
-            user_message=message,
-            reply=reply,
-        )
-        if made_rewrite_call:
-            gemini_calls += 1
-            gemini_elapsed_total += rewrite_elapsed
-            logger.info("[LangGuard] Language rewrite applied  elapsed=%.3fs", rewrite_elapsed)
-        reply = rewritten_reply
 
         total_elapsed = time.perf_counter() - total_start
         _log_structured_metrics(

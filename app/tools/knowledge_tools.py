@@ -12,6 +12,7 @@ All reads go through the KnowledgeStore (SQLite) and optionally the VectorStore.
 
 import logging
 
+from app.limits import MAX_LIST_RESULTS, truncate_list
 from indexer.store import get_knowledge_store
 
 logger = logging.getLogger(__name__)
@@ -100,23 +101,33 @@ def search_codebase(query: str) -> dict:
         from indexer.vector_store import get_vector_store
         vs = get_vector_store()
         if vs and vs.count() > 0:
-            results = vs.search(query, top_k=5)
+            results = vs.search(query, top_k=MAX_LIST_RESULTS)
             if results:
                 return {
                     "search_type": "semantic",
                     "query": query,
-                    "results": results,
+                    "results": truncate_list(results),
                 }
     except Exception as e:
-        logger.debug("[knowledge_tools] Vector search unavailable: %s", e)
+        logger.warning("[knowledge_tools] Vector search unavailable, falling back to full-text: %s", e)
 
     # Fallback to full-text search
     try:
         store = get_knowledge_store()
-        return store.search_code(query)
+        payload = store.search_code(query, limit=MAX_LIST_RESULTS)
+        if isinstance(payload, dict) and isinstance(payload.get("results"), list):
+            payload["results"] = truncate_list(payload.get("results"))
+            payload["matches"] = len(payload["results"])
+        return payload
     except Exception as e:
         logger.exception("[knowledge_tools] search_codebase failed: %s", e)
         return {"error": "KNOWLEDGE_ERROR", "message": str(e)}
+
+
+_KNOWN_EDGE_TYPES: frozenset[str] = frozenset({
+    "calls", "delegates_to", "handles", "defines", "calls_api",
+    "x_calls", "routes_to", "dispatches", "thunk_calls", "exposes_api",
+})
 
 
 def traverse_graph(name: str, edge_types: str = "", direction: str = "outgoing", max_depth: int = 3) -> dict:
@@ -141,6 +152,16 @@ def traverse_graph(name: str, edge_types: str = "", direction: str = "outgoing",
     try:
         store = get_knowledge_store()
         type_list = [t.strip() for t in edge_types.split(",") if t.strip()] or None
+        if type_list:
+            unknown = [t for t in type_list if t not in _KNOWN_EDGE_TYPES]
+            if unknown:
+                return {
+                    "error": "UNKNOWN_EDGE_TYPES",
+                    "message": (
+                        f"Unrecognized edge type(s): {unknown}. "
+                        f"Valid types: {sorted(_KNOWN_EDGE_TYPES)}"
+                    ),
+                }
         depth = max(1, min(5, max_depth))
         if direction not in ("outgoing", "incoming", "both"):
             direction = "outgoing"
@@ -155,6 +176,8 @@ def find_api_consumers(endpoint: str) -> dict:
     Use when the user asks "which page calls this API?" or "who consumes this endpoint?".
     The endpoint can be a partial match, e.g. "/orders/:orderId" or "GET /api/v1/orders".
     Returns React components, their routes, and the edge chain connecting them.
+    Note: searches only 'calls_api' edges. Components using indirect patterns
+    (x_calls, thunk_calls) may not appear here — use traverse_graph for broader coverage.
     Examples: find_api_consumers("/orders/:orderId"), find_api_consumers("GetOrderDetail")
     """
     if not endpoint or not endpoint.strip():

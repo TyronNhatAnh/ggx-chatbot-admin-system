@@ -61,11 +61,13 @@ _GROUP_PERSONA: dict[str, str] = {
 _CLEAR_PERSONA_GROUPS: list[str] = [
     "HandleOrderStatusName",
     "PaymentStatusName",
+    "PaymentStatus",          # system-level payment state (duplicate concept to PaymentStatusName)
     "OrderDriverCreatorTypeCD",
     "OrderDriverUpdaterTypeCD",
     "DriverUserTypeCD",
     "DriverType",
     "OrderHistTypeCd",
+    "OrderHistTypeCDMap",     # Go map variant of OrderHistTypeCd — same actor-type semantics
     "OrderHistCreatorCD",
     "OrderEventName",
     "TypeCD",             # actor type (Admin/Driver/B2B/B2C), not a viewing perspective

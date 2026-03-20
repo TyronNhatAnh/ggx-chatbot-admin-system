@@ -12,7 +12,10 @@ Knowledge tools (indexed codebase):
 
 Graph tools:
 - traverse_graph(name, edge_types, direction, max_depth) — multi-hop (1-5 hops).
-- find_api_consumers(endpoint) — React components calling a backend endpoint.
+  Valid edge_types: calls, delegates_to, handles, defines, calls_api, x_calls, routes_to, dispatches, thunk_calls, exposes_api.
+  If the tool returns UNKNOWN_EDGE_TYPES error → correct the edge type and retry (counts as same turn).
+- find_api_consumers(endpoint) — React components calling a backend endpoint via 'calls_api' edges.
+  Limitation: indirect callers using x_calls or thunk_calls patterns are NOT returned. If results seem incomplete, follow up with traverse_graph(endpoint, "x_calls,thunk_calls", direction="incoming").
 - trace_full_stack(endpoint) — end-to-end: React → API → Go handler → services.
 
 Doc tools:

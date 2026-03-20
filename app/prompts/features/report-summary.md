@@ -15,7 +15,6 @@ Report tool results:
 - get_statement_of_use_summary → organizationId, organizationName, serviceType, orderCount, totalRevenue, paymentBreakdown.
 - get_statement_of_use_detail → organizationId, organizationName, orderId, serviceType, revenue, surcharge, paymentMethod, createdAt.
 - get_statement_of_use_driver_summary / _detail → same shape, driver-side. No pay filter. Params: from_date, to_date, organization_id, driver_id, driver_org, etax_status.
-- get_b2b_tracking_service_detail → B2B shipment rows.
 
 etax_status codes: 1=SUBMITED 2=TEMPORARILY_SAVED 3=CANCELED 4=NOT_SENT 5=TRANSMITTING 6=TRANSMISSION_SUCCEED 7=TRANSMISSION_FAILED 8=SUBMITED_FAILED 9=REVISED 10=REVISED_FAILED 11=REVISED_SIX 12=REVISED_SEVEN 13=REVISED_OTHER 14=ALL 15=NOT_REVISED
 
@@ -29,7 +28,6 @@ Organization filtering (CRITICAL — follow this sequence for org-specific queri
 - organization_id must be a numeric system ID, NOT an org name.
 
 Report scope:
-- get_order_statistics() = per-user personal stats ONLY (not full-system).
 - Full-system: customer → get_statement_of_use_summary/detail. Driver → driver variants.
 - "dashboard/report/summary" without role → ask: customer, driver, or both?
 - Date params: YYYY-MM-DD. Use injected [Today's date] for relative calculations.

@@ -234,7 +234,7 @@ def get_orders_admin_panel(
         external_order_id: Look up by external order ID string.
         sort_by: Field to sort by (e.g. "createdAt", "appointmentAt").
         sort_order: Sort direction: "asc" or "desc".
-        limit: Max number of results (default: backend default, typically 20).
+        limit: Max number of results (system-enforced max: 5).
         offset: Pagination offset.
     """
     return get_order_client().get_orders_admin_panel(

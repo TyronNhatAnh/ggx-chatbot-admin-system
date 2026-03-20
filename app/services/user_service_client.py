@@ -13,6 +13,7 @@ import time
 import httpx
 
 from app.config import settings
+from app.limits import MAX_LIST_RESULTS, clamp_list_limit, truncate_list
 from app.services.auth_token_manager import bearer_header, ensure_token
 
 logger = logging.getLogger(__name__)
@@ -138,13 +139,16 @@ class UserServiceClient:
         organization_id: int | None = None,
         branch_id: int | None = None,
         page_index: int = 1,
-        page_size: int = 20,
+        page_size: int = MAX_LIST_RESULTS,
     ) -> dict:
         """GET /api/v1/users/search.
 
         Actual backend params (Go form tags): keyword, organizationId, branchId.
         """
-        params: dict[str, object] = {"pageIndex": page_index, "pageSize": page_size}
+        params: dict[str, object] = {
+            "pageIndex": page_index,
+            "pageSize": clamp_list_limit(page_size, default=MAX_LIST_RESULTS),
+        }
         if keyword:
             params["keyword"] = keyword
         if organization_id:
@@ -158,12 +162,12 @@ class UserServiceClient:
                 return {"error": "USER_SERVICE_ERROR", "detail": payload.get("errors")}
 
             data = payload.get("data") if isinstance(payload, dict) else payload
-            rows = data if isinstance(data, list) else []
+            rows = truncate_list(data)
             meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
             return {
                 "users": [self._slim_user_profile(u) for u in rows if isinstance(u, dict)],
                 "count": len(rows),
-                "total_count": meta.get("totalCount", len(rows)),
+                "total_count": meta.get("totalCount", len(data) if isinstance(data, list) else len(rows)),
                 "query": params,
             }
         except httpx.HTTPStatusError as exc:
@@ -224,13 +228,16 @@ class UserServiceClient:
         keyword: str | None = None,
         organization_id: int | None = None,
         page_index: int = 1,
-        page_size: int = 20,
+        page_size: int = MAX_LIST_RESULTS,
     ) -> dict:
         """GET /api/v1/branch/search.
 
         Actual backend params (Go form tags): keyword, organizationId.
         """
-        params: dict[str, object] = {"pageIndex": page_index, "pageSize": page_size}
+        params: dict[str, object] = {
+            "pageIndex": page_index,
+            "pageSize": clamp_list_limit(page_size, default=MAX_LIST_RESULTS),
+        }
         if keyword:
             params["keyword"] = keyword
         if organization_id:
@@ -241,9 +248,14 @@ class UserServiceClient:
             if isinstance(payload, dict) and payload.get("success") is False:
                 return {"error": "USER_SERVICE_ERROR", "detail": payload.get("errors")}
             data = payload.get("data") if isinstance(payload, dict) else payload
-            rows = data if isinstance(data, list) else []
+            rows = truncate_list(data)
             meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
-            return {"branches": rows, "count": len(rows), "total_count": meta.get("totalCount", len(rows)), "query": params}
+            return {
+                "branches": rows,
+                "count": len(rows),
+                "total_count": meta.get("totalCount", len(data) if isinstance(data, list) else len(rows)),
+                "query": params,
+            }
         except httpx.HTTPStatusError as exc:
             logger.error("search_branches HTTP %s - %s", exc.response.status_code, exc.response.text)
             return {"error": "USER_SERVICE_ERROR", "detail": str(exc)}
@@ -280,14 +292,17 @@ class UserServiceClient:
         keyword: str | None = None,
         org_division: str | None = None,
         page_index: int = 1,
-        page_size: int = 20,
+        page_size: int = MAX_LIST_RESULTS,
     ) -> dict:
         """GET /api/v1/organization/search.
 
         Actual backend params (Go form tags): keyword, orgDivision.
         Valid orgDivision values: b2c, b2b, driver, customer.
         """
-        params: dict[str, object] = {"pageIndex": page_index, "pageSize": page_size}
+        params: dict[str, object] = {
+            "pageIndex": page_index,
+            "pageSize": clamp_list_limit(page_size, default=MAX_LIST_RESULTS),
+        }
         if keyword:
             params["keyword"] = keyword
         if org_division:
@@ -298,9 +313,14 @@ class UserServiceClient:
             if isinstance(payload, dict) and payload.get("success") is False:
                 return {"error": "USER_SERVICE_ERROR", "detail": payload.get("errors")}
             data = payload.get("data") if isinstance(payload, dict) else payload
-            rows = data if isinstance(data, list) else []
+            rows = truncate_list(data)
             meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
-            return {"organizations": rows, "count": len(rows), "total_count": meta.get("totalCount", len(rows)), "query": params}
+            return {
+                "organizations": rows,
+                "count": len(rows),
+                "total_count": meta.get("totalCount", len(data) if isinstance(data, list) else len(rows)),
+                "query": params,
+            }
         except httpx.HTTPStatusError as exc:
             logger.error("search_organizations HTTP %s - %s", exc.response.status_code, exc.response.text)
             return {"error": "USER_SERVICE_ERROR", "detail": str(exc)}
@@ -317,7 +337,7 @@ class UserServiceClient:
         try:
             payload = self._request("GET", "/admin/roles", params=params, requires_auth=True)
             data = self._unwrap_success_payload(payload)
-            rows = data if isinstance(data, list) else []
+            rows = truncate_list(data)
             return {"roles": rows, "count": len(rows)}
         except httpx.HTTPStatusError as exc:
             logger.error("list_admin_roles HTTP %s - %s", exc.response.status_code, exc.response.text)
@@ -334,7 +354,7 @@ class UserServiceClient:
         try:
             payload = self._request("GET", "/admin/departments", requires_auth=True)
             data = self._unwrap_success_payload(payload)
-            rows = data if isinstance(data, list) else []
+            rows = truncate_list(data)
             return {"departments": rows, "count": len(rows)}
         except httpx.HTTPStatusError as exc:
             logger.error("list_admin_departments HTTP %s - %s", exc.response.status_code, exc.response.text)
@@ -351,7 +371,7 @@ class UserServiceClient:
         try:
             payload = self._request("GET", "/admin/menus", requires_auth=True)
             data = self._unwrap_success_payload(payload)
-            rows = data if isinstance(data, list) else []
+            rows = truncate_list(data)
             return {"menus": rows, "count": len(rows)}
         except httpx.HTTPStatusError as exc:
             logger.error("list_admin_menus HTTP %s - %s", exc.response.status_code, exc.response.text)

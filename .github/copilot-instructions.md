@@ -42,7 +42,7 @@ Read-only logistics admin assistant (Python 3.11). Never add create/update/delet
 
 - 4 tool files: `order_tools.py` · `user_tools.py` · `docs_tools.py` · `knowledge_tools.py`
 - Keep `ALL_TOOL_FUNCTIONS` and `TOOL_REGISTRY` in sync (`app/tools/__init__.py`)
-- `get_delayed_orders` stays unregistered (overlaps `get_orders(status='Transit')`)
+- `get_delayed_orders` stays unregistered (overlaps `get_orders_admin_panel(status_cd=[4])`)
 - Summary tools → aggregate; Detail tools → per-order. Don't call both in one turn unless requested
 - Knowledge/docs tools query `data/vectordb/` (ChromaDB) and `data/knowledge/` — read-only
 
@@ -63,4 +63,16 @@ Read-only logistics admin assistant (Python 3.11). Never add create/update/delet
 
 ## Persona
 
-- `web2` → CUSTOMER · Driver app → DRIVER · Admin system → INTERNAL OPERATIONS
+The assistant is always used by **admins**. "Persona" refers to the **data context** — which actor type an enum value or status belongs to, so the LLM can explain it in the right context.
+- Data from Admin system → INTERNAL OPERATIONS perspective
+
+## Change Discipline
+
+Before finishing any update or fix:
+1. **Check related files** — if you change a tool signature, param name, or add/remove a tool, update ALL of the following that reference it:
+   - `app/prompts/features/*.md` (tool names, params, usage rules)
+   - `app/tools/__init__.py` (`ALL_TOOL_FUNCTIONS` + `TOOL_REGISTRY`)
+   - `app/services/` (matching service client method)
+   - `.github/copilot-instructions.md` (architecture notes if affected)
+2. **Cross-check prompt ↔ tool ↔ service** — every tool name in prompt files must exist in `ALL_TOOL_FUNCTIONS`; every param name in prompt files must match the actual function signature.
+3. **Review, then finish** — do not mark a task done until the above cross-check passes.
