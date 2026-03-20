@@ -1,10 +1,10 @@
 from app.tools.driver_tools import (
+    calculate_driver_fare,
     get_driver,
     get_driver_location_history,
     get_vehicle_pools,
     search_driver_report,
     search_drivers,
-    check_driver_price,
 )
 from app.tools.common_tools import (
     get_addresses,
@@ -105,7 +105,7 @@ ALL_TOOL_FUNCTIONS: list = [
     search_drivers,
     get_driver_location_history,
     search_driver_report,
-    check_driver_price,
+    calculate_driver_fare,
     get_vehicle_pools,
     # docs tools — two-tier knowledge (endpoint search → handler source code)
     list_available_docs,
@@ -123,6 +123,22 @@ ALL_TOOL_FUNCTIONS: list = [
     trace_full_stack,
     get_knowledge_stats,
 ]
+
+
+def _validate_unique_tool_names(tool_functions: list) -> None:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for tool_fn in tool_functions:
+        if tool_fn.__name__ in seen:
+            duplicates.add(tool_fn.__name__)
+        seen.add(tool_fn.__name__)
+
+    if duplicates:
+        duplicate_names = ", ".join(sorted(duplicates))
+        raise ValueError(f"Duplicate tool function names found: {duplicate_names}")
+
+
+_validate_unique_tool_names(ALL_TOOL_FUNCTIONS)
 
 
 # Maps function name → callable so the orchestrator can execute tool calls.

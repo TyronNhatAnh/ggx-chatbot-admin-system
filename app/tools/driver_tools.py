@@ -65,7 +65,7 @@ def get_vehicle_pools() -> dict:
     return get_driver_client().get_vehicle_pools()
 
 
-def check_driver_price(
+def calculate_driver_fare(
     order_id: int,
     user_id: int,
     price_request: dict,
