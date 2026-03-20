@@ -106,6 +106,7 @@ USER_SERVICE_REPO_PATH=/path/to/ggx-kr-user-service
 DRIVER_SERVICE_REPO_PATH=/path/to/ggx-kr-driver-service
 COMMON_SERVICE_REPO_PATH=/path/to/ggx-kr-common-service
 WEB2_REPO_PATH=/path/to/ggx-kr-consumer-web
+ADMIN_SERVICE_REPO_PATH=/path/to/ggx-kr-admin-service
 ```
 
 3. Install dependencies
@@ -169,6 +170,7 @@ make index-driver-service
 make index-common-service
 make index-web2
 make index-service SERVICE_REPO=/path/to/repo SERVICE_NAME=my-service LANG=go
+make index-admin-service
 make link
 make index-all
 make seed-personas
@@ -190,6 +192,7 @@ make seed-personas
 | `make index-user-service` | Index user-service repo |
 | `make index-driver-service` | Index driver-service repo |
 | `make index-common-service` | Index common-service repo |
+| `make index-admin-service` | Index admin-service repo (Java Spring Boot) |
 | `make index-web2` | Index web2 repo |
 | `make link` | Build cross-service endpoint links |
 | `make index-all` | Run all configured indexers + linker |

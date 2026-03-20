@@ -1,11 +1,16 @@
-"""Java language parser — stub for future implementation.
+"""Java language parser — extracts enums, types, and service flows from Java repos.
 
-Will extract:
-  - Enums (Java enum classes)
-  - Types (DTOs, entities, request/response objects)
-  - Flows (Controller → Service → Repository via Spring annotations)
+Supports Java 8 Spring Boot codebases including:
+  - Enum classes and static final constants
+  - DTOs, entities, request/response classes (with Lombok / JPA support)
+  - Controller → Service → Repository flows (REST and non-REST)
+  - Scheduled tasks, event listeners, internal service methods
+  - Spring DI graph edges (@Autowired, constructor injection)
 """
 
-# TODO: Implement JavaParser and register it:
-#   from indexer.parsers.registry import register
-#   register(JavaParser)
+from indexer.parsers.java.parser import JavaParser
+from indexer.parsers.registry import register
+
+register(JavaParser)
+
+__all__ = ["JavaParser"]

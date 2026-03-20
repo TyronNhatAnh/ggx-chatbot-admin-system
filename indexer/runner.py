@@ -273,6 +273,9 @@ def index_service(repo_path: str, service: str,
         except Exception as e:
             logger.warning("  → Vector indexing failed: %s", e)
 
+    # Write accumulated JSON sidecars (all services, from SQLite) for debugging
+    store.export_json_sidecars()
+
     elapsed = time.perf_counter() - t0
     summary = {
         "service": service,

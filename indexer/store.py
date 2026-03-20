@@ -253,8 +253,6 @@ class KnowledgeStore:
                 )
             count += 1
         conn.commit()
-        # Write JSON sidecar
-        self._write_json("enums.json", [asdict(g) for g in groups])
         return count
 
     def store_structs(self, structs: list[StructDefinition]) -> int:
@@ -275,7 +273,6 @@ class KnowledgeStore:
                 )
             count += 1
         conn.commit()
-        self._write_json("structs.json", [asdict(s) for s in structs])
         return count
 
     def store_flows(self, flows: list[ServiceFlow]) -> int:
@@ -296,7 +293,6 @@ class KnowledgeStore:
             )
             count += 1
         conn.commit()
-        self._write_json("flows.json", [asdict(f) for f in flows])
         return count
 
     def store_edges(self, edges: list[Edge]) -> int:
@@ -317,11 +313,6 @@ class KnowledgeStore:
             )
             count += 1
         conn.commit()
-        self._write_json("edges.json", [
-            {"from": f"{e.from_type}:{e.from_name}", "edge": e.edge_type,
-             "to": f"{e.to_type}:{e.to_name}", "file": e.file}
-            for e in edges
-        ])
         return count
 
     def store_code_chunks(self, chunks: list[CodeChunk]) -> int:
@@ -1005,14 +996,112 @@ class KnowledgeStore:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def export_json_sidecars(self) -> None:
+        """Write human-readable JSON snapshots from the full accumulated SQLite dataset.
+
+        Called once at the end of each indexing run so the files always reflect
+        all indexed services — not just the service from the current run.
+        """
+        conn = self._get_conn()
+
+        # --- enums.json ---
+        enum_rows = conn.execute(
+            "SELECT id, name, type_name, service, file, comment FROM enums ORDER BY id"
+        ).fetchall()
+        enums_data: list[dict] = []
+        for row in enum_rows:
+            vals = conn.execute(
+                "SELECT name, value, comment, persona FROM enum_values"
+                " WHERE enum_id = ? ORDER BY id",
+                (row["id"],),
+            ).fetchall()
+            enums_data.append({
+                "name": row["name"],
+                "type_name": row["type_name"],
+                "service": row["service"],
+                "file": row["file"],
+                "comment": row["comment"],
+                "values": [dict(v) for v in vals],
+            })
+        self._write_json("enums.json", enums_data)
+
+        # --- structs.json ---
+        struct_rows = conn.execute(
+            "SELECT id, name, service, file, comment, embedded_types"
+            " FROM struct_definitions ORDER BY id"
+        ).fetchall()
+        structs_data: list[dict] = []
+        for row in struct_rows:
+            fields = conn.execute(
+                "SELECT name, type, json_tag, comment, is_pointer"
+                " FROM struct_fields WHERE struct_id = ? ORDER BY id",
+                (row["id"],),
+            ).fetchall()
+            structs_data.append({
+                "name": row["name"],
+                "service": row["service"],
+                "file": row["file"],
+                "comment": row["comment"],
+                "embedded_types": json.loads(row["embedded_types"]),
+                "fields": [
+                    {
+                        "name": f["name"],
+                        "type": f["type"],
+                        "json_tag": f["json_tag"],
+                        "comment": f["comment"],
+                        "is_pointer": bool(f["is_pointer"]),
+                    }
+                    for f in fields
+                ],
+            })
+        self._write_json("structs.json", structs_data)
+
+        # --- flows.json ---
+        flow_rows = conn.execute(
+            "SELECT handler_name, handler_file, endpoint, service, description,"
+            " service_calls_json, repository_calls_json FROM service_flows ORDER BY id"
+        ).fetchall()
+        flows_data: list[dict] = [
+            {
+                "handler_name": r["handler_name"],
+                "handler_file": r["handler_file"],
+                "endpoint": r["endpoint"],
+                "service": r["service"],
+                "description": r["description"],
+                "service_calls": json.loads(r["service_calls_json"]),
+                "repository_calls": json.loads(r["repository_calls_json"]),
+            }
+            for r in flow_rows
+        ]
+        self._write_json("flows.json", flows_data)
+
+        # --- edges.json ---
+        edge_rows = conn.execute(
+            "SELECT from_type, from_name, edge_type, to_type, to_name, file"
+            " FROM edges ORDER BY id"
+        ).fetchall()
+        edges_data: list[dict] = [
+            {
+                "from": f"{r['from_type']}:{r['from_name']}",
+                "edge": r["edge_type"],
+                "to": f"{r['to_type']}:{r['to_name']}",
+                "file": r["file"],
+            }
+            for r in edge_rows
+        ]
+        self._write_json("edges.json", edges_data)
+        logger.info(
+            "[KnowledgeStore] Exported JSON sidecars: %d enums, %d structs,"
+            " %d flows, %d edges",
+            len(enums_data), len(structs_data), len(flows_data), len(edges_data),
+        )
+
     def _write_json(self, filename: str, data: list[dict]) -> None:
         """Write a JSON sidecar file for human-readable inspection."""
         path = self._json_dir / filename
         try:
-            path.write_text(
-                json.dumps(data, indent=2, ensure_ascii=False, default=str),
-                encoding="utf-8",
-            )
+            lines = "\n".join(json.dumps(item, ensure_ascii=False, default=str) for item in data)
+            path.write_text(lines + "\n" if lines else "[]\n", encoding="utf-8")
         except OSError as e:
             logger.warning("[KnowledgeStore] Failed to write %s: %s", path, e)
 
