@@ -34,8 +34,6 @@ Driver report rules:
 - Do NOT call lookup_enum, search_codebase, explain_status, or any knowledge tool before a driver report tool.
 - After receiving results → answer immediately. Do NOT call more tools.
 
-etax_status codes: 1=SUBMITED 2=TEMPORARILY_SAVED 3=CANCELED 4=NOT_SENT 5=TRANSMITTING 6=TRANSMISSION_SUCCEED 7=TRANSMISSION_FAILED 8=SUBMITED_FAILED 9=REVISED 10=REVISED_FAILED 11=REVISED_SIX 12=REVISED_SEVEN 13=REVISED_OTHER 14=ALL 15=NOT_REVISED
-
 Driver-related order fields:
 - get_orders_admin_panel results include driver name, vehicle type, and assignment status.
 

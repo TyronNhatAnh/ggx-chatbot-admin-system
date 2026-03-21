@@ -700,6 +700,7 @@ class AIOrchestrator:
 
             # Execute each requested tool and collect the results
             tool_response_parts = []
+            steering_notes: list[str] = []  # Steering instructions kept separate from tool result data
 
             # Separate tool calls into cache-servable, parallel-eligible, and deferred
             dedup_calls: list[tuple[str, dict]] = []  # (tool_name, tool_args)
@@ -787,31 +788,22 @@ class AIOrchestrator:
                                 if oname:
                                     org_labels.append(f"{oname} (id:{oid})")
                         if len(org_labels) == 1:
-                            result = {
-                                **result,
-                                "_note": (
-                                    f"Exactly ONE match found: {org_labels[0]}. "
-                                    "Proceed to call the report tool with this organization_id. "
-                                    "Do NOT ask the user to confirm when there is only one match."
-                                ),
-                            }
+                            steering_notes.append(
+                                f"Exactly ONE match found: {org_labels[0]}. "
+                                "Proceed to call the report tool with this organization_id. "
+                                "Do NOT ask the user to confirm when there is only one match."
+                            )
                         elif len(org_labels) > 1:
-                            result = {
-                                **result,
-                                "_note": (
-                                    f"Multiple organizations match the query. Found: {', '.join(org_labels)}. "
-                                    "You MUST list these candidates to the user with their names and IDs, "
-                                    "and ask which one they mean. Do NOT pick one on their behalf."
-                                ),
-                            }
+                            steering_notes.append(
+                                f"Multiple organizations match the query. Found: {', '.join(org_labels)}. "
+                                "You MUST list these candidates to the user with their names and IDs, "
+                                "and ask which one they mean. Do NOT pick one on their behalf."
+                            )
                     elif isinstance(orgs, list) and len(orgs) == 0:
-                        result = {
-                            **result,
-                            "_note": (
-                                "No organizations matched the search query. "
-                                "Tell the user no match was found and suggest they check the org name or try a different search term."
-                            ),
-                        }
+                        steering_notes.append(
+                            "No organizations matched the search query. "
+                            "Tell the user no match was found and suggest they check the org name or try a different search term."
+                        )
 
                 if tool_name in _REPORT_TOOL_NAMES and isinstance(result, dict):
                     rows = result.get("rows")
@@ -832,7 +824,8 @@ class AIOrchestrator:
                         tool_had_org_filter=had_org_filter,
                         detail_tool_already_called=detail_called,
                     )
-                    result = {**result, "_note": note}
+                    if note:
+                        steering_notes.append(note)
 
                 tools_called.append(tool_name)
                 # Collect result for context injection in next turn
@@ -846,6 +839,13 @@ class AIOrchestrator:
                         name=tool_name,
                         response={"result": json.dumps(result, default=str)},
                     )
+                )
+
+            # Append steering instructions as a dedicated text Part — clearly separate
+            # from tool result data so the LLM reads them as directives, not as data.
+            if steering_notes and tool_response_parts:
+                tool_response_parts.append(
+                    types.Part.from_text("\n\n".join(steering_notes))
                 )
 
             if not tool_response_parts:

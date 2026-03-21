@@ -32,15 +32,15 @@ def _build_report_params(
 
 def _build_driver_report_params(
     *,
+    etax_status: int,
     from_date: str | None = None,
     to_date: str | None = None,
     organization_id: int | None = None,
     driver_id: int | None = None,
     driver_org: int | None = None,
-    etax_status: int | None = None,
 ) -> dict:
     """Build params for driver report endpoints (no pay param, supports eTaxStatus)."""
-    merged: dict = {}
+    merged: dict = {"eTaxStatus": etax_status}
     if from_date is not None:
         merged["from_date"] = from_date
     if to_date is not None:
@@ -51,8 +51,6 @@ def _build_driver_report_params(
         merged["driverId"] = driver_id
     if driver_org is not None:
         merged["driverOrg"] = driver_org
-    if etax_status is not None:
-        merged["eTaxStatus"] = etax_status
     return merged
 
 
@@ -122,65 +120,65 @@ def get_statement_of_use_detail(
 
 
 def get_statement_of_use_driver_summary(
+    etax_status: int,
     from_date: str | None = None,
     to_date: str | None = None,
     organization_id: int | None = None,
     driver_id: int | None = None,
     driver_org: int | None = None,
-    etax_status: int | None = None,
 ) -> dict:
     """Get driver report summary. No pay filter (driver reports don't support it).
 
     Args:
+        etax_status: Required. E-Tax status code filter (sent as eTaxStatus).
+            1 SUBMITED, 2 TEMPORARILY_SAVED, 3 CANCELED, 4 NOT_SENT,
+            5 TRANSMITTING, 6 TRANSMISSION_SUCCEED, 7 TRANSMISSION_FAILED,
+            8 SUBMITED_FAILED, 9 REVISED, 10 REVISED_FAILED,
+            11 REVISED_SIX, 12 REVISED_SEVEN, 13 REVISED_OTHER,
+            14 ALL, 15 NOT_REVISED. Use 14 to include all statuses.
         from_date: Start date (YYYY-MM-DD).
         to_date: End date (YYYY-MM-DD).
         organization_id: Org system ID to filter results.
         driver_id: Filter by specific driver ID.
         driver_org: Filter by driver's organization ID.
-        etax_status: E-Tax status code filter (sent as eTaxStatus).
-            1 SUBMITED, 2 TEMPORARILY_SAVED, 3 CANCELED, 4 NOT_SENT,
-            5 TRANSMITTING, 6 TRANSMISSION_SUCCEED, 7 TRANSMISSION_FAILED,
-            8 SUBMITED_FAILED, 9 REVISED, 10 REVISED_FAILED,
-            11 REVISED_SIX, 12 REVISED_SEVEN, 13 REVISED_OTHER,
-            14 ALL, 15 NOT_REVISED.
     """
     return get_order_client().get_statement_of_use_driver_summary(
         params=_build_driver_report_params(
+            etax_status=etax_status,
             from_date=from_date, to_date=to_date,
             organization_id=organization_id, driver_id=driver_id, driver_org=driver_org,
-            etax_status=etax_status,
         )
     )
 
 
 def get_statement_of_use_driver_detail(
+    etax_status: int,
     from_date: str | None = None,
     to_date: str | None = None,
     organization_id: int | None = None,
     driver_id: int | None = None,
     driver_org: int | None = None,
-    etax_status: int | None = None,
 ) -> dict:
     """Get driver report detail rows (per-order). No pay filter (driver reports don't support it).
 
     Args:
+        etax_status: Required. E-Tax status code filter (sent as eTaxStatus).
+            1 SUBMITED, 2 TEMPORARILY_SAVED, 3 CANCELED, 4 NOT_SENT,
+            5 TRANSMITTING, 6 TRANSMISSION_SUCCEED, 7 TRANSMISSION_FAILED,
+            8 SUBMITED_FAILED, 9 REVISED, 10 REVISED_FAILED,
+            11 REVISED_SIX, 12 REVISED_SEVEN, 13 REVISED_OTHER,
+            14 ALL, 15 NOT_REVISED. Use 14 to include all statuses.
         from_date: Start date (YYYY-MM-DD).
         to_date: End date (YYYY-MM-DD).
         organization_id: Org system ID to filter results.
         driver_id: Filter by specific driver ID.
         driver_org: Filter by driver's organization ID.
-        etax_status: E-Tax status code filter (sent as eTaxStatus).
-            1 SUBMITED, 2 TEMPORARILY_SAVED, 3 CANCELED, 4 NOT_SENT,
-            5 TRANSMITTING, 6 TRANSMISSION_SUCCEED, 7 TRANSMISSION_FAILED,
-            8 SUBMITED_FAILED, 9 REVISED, 10 REVISED_FAILED,
-            11 REVISED_SIX, 12 REVISED_SEVEN, 13 REVISED_OTHER,
-            14 ALL, 15 NOT_REVISED.
     """
     return get_order_client().get_statement_of_use_driver_detail(
         params=_build_driver_report_params(
+            etax_status=etax_status,
             from_date=from_date, to_date=to_date,
             organization_id=organization_id, driver_id=driver_id, driver_org=driver_org,
-            etax_status=etax_status,
         )
     )
 
