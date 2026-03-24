@@ -68,13 +68,11 @@ def get_vehicle_pools() -> dict:
 def calculate_driver_fare(
     order_id: int,
     user_id: int,
-    price_request: dict,
 ) -> dict:
-    """Calculate fare for driver (POST /guest/price/{orderId}).
-    price_request: dict with required fields (see driver_handler.go model.DriverCalcPriceOrderRequest).
-    Returns price breakdown and driver fare."""
+    """Calculate fare for a driver on a specific order (POST /guest/price/{orderId}).
+    user_id: the driver's user ID (userId of the driver, not the customer).
+    Returns the driver's price breakdown including VAT."""
     return get_driver_client().get_driver_price(
         order_id=order_id,
         user_id=user_id,
-        price_request=price_request,
     )

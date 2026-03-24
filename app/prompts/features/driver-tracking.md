@@ -7,8 +7,8 @@ Driver Service tools (direct driver-service API calls):
   Times in Seoul timezone, format: YYYY-MM-DD HH:MM:SS (e.g. 2024-01-15 09:00:00).
 - search_driver_report(driver_type, keyword, page_index, page_size) → search drivers in report context.
   driver_type: 'normalDriver' (platform drivers) or 'externalDriver' (vendor/external drivers). Required.
-- calculate_driver_fare(order_id, user_id, price_request) → calculate fare for driver (POST /guest/price/{orderId}).
-  price_request: dict with required fields (see driver_handler.go model.DriverCalcPriceOrderRequest).
+- calculate_driver_fare(order_id, user_id) → calculate fare for a driver on an order (POST /guest/price/{orderId}).
+  user_id = the driver's userId (NOT the customer's). Returns driver price breakdown including VAT.
 - get_vehicle_pools() → list all vehicle types and pools (vehiclePoolId, name, title, vehicle info).
 
 User Service driver tools:
@@ -27,7 +27,7 @@ Tool selection guide:
 - Search by name/phone → search_drivers(keyword). For report context → search_driver_report(type, keyword).
 - Location trail → get_driver_location_history with Seoul-timezone times.
 - Vehicle pool IDs/names → get_vehicle_pools().
-- Driver fare calculation → calculate_driver_fare(order_id, user_id, price_request).
+- Driver fare/VAT for a specific order → calculate_driver_fare(order_id, user_id). Requires the driver's userId.
 
 Driver report rules:
 - Follow report granularity rules from base (summary vs detail).

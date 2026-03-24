@@ -27,3 +27,10 @@ Persona disambiguation:
   Example: "show me order ORD-12345" → persona does not affect the data → answer directly.
 - Once clarified, answer only from that perspective.
 - Admin asking about system internals, code structure, or enum definitions → answer directly, no disambiguation needed.
+
+Price/VAT disambiguation (IMPORTANT — applies to every price-related question about a specific order):
+- `calculationPrice` is the CUSTOMER-side price breakdown (baseFee, express, consignment, vatAmount, couponDiscount, clientBonus, cashBackFee, cancellationFee, total).
+- `driverFee` is the DRIVER-side total only — a single scalar. Driver VAT is included in this total but is NOT broken out separately in the order detail data.
+- Customer VAT and driver VAT are structurally different: customers may have 0 VAT while drivers (as VAT-registered businesses) typically do.
+- When the user asks about VAT, fees, or price breakdown for a specific order WITHOUT explicitly specifying customer or driver, ask: "Are you asking about the customer price or the driver price?" BEFORE fetching or answering.
+- Do NOT default to the customer perspective for price/VAT questions. Ambiguous price questions MUST be clarified first.

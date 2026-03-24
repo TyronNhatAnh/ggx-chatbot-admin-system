@@ -845,6 +845,125 @@ class OrderServiceClient:
     # Public API methods (read-only)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _slim_history_entry(entry: dict) -> dict | None:
+        """Compact a single order history row for AI consumption."""
+        if not isinstance(entry, dict):
+            return None
+        slim = {
+            "historyId": entry.get("historyId") or entry.get("id"),
+            "action": entry.get("action") or entry.get("actionType") or entry.get("type"),
+            "changedBy": (
+                entry.get("changedBy")
+                or entry.get("updatedBy")
+                or entry.get("adminEmail")
+                or entry.get("userId")
+            ),
+            "changedAt": (
+                entry.get("changedAt")
+                or entry.get("updatedAt")
+                or entry.get("createdAt")
+            ),
+            "before": entry.get("before") or entry.get("previousData") or entry.get("oldData"),
+            "after": entry.get("after") or entry.get("currentData") or entry.get("newData"),
+            "note": entry.get("note") or entry.get("remark") or entry.get("description"),
+        }
+        return slim if any(v is not None for v in slim.values()) else None
+
+    def get_order_history(
+        self,
+        order_id: str,
+        page_size: int = 20,
+        page_index: int = 1,
+        sort_order: str = "desc",
+    ) -> dict:
+        """GET /api/v1/orders/{orderId}/history — order change history (before/after)."""
+        try:
+            params = self._clean_query_params({
+                "pageSize": page_size,
+                "pageIndex": page_index,
+                "sortOrder": sort_order,
+            })
+            payload = self._get(f"/orders/{order_id}/history", params=params)
+            data = self._unwrap_success_payload(payload)
+            if isinstance(data, dict) and data.get("error"):
+                return data
+
+            if isinstance(data, list):
+                entries = [e for e in (self._slim_history_entry(r) for r in data) if e]
+                return {"history": entries, "count": len(entries)}
+
+            if isinstance(data, dict):
+                rows = (
+                    data.get("histories")
+                    or data.get("history")
+                    or data.get("rows")
+                    or data.get("list")
+                    or data.get("items")
+                    or data.get("data")
+                )
+                if isinstance(rows, list):
+                    entries = [e for e in (self._slim_history_entry(r) for r in rows) if e]
+                    meta = data.get("meta") or data.get("pagination") or {}
+                    return {
+                        "history": entries,
+                        "count": len(entries),
+                        "total_count": (
+                            meta.get("totalCount")
+                            or meta.get("total")
+                            or data.get("totalCount")
+                            or len(rows)
+                        ),
+                    }
+                return data
+
+            return {"raw": data}
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return {"error": "ORDER_NOT_FOUND", "order_id": order_id}
+            logger.error(
+                "get_order_history HTTP %s for order_id=%s — body: %s",
+                exc.response.status_code, order_id, exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("get_order_history network error for order_id=%s — %s", order_id, exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "get_order_history unexpected error for order_id=%s — %s: %s",
+                order_id, type(exc).__name__, exc,
+            )
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
+    def get_order_detail(self, order_id: str) -> dict:
+        """GET /api/v1/admin/orders/{orderId} — full order detail for admins."""
+        try:
+            payload = self._get(f"/admin/orders/{order_id}")
+            data = self._unwrap_success_payload(payload)
+            if isinstance(data, dict) and data.get("error"):
+                return data
+            if isinstance(data, dict):
+                return self._slim_order_detail(data)
+            return {"raw": data}
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return {"error": "ORDER_NOT_FOUND", "order_id": order_id}
+            logger.error(
+                "get_order_detail HTTP %s for order_id=%s — body: %s",
+                exc.response.status_code, order_id, exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("get_order_detail network error for order_id=%s — %s", order_id, exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "get_order_detail unexpected error for order_id=%s — %s: %s",
+                order_id, type(exc).__name__, exc,
+            )
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
     def get_order_payment_status(self, order_id: str) -> dict:
         """
         Check payment/branchPay status of an order.

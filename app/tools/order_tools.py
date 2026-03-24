@@ -64,6 +64,18 @@ def check_driver_price(payload: dict) -> dict:
     return get_order_client().check_driver_price(payload)
 
 
+def get_order_detail(order_id: str) -> dict:
+    """Get full detail of a single order by ID (GET /admin/orders/{orderId}).
+    Use when the user wants any detailed info about a specific order: status, driver, vehicle, price breakdown,
+    waypoints, goods, payment, owner, flags, notes, or any other order field.
+    Prefer this over get_orders_admin_panel when only one specific order ID is known.
+
+    Args:
+        order_id: The order ID to retrieve.
+    """
+    return get_order_client().get_order_detail(order_id)
+
+
 def get_order_payment_status(order_id: str) -> dict:
     """Check payment/branchPay status of an order (GET /orders/:orderId/status). Use when user asks about payment status."""
     return get_order_client().get_order_payment_status(order_id)
@@ -268,6 +280,28 @@ def get_tax_invoice_states(mgt_keys: list[str]) -> dict:
         mgt_keys: List of Barobill management key strings to check (e.g. ["20240101-1", "20240101-2"]).
     """
     return get_order_client().get_tax_invoice_states(mgt_keys)
+
+
+def get_order_history(
+    order_id: str,
+    page_size: int = 20,
+    page_index: int = 1,
+    sort_order: str = "desc",
+) -> dict:
+    """Get the full change history of an order — before/after values for each update to order details, user info, or price.
+    Use when the user asks about order changes, update history, who changed what, or price/user modifications on a specific order.
+
+    Endpoint: GET /orders/{orderId}/history
+
+    Args:
+        order_id: The order ID to retrieve history for.
+        page_size: Number of history entries per page (default: 20).
+        page_index: Page number, 1-based (default: 1).
+        sort_order: Sort direction: "asc" or "desc" (default: "desc" — newest first).
+    """
+    return get_order_client().get_order_history(
+        order_id, page_size=page_size, page_index=page_index, sort_order=sort_order
+    )
 
 
 

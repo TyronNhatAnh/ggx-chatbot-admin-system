@@ -159,17 +159,14 @@ class DriverServiceClient:
         *,
         order_id: int,
         user_id: int,
-        price_request: dict,
     ) -> dict:
-        """POST /api/v1/guest/price/{orderId} — calculate fare for driver.
-        price_request: dict with required fields (see driver_handler.go model.DriverCalcPriceOrderRequest).
-        """
+        """POST /api/v1/guest/price/{orderId} — calculate fare for driver (guest endpoint, no auth)."""
         try:
             payload = self._request(
                 "POST",
                 f"/guest/price/{order_id}",
-                json=price_request,
-                requires_auth=True,
+                json={"userId": user_id},
+                requires_auth=False,
             )
             data = self._unwrap_success_payload(payload)
             if isinstance(data, dict) and data.get("error"):

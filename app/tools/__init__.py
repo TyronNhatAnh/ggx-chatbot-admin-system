@@ -38,6 +38,8 @@ from app.tools.order_tools import (
     estimate_guest_home_moving_price,
     estimate_guest_price,
     get_order_cancel_fee,
+    get_order_detail,
+    get_order_history,
     get_order_payment_status,
     get_orders_admin_panel,
     get_statement_of_use_detail,
@@ -65,8 +67,10 @@ from app.tools.user_tools import (
 # All tool functions exposed to the AI model.
 # Gemini auto-generates JSON schemas from each function's type hints and docstring.
 ALL_TOOL_FUNCTIONS: list = [
+    get_order_detail,
     get_order_payment_status,
     get_order_cancel_fee,
+    get_order_history,
     get_orders_admin_panel,
     get_tax_invoice_states,
     get_statement_of_use_summary,
