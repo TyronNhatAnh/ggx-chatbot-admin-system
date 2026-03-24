@@ -22,7 +22,7 @@ from app.schemas.chat_schema import (
     MemoryItemResponse,
     TurnResponse,
 )
-from app.services.auth_token_manager import reset_request_service_token, set_request_service_token
+from app.services.auth_token_manager import is_token_expired, reset_request_service_token, set_request_service_token
 
 # ---------------------------------------------------------------------------
 # Logging — configure once at process start so all modules inherit the format
@@ -381,6 +381,9 @@ async def chat(request: ChatRequest, http_request: Request):
     )
     service_token_ref = set_request_service_token(request.service_token)
     try:
+        if is_token_expired(request.service_token):
+            logger.warning("[Chat    ] Rejected — service token expired")
+            raise HTTPException(status_code=401, detail="Service token has expired")
         reply, tools_called, conversation_id = get_orchestrator().chat(
             request.message,
             request.conversation_id,

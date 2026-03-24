@@ -2,16 +2,22 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    # Model to use — for Vertex AI use a versioned name e.g. gemini-2.0-flash-001
-    # model_name: str = "gemini-2.0-flash-001"
-    model_name: str = "gemini-2.5-flash"  # --- IGNORE ---
+    # Primary model (Flash) — low latency, low cost, good for tool-calling & lookups.
+    # gemini-3-flash-preview is available on Vertex AI in: global, us-central1
+    model_name: str = "gemini-3-flash-preview"
+
+    # Optional Pro model for complex queries (reports, codebase analysis).
+    # When set, feature keys "report-summary" and "knowledge-code" are routed here.
+    # Leave empty to use model_name for all queries.
+    # gemini-3-pro-preview is available on Vertex AI in: global, us-central1
+    pro_model_name: str = "gemini-3-pro-preview"
 
     # ---------------------------------------------------------------------------
     # Vertex AI service account credentials
     # ---------------------------------------------------------------------------
     vertex_ai_credentials_file: str = "app/config/vertex-ai.json"
     vertex_ai_sa_key: str = "gemini-kr-sa-staging"
-    vertex_ai_location: str = "asia-northeast3"
+    vertex_ai_location: str = "global"  # Gemini 3 preview models only available in: global, us-central1
 
     # ---------------------------------------------------------------------------
     # User Service — provides authentication (Bearer token)
@@ -60,7 +66,7 @@ class Settings(BaseSettings):
     # Cache system_instruction + tool schemas on Vertex AI to reduce input token
     # cost by ~75% on the cached portion (tools ≈ 5k tokens + prompt ≈ 2k tokens).
     # Requires a VERSIONED model name, e.g. MODEL_NAME=gemini-2.0-flash-001
-    # Aliases like "gemini-2.5-flash" are NOT supported for explicit caching.
+    # Aliases like "gemini-3-flash-preview" are NOT supported for explicit caching.
     context_caching_enabled: bool = False
 
     # Allow extra keys in .env (e.g. repo/branch vars used by Makefile only)

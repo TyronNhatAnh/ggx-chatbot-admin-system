@@ -11,7 +11,7 @@ Cost impact:
 Requirements:
   - CONTEXT_CACHING_ENABLED=true in .env
   - MODEL_NAME must be a VERSIONED name, e.g. gemini-2.0-flash-001
-    Aliases like "gemini-2.5-flash" are not supported for explicit caching.
+    Aliases like "gemini-3.0-flash" are not supported for explicit caching.
 """
 
 import logging

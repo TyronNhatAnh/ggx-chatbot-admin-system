@@ -68,7 +68,7 @@ class GeminiChatFactory:
         return self.client.chats.create(model=self.model_name, config=config)
 
 
-def create_gemini_model(tools: list) -> GeminiChatFactory:
+def create_gemini_model(tools: list, model_name: str | None = None) -> GeminiChatFactory:
     """
     Configure and return a Gemini chat factory with the given tools.
 
@@ -78,38 +78,27 @@ def create_gemini_model(tools: list) -> GeminiChatFactory:
 
     Args:
         tools: List of Python callables to register as tools for the model.
+        model_name: Override the model name from settings (used for the Pro factory).
 
     Returns:
         A configured GeminiChatFactory ready to start chat sessions.
     """
+    resolved_model = model_name or settings.model_name
     client = create_vertex_client()
 
-    logger.info("[GeminiClient] Configured model: %s", settings.model_name)
-    try:
-        available = [m.name for m in client.models.list()]
-        gemini_models = [m for m in available if "gemini" in m.lower()]
-        if gemini_models:
-            logger.info("[GeminiClient] Gemini models available (%d): %s", len(gemini_models), gemini_models)
-        else:
-            logger.info(
-                "[GeminiClient] No Gemini models returned by list API "
-                "(normal on Vertex AI — Gemini is accessed via publisher endpoint). "
-                "All listed models (%d): %s", len(available), available,
-            )
-    except Exception as exc:
-        logger.warning("[GeminiClient] Could not list models: %s", exc)
+    logger.info("[GeminiClient] Configured model: %s", resolved_model)
 
     cache_manager = None
     if settings.context_caching_enabled:
         from app.llm.context_cache import ContextCacheManager
-        cache_manager = ContextCacheManager(client, settings.model_name, tools)
+        cache_manager = ContextCacheManager(client, resolved_model, tools)
         logger.info(
             "[GeminiClient] Context caching enabled — caches created lazily per feature key."
         )
 
     return GeminiChatFactory(
         client=client,
-        model_name=settings.model_name,
+        model_name=resolved_model,
         tools=tools,
         system_instruction=build_system_prompt(),
         cache_manager=cache_manager,

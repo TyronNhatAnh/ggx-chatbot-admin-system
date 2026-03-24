@@ -5,8 +5,10 @@ Order list tool (ALL statuses — admin panel view):
   Use for: "list orders", "find orders by keyword/phone/driver/org", "orders today", order search by date range.
   Result cap: max 5 orders per call (use pagination for more).
   Key filters: keyword, status_cd, order_type, pay_cd, appointment_from/to, created_from/to, organization_id, branch_id, user_id, driver_id, phone_number, order_request_id, external_order_id, limit, offset, sort_by, sort_order.
-  Date filter rule: ALWAYS use appointment_from/appointment_to for queries like "orders today", "orders this week", "orders for [date]".
-    Use created_from/created_to ONLY when the user explicitly asks for orders *created* on a date (e.g. "orders placed today", "orders created this week").
+  Date filter rule:
+    - DEFAULT: Use appointment_from/appointment_to for ALL date-based queries ("orders today", "orders this week", "orders for [date]", etc.).
+    - EXCEPTION: Use created_from/created_to ONLY when the user's message explicitly contains the word "created", "placed", or "submitted" together with a date. Never infer created-date intent.
+    - ONE CALL PER TURN: Call get_orders_admin_panel ONCE with the correct appointment_from/to filter. Do NOT retry with different date params (e.g. switching to created_from/to or omitting dates) if results are sparse — answer from the first result.
   DO NOT use for revenue/financial aggregations — use report tools for that.
 
 Report tools (completed/cancelled orders — financial aggregation):

@@ -492,10 +492,17 @@ class AIOrchestrator:
     """
 
     def __init__(self) -> None:
-        # Build the model once at startup — it holds the tool schema and
-        # system prompt, so it is safe to reuse across requests.
-        logger.info("[Orchestrator] Loading Gemini model with %d tools...", len(ALL_TOOL_FUNCTIONS))
+        # Build model factories once at startup — safe to reuse across requests.
+        logger.info("[Orchestrator] Loading Flash model (%s) with %d tools...", settings.model_name, len(ALL_TOOL_FUNCTIONS))
         self._model = create_gemini_model(ALL_TOOL_FUNCTIONS)
+
+        # Optional Pro model for complex feature keys (report-summary, knowledge-code).
+        # Falls back to Flash when pro_model_name is not configured.
+        self._pro_model: "GeminiChatFactory | None" = None
+        if settings.pro_model_name:
+            logger.info("[Orchestrator] Loading Pro model (%s)...", settings.pro_model_name)
+            self._pro_model = create_gemini_model(ALL_TOOL_FUNCTIONS, model_name=settings.pro_model_name)
+            logger.info("[Orchestrator] Pro model ready. Dual-model routing enabled.")
 
         store = None
         if settings.chat_history_db:
@@ -563,7 +570,14 @@ class AIOrchestrator:
                 )
 
         # A fresh session per request keeps state isolated between users.
-        chat_session = self._model.start_chat(
+        # Route to Pro model for features that benefit from deeper reasoning.
+        active_model = (
+            self._pro_model
+            if self._pro_model and feature_key in ("report-summary", "knowledge-code")
+            else self._model
+        )
+        logger.info("[Model    ] Using %s for feature_key=%s", active_model.model_name, feature_key)
+        chat_session = active_model.start_chat(
             enable_automatic_function_calling=False,
             system_instruction=system_prompt,
             feature_key=feature_key,
@@ -811,6 +825,14 @@ class AIOrchestrator:
                             "No organizations matched the search query. "
                             "Tell the user no match was found and suggest they check the org name or try a different search term."
                         )
+
+                # Steer away from redundant get_orders_admin_panel retries within the same turn.
+                if tool_name == "get_orders_admin_panel" and tool_name in tools_called:
+                    steering_notes.append(
+                        "You already called get_orders_admin_panel earlier this turn. "
+                        "Do NOT call it again with different date or sort params. "
+                        "Synthesize the final answer from the results already returned above."
+                    )
 
                 if tool_name in _REPORT_TOOL_NAMES and isinstance(result, dict):
                     rows = result.get("rows")
