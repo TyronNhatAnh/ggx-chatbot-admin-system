@@ -496,7 +496,13 @@ class AIOrchestrator:
         # system prompt, so it is safe to reuse across requests.
         logger.info("[Orchestrator] Loading Gemini model with %d tools...", len(ALL_TOOL_FUNCTIONS))
         self._model = create_gemini_model(ALL_TOOL_FUNCTIONS)
-        self._memory = MemoryService()
+
+        store = None
+        if settings.chat_history_db:
+            from app.persistence.chat_store import ChatStore
+            store = ChatStore(settings.chat_history_db)
+
+        self._memory = MemoryService(store=store)
         logger.info("[Orchestrator] Gemini model ready.")
 
     def chat(self, message: str, conversation_id: str | None = None) -> tuple[str, list[str], str]:
@@ -560,6 +566,7 @@ class AIOrchestrator:
         chat_session = self._model.start_chat(
             enable_automatic_function_calling=False,
             system_instruction=system_prompt,
+            feature_key=feature_key,
         )
 
         # Step 1 — send the user message to Gemini
@@ -845,7 +852,7 @@ class AIOrchestrator:
             # from tool result data so the LLM reads them as directives, not as data.
             if steering_notes and tool_response_parts:
                 tool_response_parts.append(
-                    types.Part.from_text("\n\n".join(steering_notes))
+                    types.Part.from_text(text="\n\n".join(steering_notes))
                 )
 
             if not tool_response_parts:

@@ -8,6 +8,10 @@ httpx
 google-api-core
 # Feature exploration pipeline (offline scripts only)
 pyyaml
+# AST-based code parsing (indexer falls back to regex if not installed)
+tree-sitter
+tree-sitter-go
+tree-sitter-java
 # Semantic code search (optional — indexer works without these, falls back to FTS5)
 chromadb
 sentence-transformers

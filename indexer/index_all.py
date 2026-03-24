@@ -31,7 +31,9 @@ _SERVICES = [
     {"env_var": "USER_SERVICE_REPO_PATH",   "service": "user-service",   "lang": "go"},
     {"env_var": "DRIVER_SERVICE_REPO_PATH", "service": "driver-service", "lang": "go"},
     {"env_var": "COMMON_SERVICE_REPO_PATH", "service": "common-service", "lang": "go"},
+    {"env_var": "WEB_LIBRARY_REPO_PATH",    "service": "web-library",    "lang": "java"},
     {"env_var": "ADMIN_SERVICE_REPO_PATH",  "service": "admin-service",  "lang": "java"},
+    {"env_var": "WEB_API_REPO_PATH",        "service": "web-api",        "lang": "java"},
     {"env_var": "WEB2_REPO_PATH",           "service": "web2",           "lang": "react"},
 ]
 
@@ -57,6 +59,7 @@ def main() -> None:
     ap.add_argument("--no-vectors", action="store_true", help="Skip vector embedding generation.")
     ap.add_argument("--no-link", action="store_true", help="Skip cross-service linker step.")
     ap.add_argument("--dry-run", action="store_true", help="Print plan without indexing.")
+    ap.add_argument("--force", action="store_true", help="Bypass incremental hash check and re-index all services.")
     args = ap.parse_args()
 
     project_root = Path(__file__).parents[1]
@@ -107,6 +110,7 @@ def main() -> None:
             service=svc["service"],
             enable_vectors=enable_vectors,
             lang=svc["lang"],
+            force=args.force,
         )
         summaries.append(summary)
 

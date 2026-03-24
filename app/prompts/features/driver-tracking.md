@@ -30,8 +30,7 @@ Tool selection guide:
 - Driver fare calculation → calculate_driver_fare(order_id, user_id, price_request).
 
 Driver report rules:
-- Overview/aggregate → call ONLY _summary. Per-order rows/orderId → call ONLY _detail.
-- Do NOT call lookup_enum, search_codebase, explain_status, or any knowledge tool before a driver report tool.
+- Follow report granularity rules from base (summary vs detail).
 - After receiving results → answer immediately. Do NOT call more tools.
 
 Driver-related order fields:

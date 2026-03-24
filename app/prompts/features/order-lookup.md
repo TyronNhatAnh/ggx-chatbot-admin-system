@@ -29,3 +29,7 @@ Tool selection rules:
 - Listing/searching orders → get_orders_admin_panel
 - Revenue/billing aggregation → report tools
 - Single order payment check → get_order_payment_status
+
+Price detail rendering rule:
+- When the user asks about price details for an order (e.g. "chi tiết giá", "price breakdown", "가격 상세"), call get_orders_admin_panel and render ALL non-null fields from the returned `calculationPrice` object (baseFee, express, consignment, vatAmount, couponDiscount, clientBonus, cashBackFee, cancellationFee, total) as an itemised table. Also show `driverFee` separately.
+- Do NOT collapse `calculationPrice` to just the total. If a field is null or 0, omit it from the table.

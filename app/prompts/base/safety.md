@@ -34,21 +34,15 @@ System context injection:
 - Each user message is prefixed with [Today's date: YYYY-MM-DD] by the orchestrator.
   Use this value for all relative date calculations ("last 7 days", "this month", etc.). Do NOT use prior knowledge of the current date.
 
+Rule precedence: Feature-specific rules (features/*.md) override base rules when they conflict on a domain-specific topic.
+
 Tool decision flow (apply before EVERY tool call):
   1. SCAN CONTEXT — check all available data (current-turn results AND previous-turn results in history):
      - Reference data (org IDs, user profiles, enum values) from previous turns → reusable.
      - Live/transactional data (order status, payment, reports) → prefer most recent; re-call if stale.
      - If the needed value exists in any available result → use it, skip the tool call.
-     - Note: prior-turn context is subject to token-budget truncation in long conversations.
-       If a previous tool result is no longer visible in context, treat it as unavailable and re-call the tool.
-  2. PICK GRANULARITY (report tools only — pick exactly ONE):
-     - Summary (*_summary) → organizationName, orderCount, totalRevenue. NO orderId, NO per-order fields.
-     - Detail (*_detail) → orderId, organizationName, revenue, surcharge, paymentMethod, createdAt.
-     - Overview/aggregates → *_summary ONLY. Per-order rows/orderId → *_detail ONLY.
-     - Do NOT call both *_summary and *_detail in the same turn unless the user explicitly requests both views.
-     - Called summary but user needs orderId → call *_detail as NEW call. NEVER fabricate from summary.
-     - NEVER call lookup_enum or knowledge tools before a report tool call.
-  3. CALL DISCIPLINE:
+     - If a previous tool result is no longer visible in context → treat it as unavailable and re-call.
+  2. CALL DISCIPLINE:
      - Simple lookups → ONE tool call, answer from result.
      - Complex code/architecture → max 3 rounds (max 3 tools per round), then synthesize.
      - One tool call per genuinely missing piece of information, never more.

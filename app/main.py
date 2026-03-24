@@ -13,7 +13,15 @@ from fastapi import FastAPI, HTTPException, Request
 from app.orchestrator.ai_orchestrator import AIOrchestrator
 from app.observability import get_request_id, reset_request_id, set_request_id
 from app.config import settings
-from app.schemas.chat_schema import ChatRequest, ChatResponse
+from app.schemas.chat_schema import (
+    ChatRequest,
+    ChatResponse,
+    ConversationDetailResponse,
+    ConversationListResponse,
+    ConversationSummaryResponse,
+    MemoryItemResponse,
+    TurnResponse,
+)
 from app.services.auth_token_manager import reset_request_service_token, set_request_service_token
 
 # ---------------------------------------------------------------------------
@@ -231,6 +239,117 @@ async def log_requests(request: Request, call_next):
 async def health_check():
     """Simple liveness probe."""
     return {"status": "ok"}
+
+
+@app.get("/history", response_model=ConversationListResponse, tags=["History"])
+async def list_conversations(
+    http_request: Request,
+    page: int = 1,
+    page_size: int = 20,
+):
+    """
+    List all conversations, ordered by most recently active.
+
+    When ``CHAT_HISTORY_DB`` is set, returns persisted sessions (survives restarts).
+    Otherwise returns in-memory sessions only (lost on restart).
+
+    Query params:
+    - **page**: 1-based page number (default: 1)
+    - **page_size**: results per page, 1–100 (default: 20)
+    """
+    _require_chat_auth(http_request)
+    page = max(1, page)
+    page_size = max(1, min(100, page_size))
+    offset = (page - 1) * page_size
+
+    orchestrator = get_orchestrator()
+    store = orchestrator._memory._store  # type: ignore[attr-defined]
+
+    if store is not None:
+        rows = store.list_sessions(limit=page_size, offset=offset)
+        total = store.count_sessions()
+        conversations = [
+            ConversationSummaryResponse(
+                conversation_id=r["conversation_id"],
+                summary=r["summary"] or "",
+                updated_at=r["updated_at"],
+                turn_count=r["turn_count"],
+            )
+            for r in rows
+        ]
+    else:
+        states = orchestrator._memory.list_sessions(limit=page_size, offset=offset)
+        total = orchestrator._memory.count_sessions()
+        conversations = [
+            ConversationSummaryResponse(
+                conversation_id=s.session_id,
+                summary=s.summary or "",
+                updated_at=s.updated_at,
+                turn_count=len(s.turns),
+            )
+            for s in states
+        ]
+
+    return ConversationListResponse(
+        conversations=conversations,
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@app.get("/history/{conversation_id}", response_model=ConversationDetailResponse, tags=["History"])
+async def get_conversation(
+    conversation_id: str,
+    http_request: Request,
+):
+    """
+    Get the full turn history, summary, and long-term memory for a conversation.
+
+    Returns 404 if the conversation_id is unknown or has expired.
+    """
+    _require_chat_auth(http_request)
+
+    orchestrator = get_orchestrator()
+    store = orchestrator._memory._store  # type: ignore[attr-defined]
+
+    # Prefer SQLite when available (has full history including summarised turns).
+    # Fall back to the in-memory store (active sessions only).
+    if store is not None:
+        state = store.load_session(conversation_id)
+    else:
+        state = orchestrator._memory.get_session(conversation_id)
+
+    if state is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    turns = [
+        TurnResponse(
+            role=t.role,
+            content=t.content,
+            tools_called=t.tools_called,
+            created_at=t.created_at,
+        )
+        for t in state.turns
+        if t.role in ("user", "assistant")  # omit internal tool turns
+    ]
+    memory = [
+        MemoryItemResponse(
+            id=m.id,
+            type=m.type.value,
+            content=m.content,
+            created_at=m.created_at,
+        )
+        for m in state.memory
+    ]
+
+    return ConversationDetailResponse(
+        conversation_id=state.session_id,
+        summary=state.summary or "",
+        turns=turns,
+        memory=memory,
+        updated_at=state.updated_at,
+    )
 
 
 @app.post("/chat", response_model=ChatResponse, tags=["Chat"])

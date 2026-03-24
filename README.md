@@ -46,23 +46,187 @@ The assistant answers questions about orders, drivers, organizations, and indexe
   - duplicate tool-call suppression
   - fallback answer when loop becomes unproductive
 
-## High-Level Architecture
+## Architecture Overview
 
-```text
-POST /chat
-  -> app/main.py
-  -> app/orchestrator/ai_orchestrator.py
-  -> app/prompts/builder.py (modular prompt assembly)
-  -> app/llm/gemini_client.py
-  -> app/tools/*.py (tool wrappers)
-  -> app/services/*.py (external API integrations)
+### System Layers
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Client (FDE / curl)                                │
+└──────────────────┬──────────────────────────────────┘
+                   │  POST /chat  (message, conversation_id, service_token)
+┌──────────────────▼──────────────────────────────────┐
+│  app/main.py  — FastAPI                             │
+│  · Auth guard (X-API-Key / Bearer)                  │
+│  · Fixed-window rate limiter (per IP)               │
+│  · Request-ID injection + structured logging        │
+└──────────────────┬──────────────────────────────────┘
+                   │
+┌──────────────────▼──────────────────────────────────┐
+│  app/orchestrator/ai_orchestrator.py  (singleton)   │
+│  · Feature detection → per-request system prompt    │
+│  · Injects today's date + conversation context      │
+│  · Gemini tool-calling loop (MAX_TOOL_LOOPS = 3)    │
+│  · Parallel tool execution (ThreadPoolExecutor)     │
+│  · Duplicate tool-call suppression                  │
+│  · Synthesis fallback when loop exhausted           │
+└──────┬──────────────────┬───────────────────────────┘
+       │                  │
+┌──────▼──────┐  ┌────────▼──────────────────────────┐
+│ app/prompts │  │  app/llm/gemini_client.py          │
+│ /builder.py │  │  · GeminiChatFactory               │
+│             │  │  · Vertex AI (asia-northeast3)     │
+│ base/       │  │  · Service account credentials     │
+│  persona    │  │  · Optional context caching        │
+│  safety     │  │    (system_instruction + tools     │
+│  output-fmt │  │     cached per feature_key, 1h     │
+│             │  │     TTL, ~75% token cost reduction)│
+│ features/   │  └───────────────────────────────────┘
+│  per-domain │
+│ few-shots/  │
+└─────────────┘
+       │
+┌──────▼──────────────────────────────────────────────┐
+│  app/orchestrator/memory_service.py  (3-layer)      │
+│                                                     │
+│  Layer 1 — Short-term  (last 5 turns verbatim)      │
+│  Layer 2 — Summary     (compressed by Gemini, ≤200w)│
+│  Layer 3 — Long-term   (FACT / ENTITY / DECISION)   │
+│            auto-extracted via regex (orderId, etc.) │
+│                                                     │
+│  Token budget: 8k total / 4.4k input; CJK-aware     │
+│  Session TTL: 30 min inactivity                     │
+│  Persistence: optional SQLite (CHAT_HISTORY_DB)     │
+└──────┬──────────────────────────────────────────────┘
+       │
+┌──────▼──────────────────────────────────────────────┐
+│  app/tools/  (57 registered tools)                  │
+│                                                     │
+│  order_tools.py   — orders, pricing, reports        │
+│  user_tools.py    — users, orgs, branches, roles    │
+│  driver_tools.py  — drivers, location, fares        │
+│  common_tools.py  — vehicles, addresses, goods      │
+│  docs_tools.py    — endpoint search + handler src   │
+│  knowledge_tools.py — enums, structs, flows, graph  │
+│                                                     │
+│  JSON schemas auto-generated from Python signatures │
+└──────┬──────────────────────────────────────────────┘
+       │
+┌──────▼──────────────────────────────────────────────┐
+│  app/services/  (external API clients)              │
+│                                                     │
+│  OrderServiceClient  → stag-api.gogox.co.kr/order   │
+│  UserServiceClient   → stag-api.gogox.co.kr/user    │
+│  DriverServiceClient → stag-api.gogox.co.kr/driver  │
+│  CommonServiceClient → stag-api.gogox.co.kr/common  │
+│                                                     │
+│  · Persistent httpx.Client (connection reuse)       │
+│  · Request-scoped Bearer token (contextvars)        │
+│  · One retry on 401                                 │
+│  · Structured error returns (never raises to LLM)   │
+└─────────────────────────────────────────────────────┘
 ```
 
-Layering rules:
-- `app/main.py`: HTTP transport only
-- `app/orchestrator/`: tool-calling loop + context + summarization
-- `app/tools/`: thin function wrappers (schema from signatures/docstrings)
-- `app/services/`: external API calls + auth + payload normalization
+### POST /chat — Full Request Flow
+
+```
+1. Auth + rate-limit guard
+2. AIOrchestrator.chat(message, conversation_id?)
+   a. Load/create SessionState from MemoryService
+   b. Auto-extract entity IDs from message → long-term memory
+   c. build_context() → summary + top-3 memory + last-5 turns (token-budgeted)
+   d. Detect feature key → load modular system prompt
+   e. Inject [Today's date] + report tool hints into message
+   f. Gemini round 1: send_message(effective_message)
+   ┌─ TOOL LOOP (repeat up to MAX_TOOL_LOOPS=3) ────────┐
+   │  g. Extract function_calls from response            │
+   │  h. Execute tools in parallel via ThreadPoolExecutor│
+   │  i. Collect results + steering notes                │
+   │  j. Gemini round N: send_message(results + notes)  │
+   └─ Until: no function_calls in response ─────────────┘
+   k. If loop exhausted: synthesis prompt or partial text
+   l. Record user + assistant turns → summarize if needed
+3. Return (reply, tools_called[], conversation_id)
+```
+
+### Persistence
+
+```
+app/persistence/chat_store.py  (enabled by CHAT_HISTORY_DB)
+  SQLite — WAL mode, FK constraints
+  ├── sessions    (session_id, summary, turns_since_summary, updated_at)
+  ├── turns       (id, session_id, role, content, tools_called, tool_results, created_at)
+  └── memory_items (id, session_id, type, content, created_at)
+  Indexes: idx_turns_session, idx_memory_session
+```
+
+### Codebase Indexer Pipeline
+### Refer from https://github.com/vitali87/code-graph-rag
+
+```
+Source repos (Go / Java / React)
+       │
+       ▼
+indexer/parsers/{go,java,react}/
+  ├── enum_extractor  → EnumGroup[]  (const blocks, iota, Java enums)
+  ├── type_extractor  → StructDefinition[]  (struct fields, JSON tags)
+  ├── flow_extractor  → ServiceFlow[]  (endpoint → handler → service → repo)
+  └── route_extractor → Edge[]  (api_endpoint -handles→ handler)
+       │
+       ▼
+indexer/store.py  →  data/knowledge/knowledge.db  (SQLite)
+  ├── enums + enum_values  (with persona tag: customer/driver/admin)
+  ├── struct_definitions + struct_fields
+  ├── service_flows  (call chains)
+  ├── code_chunks  (indexed fragments)
+  ├── code_chunks_fts  (FTS5 full-text search)
+  └── edges  (defines / calls / handles / calls_api / x_calls)
+       │
+       ├──▶ indexer/vector_store.py  →  data/vectordb/  (ChromaDB)
+       │      Embedding: all-MiniLM-L6-v2 (384-dim)
+       │      Collection: code_chunks (cosine similarity)
+       │
+       └──▶ indexer/linker.py  (cross-service pass)
+              React calls_api edges  ╮
+              Go handles edges       ╯  → match → x_calls edges
+              (React component → Go handler, cross-service)
+```
+
+**Supported services & languages:**
+
+| Service | Language | Extracts |
+|---|---|---|
+| order-service | Go | Enums, structs, Gin routes, service flows |
+| user-service | Go | Enums, structs, Gin routes, service flows |
+| driver-service | Go | Enums, structs, Gin routes, service flows |
+| common-service | Go | Enums, structs, Gin routes, service flows |
+| web-library | Java | Enums, types |
+| admin-service | Java | Enums, types, Spring flows |
+| web-api | Java | Enums, types, Spring flows |
+| web2 | React/TS | API call graph (calls_api edges) |
+
+**Knowledge tools query path:**
+
+```
+lookup_enum / explain_status  →  SQLite enums table  (exact + value match)
+get_struct_definition         →  SQLite struct_definitions table
+trace_service_flow            →  SQLite service_flows table
+search_codebase               →  ChromaDB vector search + FTS5 fallback
+traverse_graph / find_api_consumers / trace_full_stack  →  SQLite edges table
+search_endpoints / get_handler_context  →  SQLite code_chunks (handler source)
+```
+
+### Layering Rules
+
+| Layer | Path | Rule |
+|---|---|---|
+| HTTP | `app/main.py` | Transport, auth, rate limit only — no business logic |
+| Orchestrator | `app/orchestrator/` | All LLM logic, memory, routing — never bypass from routes |
+| LLM | `app/llm/` | Gemini API calls only |
+| Tools | `app/tools/` | Thin schema wrappers — no logic, no external calls |
+| Services | `app/services/` | External API calls, auth, payload normalization |
+| Prompts | `app/prompts/` | Prompt assembly only (`builder.py` entry point) |
+| Indexer | `indexer/` | Offline pipeline — do not modify for runtime bugs |
 
 ## Setup
 
@@ -89,7 +253,7 @@ CHAT_API_KEY=replace-with-strong-random-secret
 Optional but commonly used:
 
 ```env
-MODEL_NAME=gemini-flash-latest
+MODEL_NAME=gemini-2.5-pro
 CHAT_AUTH_ENABLED=true
 CHAT_RATE_LIMIT_ENABLED=true
 CHAT_RATE_LIMIT_REQUESTS=30
@@ -161,6 +325,12 @@ curl -X POST http://localhost:8000/chat \
 
 Indexer builds offline knowledge (SQLite + vector store) used by docs/knowledge tools.
 
+**Parsing**: Go extractors use **tree-sitter** for robust AST-based parsing when installed, falling back to regex otherwise. Install `tree-sitter`, `tree-sitter-go`, and `tree-sitter-java` (already in `requirements.txt`).
+
+**Incremental indexing**: The runner hashes all source files (SHA-256) and skips re-indexing when nothing has changed. Use `--force` to bypass the hash check.
+
+**Embedding model**: Configurable via `EMBEDDING_MODEL` env var (default: `all-MiniLM-L6-v2`).
+
 Main commands:
 
 ```bash
@@ -195,6 +365,6 @@ make seed-personas
 | `make index-admin-service` | Index admin-service repo (Java Spring Boot) |
 | `make index-web2` | Index web2 repo |
 | `make link` | Build cross-service endpoint links |
-| `make index-all` | Run all configured indexers + linker |
+| `make index-all` | Run all configured indexers + linker (add `FORCE=1` to bypass incremental cache) |
 | `make seed-personas` | Seed persona tags |
 | `make clean` | Remove virtual environment |

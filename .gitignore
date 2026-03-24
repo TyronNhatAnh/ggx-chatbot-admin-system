@@ -5,6 +5,7 @@
 .env
 .env.*
 !.env.example          # Keep the example template — it has no real secrets
+app/config/vertex-ai.json
 
 # =============================================================================
 # PYTHON

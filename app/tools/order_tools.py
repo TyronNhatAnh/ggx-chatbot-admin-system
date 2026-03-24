@@ -14,7 +14,7 @@ def _build_report_params(
     *,
     from_date: str | None = None,
     to_date: str | None = None,
-    pay: list[str] | str | None = None,
+    pay: list[str] | None = None,
     organization_id: int | None = None,
     params: dict | None = None,
 ) -> dict:
@@ -77,7 +77,7 @@ def get_order_cancel_fee(order_id: str) -> dict:
 def get_statement_of_use_summary(
     from_date: str | None = None,
     to_date: str | None = None,
-    pay: list[str] | str | None = None,
+    pay: list[str] | None = None,
     organization_id: int | None = None,
 ) -> dict:
     """Get customer report summary (aggregated by organization). Returns orderCount, totalRevenue, paymentBreakdown — NO per-order rows.
@@ -99,7 +99,7 @@ def get_statement_of_use_summary(
 def get_statement_of_use_detail(
     from_date: str | None = None,
     to_date: str | None = None,
-    pay: list[str] | str | None = None,
+    pay: list[str] | None = None,
     organization_id: int | None = None,
 ) -> dict:
     """Get customer report detail rows (per-order). Returns orderId, paymentMethod, revenue per order.

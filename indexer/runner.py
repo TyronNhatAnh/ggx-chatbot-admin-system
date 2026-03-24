@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -30,6 +31,33 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+_HASH_BUF_SIZE = 65536
+
+
+def _hash_file(path: Path) -> str:
+    """Return SHA-256 hex digest of a file's content."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            data = f.read(_HASH_BUF_SIZE)
+            if not data:
+                break
+            h.update(data)
+    return h.hexdigest()
+
+
+def _compute_repo_hashes(repo_path: str, parser) -> dict[str, str]:
+    """Compute content hashes for all source files the parser would process."""
+    hashes: dict[str, str] = {}
+    root = Path(repo_path).resolve()
+    for src_file in parser.iter_source_files(root):
+        try:
+            rel = str(src_file.relative_to(root))
+            hashes[rel] = _hash_file(src_file)
+        except OSError:
+            pass
+    return hashes
 
 
 def _build_code_chunks_from_enums(enums, service: str) -> list[CodeChunk]:
@@ -179,7 +207,8 @@ def _build_edges_from_flows(flows, service: str) -> list[Edge]:
 def index_service(repo_path: str, service: str,
                   store: KnowledgeStore | None = None,
                   enable_vectors: bool = False,
-                  lang: str | None = None) -> dict:
+                  lang: str | None = None,
+                  force: bool = False) -> dict:
     """Run the full indexing pipeline for a single service.
 
     Args:
@@ -189,6 +218,7 @@ def index_service(repo_path: str, service: str,
         enable_vectors: Whether to generate vector embeddings (requires extra deps).
         lang: Language key ('go', 'java', 'react', 'ruby').
               Auto-detected from repo contents if omitted.
+        force: Skip incremental hash check and re-index unconditionally.
 
     Returns:
         Summary dict with counts of extracted entities.
@@ -208,7 +238,21 @@ def index_service(repo_path: str, service: str,
     logger.info("Indexing service: %s  repo: %s  lang: %s", service, repo_path, lang)
     logger.info("=" * 60)
 
-    # Clear previous data for this service (incremental = per-service granularity)
+    # ----- Incremental: skip if no source files changed -----
+    current_hashes = _compute_repo_hashes(repo_path, parser)
+    if not force:
+        stored_hashes = store.get_file_hashes(service)
+        if current_hashes and current_hashes == stored_hashes:
+            elapsed = time.perf_counter() - t0
+            logger.info("No source files changed for %s — skipping (%.1fs)", service, elapsed)
+            return {
+                "service": service, "repo_path": repo_path,
+                "skipped": True, "reason": "no_changes",
+                "files_checked": len(current_hashes),
+                "elapsed_seconds": round(elapsed, 2),
+            }
+
+    # Clear previous data for this service (full re-index)
     store.clear_service(service)
 
     # ----- Pass 1: Extract enums -----
@@ -275,6 +319,11 @@ def index_service(repo_path: str, service: str,
 
     # Write accumulated JSON sidecars (all services, from SQLite) for debugging
     store.export_json_sidecars()
+
+    # ----- Store file hashes for incremental detection on next run -----
+    if current_hashes:
+        store.store_file_hashes(service, current_hashes)
+        logger.info("  → Stored %d file hashes for incremental detection", len(current_hashes))
 
     elapsed = time.perf_counter() - t0
     summary = {
@@ -352,6 +401,10 @@ def main() -> None:
         "--link", action="store_true",
         help="Run cross-service endpoint linking after indexing.",
     )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Re-index unconditionally, ignoring incremental hash check.",
+    )
     args = parser.parse_args()
 
     if not Path(args.repo).is_dir():
@@ -363,6 +416,7 @@ def main() -> None:
         service=args.service,
         enable_vectors=args.vectors,
         lang=args.lang,
+        force=args.force,
     )
 
     if args.link:

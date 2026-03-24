@@ -11,6 +11,7 @@ Falls back gracefully if chromadb/sentence-transformers are not installed.
 """
 
 import logging
+import os
 from pathlib import Path
 
 from indexer.models import CodeChunk
@@ -19,7 +20,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PERSIST_DIR = str(Path(__file__).parents[1] / "data" / "vectordb")
 _COLLECTION_NAME = "code_chunks"
-_EMBEDDING_MODEL = "all-MiniLM-L6-v2"  # 384-dim, fast, good for code search
+_EMBEDDING_MODEL = os.environ.get(
+    "EMBEDDING_MODEL", "all-MiniLM-L6-v2"
+)  # Override: EMBEDDING_MODEL=jinaai/jina-embeddings-v2-base-code
 _MAX_BATCH_SIZE = 100
 
 
@@ -56,6 +59,7 @@ class VectorStore:
         if self._embedder is None:
             from sentence_transformers import SentenceTransformer
             self._embedder = SentenceTransformer(_EMBEDDING_MODEL)
+            logger.info("[VectorStore] Loaded embedding model: %s", _EMBEDDING_MODEL)
         return self._embedder
 
     def index_chunks(self, chunks: list[CodeChunk]) -> int:

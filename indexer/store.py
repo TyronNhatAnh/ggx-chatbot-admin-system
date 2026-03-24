@@ -128,6 +128,14 @@ CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_name, edge_type);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_name, edge_type);
 CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(edge_type);
 CREATE INDEX IF NOT EXISTS idx_edges_service ON edges(from_service);
+
+CREATE TABLE IF NOT EXISTS file_hashes (
+    service TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (service, file_path)
+);
 """
 
 _FTS_TRIGGERS = """
@@ -203,6 +211,20 @@ class KnowledgeStore:
             conn.commit()
             logger.info("[KnowledgeStore] Migrated: created edges table")
 
+        # Ensure file_hashes table exists (incremental indexing)
+        if "file_hashes" not in tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS file_hashes (
+                    service TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (service, file_path)
+                );
+            """)
+            conn.commit()
+            logger.info("[KnowledgeStore] Migrated: created file_hashes table")
+
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)
         if conn:
@@ -236,6 +258,30 @@ class KnowledgeStore:
         )
         conn.commit()
         logger.info("[KnowledgeStore] Cleared data for service=%s", service)
+
+    # ------------------------------------------------------------------
+    # File hash methods (incremental indexing)
+    # ------------------------------------------------------------------
+
+    def get_file_hashes(self, service: str) -> dict[str, str]:
+        """Return {relative_file_path: content_hash} for a service."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT file_path, content_hash FROM file_hashes WHERE service = ?",
+            (service,),
+        ).fetchall()
+        return {r["file_path"]: r["content_hash"] for r in rows}
+
+    def store_file_hashes(self, service: str, hashes: dict[str, str]) -> None:
+        """Replace all file hashes for a service with new values."""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM file_hashes WHERE service = ?", (service,))
+        for file_path, content_hash in hashes.items():
+            conn.execute(
+                "INSERT INTO file_hashes (service, file_path, content_hash) VALUES (?, ?, ?)",
+                (service, file_path, content_hash),
+            )
+        conn.commit()
 
     def store_enums(self, groups: list[EnumGroup]) -> int:
         conn = self._get_conn()

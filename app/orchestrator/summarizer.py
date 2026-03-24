@@ -14,6 +14,7 @@ from google import genai
 from google.genai import types
 
 from app.config import settings
+from app.llm.vertex_credentials import create_vertex_client
 
 if TYPE_CHECKING:
     from app.orchestrator.memory_service import Turn
@@ -29,7 +30,7 @@ def _get_client() -> genai.Client:
     global _cached_client
     with _client_lock:
         if _cached_client is None:
-            _cached_client = genai.Client(api_key=settings.gemini_api_key)
+            _cached_client = create_vertex_client()
         return _cached_client
 
 # The summarization prompt — aggressive compression, factual only.

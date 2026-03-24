@@ -1,6 +1,42 @@
 from pydantic import BaseModel, Field
 
 
+class TurnResponse(BaseModel):
+    role: str = Field(..., description="'user' or 'assistant'")
+    content: str
+    tools_called: list[str] = Field(default_factory=list)
+    created_at: float = Field(..., description="Unix timestamp")
+
+
+class MemoryItemResponse(BaseModel):
+    id: str
+    type: str = Field(..., description="'fact' | 'entity' | 'decision'")
+    content: str
+    created_at: float
+
+
+class ConversationSummaryResponse(BaseModel):
+    conversation_id: str
+    summary: str = ""
+    updated_at: float
+    turn_count: int
+
+
+class ConversationListResponse(BaseModel):
+    conversations: list[ConversationSummaryResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class ConversationDetailResponse(BaseModel):
+    conversation_id: str
+    summary: str = ""
+    turns: list[TurnResponse]
+    memory: list[MemoryItemResponse] = Field(default_factory=list)
+    updated_at: float
+
+
 class ChatRequest(BaseModel):
     message: str = Field(
         ...,

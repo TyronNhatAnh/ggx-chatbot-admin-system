@@ -13,7 +13,10 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.persistence.chat_store import ChatStore
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +85,11 @@ class SessionState:
 # Memory service
 # ---------------------------------------------------------------------------
 class MemoryService:
-    """Thread-safe in-memory session store with three memory layers."""
+    """Thread-safe in-memory session store with three memory layers.
+
+    Pass a ``ChatStore`` instance via ``store=`` to persist sessions to SQLite
+    so that conversation history survives server restarts.
+    """
 
     def __init__(
         self,
@@ -91,6 +98,7 @@ class MemoryService:
         summarize_threshold: int = SUMMARIZE_THRESHOLD,
         long_term_max: int = LONG_TERM_MAX_ITEMS,
         ttl_seconds: int = SESSION_TTL_SECONDS,
+        store: "ChatStore | None" = None,
     ) -> None:
         self._short_term_max = short_term_max
         self._summarize_threshold = summarize_threshold
@@ -98,6 +106,7 @@ class MemoryService:
         self._ttl_seconds = ttl_seconds
         self._sessions: dict[str, SessionState] = {}
         self._lock = threading.Lock()
+        self._store = store
 
     # -- session lifecycle ---------------------------------------------------
 
@@ -110,13 +119,37 @@ class MemoryService:
                 state.updated_at = time.time()
                 return state
             new_id = sid or str(uuid.uuid4())
+            # Try to restore from persistent store before creating a blank session
+            if new_id and self._store is not None:
+                persisted = self._store.load_session(new_id)
+                if persisted is not None:
+                    self._sessions[new_id] = persisted
+                    persisted.updated_at = time.time()
+                    return persisted
             state = SessionState(session_id=new_id)
             self._sessions[new_id] = state
+            if self._store is not None:
+                self._store.save_session_meta(state)
             return state
 
     def get_session(self, session_id: str) -> SessionState | None:
         with self._lock:
             return self._sessions.get(session_id)
+
+    def list_sessions(self, limit: int = 20, offset: int = 0) -> list["SessionState"]:
+        """Return in-memory sessions ordered by most-recently-updated."""
+        with self._lock:
+            self._purge_expired()
+            sorted_states = sorted(
+                self._sessions.values(),
+                key=lambda s: s.updated_at,
+                reverse=True,
+            )
+            return sorted_states[offset : offset + limit]
+
+    def count_sessions(self) -> int:
+        with self._lock:
+            return len(self._sessions)
 
     # -- short-term memory ---------------------------------------------------
 
@@ -151,6 +184,9 @@ class MemoryService:
             state.turns.append(turn)
             state.turns_since_summary += 1
             state.updated_at = time.time()
+            if self._store is not None:
+                self._store.append_turn(session_id, turn)
+                self._store.save_session_meta(state)
             return state
 
     def get_recent_turns(self, session_id: str) -> list[Turn]:
@@ -203,6 +239,9 @@ class MemoryService:
             state.summary = summary
             state.turns_since_summary = 0
             state.updated_at = time.time()
+            if self._store is not None:
+                self._store.delete_older_turns(state.session_id, self._short_term_max)
+                self._store.save_session_meta(state)
 
     def get_summary(self, session_id: str) -> str:
         with self._lock:
@@ -226,6 +265,8 @@ class MemoryService:
             if len(state.memory) > self._long_term_max:
                 state.memory = state.memory[-self._long_term_max:]
             state.updated_at = time.time()
+            if self._store is not None:
+                self._store.upsert_memory_item(session_id, item)
 
     def retrieve_memory(
         self, session_id: str, query: str, *, limit: int = 3
@@ -280,6 +321,8 @@ class MemoryService:
         ]
         for sid in expired:
             self._sessions.pop(sid, None)
+        if expired and self._store is not None:
+            self._store.purge_expired_sessions(self._ttl_seconds)
 
 
 # ---------------------------------------------------------------------------
