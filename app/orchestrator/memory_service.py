@@ -60,6 +60,7 @@ class Turn:
     content: str
     tools_called: list[str] = field(default_factory=list)
     tool_results: dict[str, Any] = field(default_factory=dict)
+    tool_params: dict[str, dict] = field(default_factory=dict)  # params used per tool call (for date-range context)
     created_at: float = field(default_factory=time.time)
 
 
@@ -77,6 +78,8 @@ class SessionState:
     turns_since_summary: int = 0
     # Guard against concurrent background summarization threads
     summarization_in_progress: bool = False
+    # Detected feature key from the first turn — persists across follow-ups
+    feature_key: str | None = None
     # Housekeeping
     updated_at: float = field(default_factory=time.time)
 
@@ -161,6 +164,7 @@ class MemoryService:
         content: str,
         tools_called: list[str] | None = None,
         tool_results: dict[str, Any] | None = None,
+        tool_params: dict[str, dict] | None = None,
     ) -> SessionState:
         """Append a turn and return the updated session state.
 
@@ -180,6 +184,7 @@ class MemoryService:
                 content=content,
                 tools_called=list(tools_called or []),
                 tool_results=safe_results,
+                tool_params=dict(tool_params or {}),
             )
             state.turns.append(turn)
             state.turns_since_summary += 1
@@ -271,10 +276,11 @@ class MemoryService:
     def retrieve_memory(
         self, session_id: str, query: str, *, limit: int = 3
     ) -> list[MemoryItem]:
-        """Retrieve relevant memory items using simple keyword matching.
+        """Retrieve relevant memory items using keyword + n-gram matching.
 
-        No vector DB — uses case-insensitive substring matching against
-        stored content. Returns at most `limit` items, most recent first.
+        Combines unigram overlap scoring with bigram overlap for better recall
+        on paraphrased queries (e.g. "that order" matches "orderId: 12345").
+        Returns at most ``limit`` items, most relevant first.
         """
         with self._lock:
             state = self._sessions.get(session_id)
@@ -282,14 +288,22 @@ class MemoryService:
                 return []
             query_lower = query.lower()
             query_tokens = set(query_lower.split())
+            query_bigrams = _ngrams(query_lower, 2)
             scored: list[tuple[float, MemoryItem]] = []
             for item in state.memory:
                 content_lower = item.content.lower()
-                # Score: fraction of query tokens found in content
-                matches = sum(1 for t in query_tokens if t in content_lower)
-                if matches > 0:
-                    score = matches / len(query_tokens)
-                    scored.append((score, item))
+                # Unigram score: fraction of query tokens found in content
+                uni_matches = sum(1 for t in query_tokens if t in content_lower)
+                uni_score = uni_matches / len(query_tokens) if query_tokens else 0.0
+                # Bigram overlap bonus (boosts partial-phrase matches)
+                bi_score = 0.0
+                if query_bigrams:
+                    content_bigrams = _ngrams(content_lower, 2)
+                    bi_overlap = len(query_bigrams & content_bigrams)
+                    bi_score = bi_overlap / len(query_bigrams) * 0.3  # 30% weight
+                total_score = uni_score + bi_score
+                if total_score > 0:
+                    scored.append((total_score, item))
             scored.sort(key=lambda x: (-x[0], -x[1].created_at))
             return [item for _, item in scored[:limit]]
 
@@ -328,6 +342,11 @@ class MemoryService:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _ngrams(text: str, n: int) -> set[str]:
+    """Return a set of character n-grams from *text* (lowercased)."""
+    return {text[i : i + n] for i in range(len(text) - n + 1)} if len(text) >= n else set()
+
+
 def _compact_tool_results(results: dict[str, Any]) -> dict[str, Any]:
     """Trim tool-result payloads that exceed the storage budget."""
     compacted: dict[str, Any] = {}

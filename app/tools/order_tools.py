@@ -227,7 +227,7 @@ def get_orders_admin_panel(
 
     Args:
         keyword: Free-text search across order fields.
-        status_cd: Filter by status codes (e.g. [1] for Pending, [4] for InTransit, [5] for Completed).
+        status_cd: Filter by status codes (e.g. [1] for Pending, [4] for InTransit, [3] for Completed, [5] for Cancelled, [2] for Active).
                    Multiple values = OR. Omit for all statuses.
         order_type: Filter by order type strings (e.g. ["Quick", "Delivery", "HomeMoving"]).
         pay_cd: Filter by payment method codes.

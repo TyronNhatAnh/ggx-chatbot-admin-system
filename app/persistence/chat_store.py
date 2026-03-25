@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     session_id            TEXT PRIMARY KEY,
     summary               TEXT    NOT NULL DEFAULT '',
     turns_since_summary   INTEGER NOT NULL DEFAULT 0,
+    feature_key           TEXT    DEFAULT NULL,
     updated_at            REAL    NOT NULL
 );
 
@@ -82,6 +83,16 @@ class ChatStore:
 
     def _init_schema(self) -> None:
         self._conn().executescript(_DDL)
+        self._migrate_feature_key()
+
+    def _migrate_feature_key(self) -> None:
+        """Add feature_key column to sessions if missing (upgrading from older schema)."""
+        conn = self._conn()
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "feature_key" not in columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN feature_key TEXT DEFAULT NULL")
+            conn.commit()
+            logger.info("[ChatStore] Migrated sessions table — added feature_key column")
 
     # ------------------------------------------------------------------
     # Session read / write
@@ -91,7 +102,7 @@ class ChatStore:
         """Hydrate a full SessionState from the database, or return None."""
         conn = self._conn()
         row = conn.execute(
-            "SELECT summary, turns_since_summary, updated_at FROM sessions WHERE session_id = ?",
+            "SELECT summary, turns_since_summary, feature_key, updated_at FROM sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         if row is None:
@@ -103,24 +114,26 @@ class ChatStore:
         state = SessionState(session_id=session_id)
         state.summary = row["summary"]
         state.turns_since_summary = row["turns_since_summary"]
+        state.feature_key = row["feature_key"]
         state.updated_at = row["updated_at"]
         state.turns = turns
         state.memory = memory
         return state
 
     def save_session_meta(self, state: SessionState) -> None:
-        """Upsert the session row (summary + counters + timestamp)."""
+        """Upsert the session row (summary + counters + feature_key + timestamp)."""
         conn = self._conn()
         conn.execute(
             """
-            INSERT INTO sessions(session_id, summary, turns_since_summary, updated_at)
-            VALUES(?, ?, ?, ?)
+            INSERT INTO sessions(session_id, summary, turns_since_summary, feature_key, updated_at)
+            VALUES(?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 summary             = excluded.summary,
                 turns_since_summary = excluded.turns_since_summary,
+                feature_key         = excluded.feature_key,
                 updated_at          = excluded.updated_at
             """,
-            (state.session_id, state.summary, state.turns_since_summary, state.updated_at),
+            (state.session_id, state.summary, state.turns_since_summary, state.feature_key, state.updated_at),
         )
         conn.commit()
 

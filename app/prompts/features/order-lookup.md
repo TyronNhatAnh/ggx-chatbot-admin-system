@@ -16,6 +16,12 @@ Report tools (completed/cancelled orders — financial aggregation):
 - get_statement_of_use_driver_summary/detail → driver-level report.
   Use report tools for: total revenue, payment breakdown, statement of use, billing reports.
 
+  Date range rule for report tools when called in the context of a specific order:
+  - ALWAYS derive from_date/to_date from the order's `appointmentAt` field (from get_order_detail result).
+  - Set from_date = appointmentAt date − 1 day, to_date = appointmentAt date + 1 day (YYYY-MM-DD).
+  - Do NOT use today's date or "last N days" as the range — that will miss the order.
+  - Example: if appointmentAt = "2026-03-17T...", use from_date="2026-03-16", to_date="2026-03-18".
+
 Order detail tools:
 - get_order_detail(order_id) → full order detail (GET /admin/orders/{orderId}). Returns status, driver, vehicle, price breakdown, waypoints, goods, payment rows, owner, flags, notes.
   Use when the user asks for any detailed info about a specific order by ID. Prefer over get_orders_admin_panel for single-order lookups.

@@ -8,7 +8,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from google.genai import types
@@ -24,7 +24,7 @@ from app.prompts.builder import build_system_prompt
 from app.tools import ALL_TOOL_FUNCTIONS, TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
-MAX_TOOL_LOOPS = 3      # max Gemini round-trips in tool loop → caps total Gemini calls at MAX_TOOL_LOOPS+1
+MAX_TOOL_LOOPS = 3      # max tool-result round-trips; synthesis fallback is outside this cap (MAX_TOOL_LOOPS+2 worst case)
 # Accept explicit ORD-* IDs or numeric IDs only.
 # Prevent false positives like organization names (e.g. "DHLSC").
 ORDER_ID_PATTERN = re.compile(r"\b(?:ORD-[A-Za-z0-9-]{3,}|\d{5,})\b", re.IGNORECASE)
@@ -548,9 +548,66 @@ def _sanitize_report_tool_args(tool_name: str, tool_args: dict[str, Any], messag
     if _message_has_explicit_date_intent(message):
         return sanitized
 
+    # For follow-up questions about existing report data (e.g. "does that order have etax?",
+    # "show me details"), the message has no fresh report-starting keywords.  In that case
+    # Gemini correctly carries date context from the prior turn — do NOT strip it.
+    # Only strip stale dates when the user is starting a fresh report query (report-intent
+    # keywords present) without any explicit date specification.
+    if not _looks_like_report_query(message):
+        return sanitized
+
+    # For detail drill-down queries (no explicit date), preserve any dates the LLM
+    # carried from prior-turn context (e.g., follow-up to a summary that showed results).
+    # The prior turn's date range is visible in context via _format_turn; stripping here
+    # would force the backend to default to the last 3 days instead of the summary range.
+    if _wants_detail_level(message):
+        return sanitized
+
     for key in ("from_date", "to_date", "fromDate", "toDate"):
         sanitized.pop(key, None)
     return sanitized
+
+
+def _inject_appointment_dates_from_prior_order(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    tool_results_collected: dict[str, Any],
+) -> dict[str, Any]:
+    """When a report tool has no date args AND get_order_detail was called earlier this turn,
+    inject a \u00b11-day window centred on the order's appointmentAt.
+
+    This prevents the backend from defaulting to 'today \u22122 days' when the user asks a
+    per-order follow-up like 'does this order have etax?'
+    """
+    if tool_name not in _REPORT_TOOL_NAMES:
+        return tool_args
+
+    # Only inject when NO date was already supplied by the LLM.
+    has_date = any(tool_args.get(k) for k in ("from_date", "to_date", "fromDate", "toDate"))
+    if has_date:
+        return tool_args
+
+    order_result = tool_results_collected.get("get_order_detail")
+    if not isinstance(order_result, dict):
+        return tool_args
+
+    appointment_raw = order_result.get("appointmentAt")
+    if not appointment_raw:
+        return tool_args
+
+    try:
+        # appointmentAt may be ISO-8601: "2026-03-17T10:00:00+09:00" or bare "2026-03-17"
+        appt_date = date.fromisoformat(str(appointment_raw)[:10])
+        injected = dict(tool_args)
+        injected["from_date"] = (appt_date - timedelta(days=1)).isoformat()
+        injected["to_date"] = (appt_date + timedelta(days=1)).isoformat()
+        logger.info(
+            "[Tool     ] Injected appointment-based date range for %s: %s to %s (appointmentAt=%s)",
+            tool_name, injected["from_date"], injected["to_date"], str(appointment_raw)[:10],
+        )
+        return injected
+    except (ValueError, TypeError):
+        return tool_args
 
 
 def _build_report_note(
@@ -774,7 +831,17 @@ class AIOrchestrator:
         effective_message = f"[Today's date: {date.today().isoformat()}]\n\n{effective_message}"
 
         # Build a feature-specific system prompt for this request.
-        feature_key = _detect_feature_key(message)
+        # Re-use the feature key from the first turn if available; re-detect only
+        # when the session is new or if the current message clearly signals a new domain.
+        detected_key = _detect_feature_key(message)
+        if session.feature_key and not detected_key:
+            # Follow-up message has no strong signal → keep the prior feature context.
+            feature_key = session.feature_key
+        else:
+            feature_key = detected_key
+        if feature_key and not session.feature_key:
+            # First turn with a clear signal → persist for future follow-ups.
+            session.feature_key = feature_key
         system_prompt = build_system_prompt(feature_key=feature_key)
 
         # For report queries: inject a direct tool instruction into the user message.
@@ -855,6 +922,7 @@ class AIOrchestrator:
 
         tools_called: list[str] = []
         tool_results_collected: dict[str, Any] = {}  # Collect tool results for context injection in next turn
+        tool_params_collected: dict[str, dict] = {}  # Collect tool params for date-range context in next turn
         loop = 0
         gemini_calls = 1  # already made the initial call above
         gemini_elapsed_total = first_gemini_elapsed
@@ -996,7 +1064,7 @@ class AIOrchestrator:
                     total_latency_seconds=total_elapsed,
                     fallback_reason="max_tool_loop_synthesized" if synthesis_reply else "max_tool_loop",
                 )
-                self._record_turn_and_summarize(sid, message, reply, tools_called, tool_results_collected)
+                self._record_turn_and_summarize(sid, message, reply, tools_called, tool_results_collected, tool_params_collected)
                 return (reply, tools_called, sid)
 
             logger.info(
@@ -1014,6 +1082,7 @@ class AIOrchestrator:
                 tool_name = fc.name
                 tool_args = dict(fc.args or {})
                 tool_args = _sanitize_report_tool_args(tool_name, tool_args, message)
+                tool_args = _inject_appointment_dates_from_prior_order(tool_name, tool_args, tool_results_collected)
                 call_key = (tool_name, json.dumps(tool_args, sort_keys=True, default=str))
                 if call_key in seen_calls:
                     logger.warning("[Tool     ] skipping duplicate tool call %s(%s)", tool_name, tool_args)
@@ -1163,9 +1232,11 @@ class AIOrchestrator:
                         steering_notes.append(note)
 
                 tools_called.append(tool_name)
-                # Collect result for context injection in next turn
+                # Collect result and params for context injection in next turn
                 if tool_name not in tool_results_collected:
                     tool_results_collected[tool_name] = result
+                if tool_name not in tool_params_collected:
+                    tool_params_collected[tool_name] = tool_args
                 # Note: if same tool is called multiple times in one turn, we keep first result
                 # (usually sufficient for context, and avoids token bloat from repeated data)
 
@@ -1208,7 +1279,7 @@ class AIOrchestrator:
                     total_latency_seconds=total_elapsed,
                     fallback_reason="repetitive_tool_calls",
                 )
-                self._record_turn_and_summarize(sid, message, reply, tools_called)
+                self._record_turn_and_summarize(sid, message, reply, tools_called, tool_params=tool_params_collected)
                 return (reply, tools_called, sid)
 
             # Send all tool results back to Gemini in one message
@@ -1263,7 +1334,7 @@ class AIOrchestrator:
             total_latency_seconds=total_elapsed,
             fallback_reason=None,
         )
-        self._record_turn_and_summarize(sid, message, reply, tools_called, tool_results_collected)
+        self._record_turn_and_summarize(sid, message, reply, tools_called, tool_results_collected, tool_params_collected)
         return (reply, tools_called, sid)
 
     # -- Memory integration helpers ------------------------------------------
@@ -1275,6 +1346,7 @@ class AIOrchestrator:
         assistant_reply: str,
         tools_called: list[str],
         tool_results: dict[str, Any] | None = None,
+        tool_params: dict[str, dict] | None = None,
     ) -> None:
         """Record user + assistant turns, extract entities, and trigger summarization."""
         self._memory.add_turn(
@@ -1286,12 +1358,14 @@ class AIOrchestrator:
             content=assistant_reply,
             tools_called=tools_called,
             tool_results=tool_results,
+            tool_params=tool_params,
         )
 
         # Auto-extract entities from assistant reply
         self._memory.extract_and_store_entities(session_id, assistant_reply)
 
-        # Summarize in background if threshold reached (avoid blocking response)
+        # Summarize synchronously to avoid race conditions where a subsequent
+        # message arrives before the summary is applied, causing stale context.
         if self._memory.needs_summarization(session_id):
             session = self._memory.get_session(session_id)
             if session:
@@ -1301,27 +1375,13 @@ class AIOrchestrator:
                 if len(older_turns) >= 2 and self._memory.begin_summarization(session_id):
                     existing_summary = session.summary
                     logger.info(
-                        "[Memory] Scheduling background summarization of %d older turns for session %s",
+                        "[Memory] Running synchronous summarization of %d older turns for session %s",
                         len(older_turns), session_id,
                     )
-                    thread = threading.Thread(
-                        target=self._summarize_background,
-                        args=(session_id, list(older_turns), existing_summary),
-                        daemon=True,
-                    )
-                    thread.start()
-
-    def _summarize_background(
-        self,
-        session_id: str,
-        older_turns: list,
-        existing_summary: str,
-    ) -> None:
-        """Run summarization off the critical path."""
-        try:
-            new_summary = summarize_conversation(older_turns, existing_summary)
-            self._memory.apply_summary(session_id, new_summary)
-        except Exception:
-            logger.exception("[Memory] Background summarization failed for session %s", session_id)
-        finally:
-            self._memory.end_summarization(session_id)
+                    try:
+                        new_summary = summarize_conversation(list(older_turns), existing_summary)
+                        self._memory.apply_summary(session_id, new_summary)
+                    except Exception:
+                        logger.exception("[Memory] Summarization failed for session %s", session_id)
+                    finally:
+                        self._memory.end_summarization(session_id)

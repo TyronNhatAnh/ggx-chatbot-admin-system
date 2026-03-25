@@ -127,6 +127,13 @@ def get_orchestrator() -> AIOrchestrator:
             if _orchestrator is None:
                 logger.info("[Startup] Initialising AIOrchestrator...")
                 _orchestrator = AIOrchestrator()
+                if not settings.chat_history_db:
+                    logger.warning(
+                        "[Startup] CHAT_HISTORY_DB is not set — conversation history is in-memory only "
+                        "and will be lost after %d seconds of inactivity or on server restart. "
+                        "Set CHAT_HISTORY_DB to a file path (e.g. 'data/chat_history.db') to persist.",
+                        1800,
+                    )
                 logger.info("[Startup] AIOrchestrator ready.")
     return _orchestrator
 

@@ -851,24 +851,65 @@ class OrderServiceClient:
         if not isinstance(entry, dict):
             return None
         slim = {
-            "historyId": entry.get("historyId") or entry.get("id"),
-            "action": entry.get("action") or entry.get("actionType") or entry.get("type"),
+            "historyId": (
+                entry.get("historyId")
+                or entry.get("auditId")
+                or entry.get("id")
+                or entry.get("logId")
+            ),
+            "action": (
+                entry.get("action")
+                or entry.get("actionType")
+                or entry.get("event")
+                or entry.get("eventType")
+                or entry.get("type")
+                or entry.get("operationType")
+            ),
             "changedBy": (
                 entry.get("changedBy")
                 or entry.get("updatedBy")
                 or entry.get("adminEmail")
+                or entry.get("operator")
+                or entry.get("operatorName")
+                or entry.get("operatorId")
                 or entry.get("userId")
+                or entry.get("email")
             ),
             "changedAt": (
                 entry.get("changedAt")
+                or entry.get("timestamp")
+                or entry.get("time")
+                or entry.get("createTime")
                 or entry.get("updatedAt")
                 or entry.get("createdAt")
             ),
-            "before": entry.get("before") or entry.get("previousData") or entry.get("oldData"),
-            "after": entry.get("after") or entry.get("currentData") or entry.get("newData"),
-            "note": entry.get("note") or entry.get("remark") or entry.get("description"),
+            "before": (
+                entry.get("before")
+                or entry.get("previousData")
+                or entry.get("oldData")
+                or entry.get("oldValue")
+                or entry.get("snapshot")
+            ),
+            "after": (
+                entry.get("after")
+                or entry.get("currentData")
+                or entry.get("newData")
+                or entry.get("newValue")
+                or entry.get("changes")
+            ),
+            "note": (
+                entry.get("note")
+                or entry.get("remark")
+                or entry.get("description")
+                or entry.get("comment")
+                or entry.get("message")
+            ),
         }
-        return slim if any(v is not None for v in slim.values()) else None
+        if any(v is not None for v in slim.values()):
+            return slim
+        # Field names didn't match known aliases — pass raw entry through so no data is lost
+        logger.warning("_slim_history_entry: unrecognized fields, passing raw entry. keys=%s", list(entry.keys()))
+        return entry
 
     def get_order_history(
         self,
@@ -890,6 +931,8 @@ class OrderServiceClient:
                 return data
 
             if isinstance(data, list):
+                if data:
+                    logger.debug("get_order_history raw entry sample keys=%s", list(data[0].keys()) if isinstance(data[0], dict) else type(data[0]))
                 entries = [e for e in (self._slim_history_entry(r) for r in data) if e]
                 return {"history": entries, "count": len(entries)}
 
@@ -897,12 +940,19 @@ class OrderServiceClient:
                 rows = (
                     data.get("histories")
                     or data.get("history")
+                    or data.get("audits")
+                    or data.get("auditLogs")
+                    or data.get("records")
+                    or data.get("changeLog")
+                    or data.get("orderHistories")
                     or data.get("rows")
                     or data.get("list")
                     or data.get("items")
                     or data.get("data")
                 )
                 if isinstance(rows, list):
+                    if rows:
+                        logger.debug("get_order_history raw entry sample keys=%s", list(rows[0].keys()) if isinstance(rows[0], dict) else type(rows[0]))
                     entries = [e for e in (self._slim_history_entry(r) for r in rows) if e]
                     meta = data.get("meta") or data.get("pagination") or {}
                     return {

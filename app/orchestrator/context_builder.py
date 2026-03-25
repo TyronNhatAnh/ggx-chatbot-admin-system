@@ -29,8 +29,10 @@ INPUT_TOKEN_BUDGET = int(MAX_CONTEXT_TOKENS * 0.55)       # ~4400
 # Rough chars-per-token ratios.
 # English/ASCII averages ~4 chars per token; CJK (Korean, Chinese, Japanese)
 # averages ~1.5 chars per token due to multi-byte encoding and subword splits.
-CHARS_PER_TOKEN_ASCII = 4
-CHARS_PER_TOKEN_CJK = 1.5
+# We use conservative (lower) values so token estimates are higher — this means
+# we drop context sooner rather than risk exceeding the actual token limit.
+CHARS_PER_TOKEN_ASCII = 3.5
+CHARS_PER_TOKEN_CJK = 1.2
 
 # CJK Unicode ranges for detection
 _CJK_RANGES = (
@@ -144,10 +146,20 @@ _REPORT_TOOL_NAMES = frozenset({
 def _format_turn(turn: Turn) -> str:
     role_label = turn.role.capitalize()
     # For report turns: skip the assistant's formatted table body — only the tool name
-    # matters for continuity. The table can be hundreds of chars and just bloats context.
+    # and date range matter for continuity. The table can be hundreds of chars and just bloats context.
     is_report_turn = bool(turn.tools_called and any(t in _REPORT_TOOL_NAMES for t in turn.tools_called))
     if role_label == "Assistant" and is_report_turn:
-        line = f"- {role_label}: [report result delivered]"
+        # Extract the date range used so the LLM can reuse it in follow-up queries.
+        date_hint = ""
+        for t_name in turn.tools_called:
+            if t_name in _REPORT_TOOL_NAMES:
+                params = turn.tool_params.get(t_name, {})
+                from_d = params.get("from_date") or params.get("fromDate") or ""
+                to_d = params.get("to_date") or params.get("toDate") or ""
+                if from_d or to_d:
+                    date_hint = f" [dates: {from_d} to {to_d}]"
+                    break
+        line = f"- {role_label}: [report result delivered{date_hint}]"
     else:
         line = f"- {role_label}: {turn.content[:500]}"
     if turn.tools_called:
