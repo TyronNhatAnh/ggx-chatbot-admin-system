@@ -29,6 +29,9 @@ class GeminiChatFactory:
     model_name: str
     tools: list
     system_instruction: str
+    temperature: float = 0.0
+    max_output_tokens: int = 4096
+    thinking_config: types.ThinkingConfig | None = None
     cache_manager: "ContextCacheManager | None" = field(default=None, compare=False)
 
     def start_chat(
@@ -48,6 +51,12 @@ class GeminiChatFactory:
         effective_instruction = system_instruction or self.system_instruction
         afc = types.AutomaticFunctionCallingConfig(disable=not enable_automatic_function_calling)
 
+        # NOTE: Do NOT use FunctionCallingConfigMode.ANY at session level.
+        # mode=ANY forces tool calls on EVERY turn (including tool-result turns),
+        # preventing Gemini from producing a final text answer → infinite loop.
+        # temperature=0 + instruction injection is sufficient to get tool calls
+        # on the first turn.
+
         if self.cache_manager is not None:
             cache_name = self.cache_manager.get_cache_name(effective_instruction, feature_key)
             if cache_name:
@@ -55,7 +64,10 @@ class GeminiChatFactory:
                 # stored in the cache — do not pass them again.
                 config = types.GenerateContentConfig(
                     cached_content=cache_name,
+                    temperature=self.temperature,
+                    max_output_tokens=self.max_output_tokens,
                     automatic_function_calling=afc,
+                    thinking_config=self.thinking_config,
                 )
                 return self.client.chats.create(model=self.model_name, config=config)
 
@@ -63,12 +75,22 @@ class GeminiChatFactory:
         config = types.GenerateContentConfig(
             system_instruction=effective_instruction,
             tools=self.tools,
+            temperature=self.temperature,
+            max_output_tokens=self.max_output_tokens,
             automatic_function_calling=afc,
+            thinking_config=self.thinking_config,
         )
         return self.client.chats.create(model=self.model_name, config=config)
 
 
-def create_gemini_model(tools: list, model_name: str | None = None) -> GeminiChatFactory:
+def create_gemini_model(
+    tools: list,
+    model_name: str | None = None,
+    client: genai.Client | None = None,
+    temperature: float = 0.0,
+    max_output_tokens: int = 4096,
+    thinking_config: types.ThinkingConfig | None = None,
+) -> GeminiChatFactory:
     """
     Configure and return a Gemini chat factory with the given tools.
 
@@ -79,12 +101,17 @@ def create_gemini_model(tools: list, model_name: str | None = None) -> GeminiCha
     Args:
         tools: List of Python callables to register as tools for the model.
         model_name: Override the model name from settings (used for the Pro factory).
+        client: Shared genai.Client instance. Created if not provided.
+        temperature: Sampling temperature (0 = deterministic).
+        max_output_tokens: Maximum tokens in the response.
+        thinking_config: Optional thinking/reasoning config for the model.
 
     Returns:
         A configured GeminiChatFactory ready to start chat sessions.
     """
     resolved_model = model_name or settings.model_name
-    client = create_vertex_client()
+    if client is None:
+        client = create_vertex_client()
 
     logger.info("[GeminiClient] Configured model: %s", resolved_model)
 
@@ -101,5 +128,8 @@ def create_gemini_model(tools: list, model_name: str | None = None) -> GeminiCha
         model_name=resolved_model,
         tools=tools,
         system_instruction=build_system_prompt(),
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        thinking_config=thinking_config,
         cache_manager=cache_manager,
     )

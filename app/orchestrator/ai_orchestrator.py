@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import json
 import logging
 import re
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
 from datetime import date
@@ -11,7 +14,8 @@ from typing import Any
 from google.genai import types
 
 from app.config import settings
-from app.llm.gemini_client import create_gemini_model
+from app.llm.gemini_client import GeminiChatFactory, create_gemini_model
+from app.llm.vertex_credentials import create_vertex_client
 from app.orchestrator.context_builder import build_context
 from app.orchestrator.context_store import ConversationState
 from app.orchestrator.memory_service import MemoryService
@@ -25,6 +29,34 @@ MAX_TOOL_LOOPS = 3      # max Gemini round-trips in tool loop → caps total Gem
 # Prevent false positives like organization names (e.g. "DHLSC").
 ORDER_ID_PATTERN = re.compile(r"\b(?:ORD-[A-Za-z0-9-]{3,}|\d{5,})\b", re.IGNORECASE)
 
+# Pro model only handles report-summary and knowledge-code.
+# Give it only the tools it needs to reduce schema tokens (~5k → ~1.5k).
+_PRO_TOOL_NAMES: frozenset[str] = frozenset({
+    # report tools
+    "get_statement_of_use_summary",
+    "get_statement_of_use_detail",
+    "get_statement_of_use_driver_summary",
+    "get_statement_of_use_driver_detail",
+    # org lookup (for report filtering)
+    "search_organizations",
+    "get_organization_by_id",
+    # knowledge tools
+    "lookup_enum",
+    "explain_status",
+    "trace_service_flow",
+    "get_struct_definition",
+    "search_codebase",
+    "traverse_graph",
+    "find_api_consumers",
+    "trace_full_stack",
+    "get_knowledge_stats",
+    # docs tools (used by knowledge-code)
+    "list_available_docs",
+    "search_endpoints",
+    "get_handler_context",
+})
+_PRO_TOOLS: list = [fn for fn in ALL_TOOL_FUNCTIONS if fn.__name__ in _PRO_TOOL_NAMES]
+
 _fallback_counters = {
     "max_tool_loop": 0,
     "repetitive_tool_calls": 0,
@@ -32,6 +64,114 @@ _fallback_counters = {
 _fallback_counter_lock = threading.Lock()
 # Markers we inject ourselves; strip them from user input to prevent prompt injection.
 _INJECTION_PATTERN = re.compile(r"\[\s*(?:Instruction|Today's date)\s*:", re.IGNORECASE)
+
+# Detect leaked Gemini thinking/reasoning in the final response.
+# These patterns match internal chain-of-thought that should never reach users.
+_THINKING_LEAK_PATTERN = re.compile(
+    r"(?:"
+    r"(?:^|\n)\s*(?:"
+    r"Step \d+"
+    r"|Wait,"
+    r"|I'll call"
+    r"|I should"
+    r"|I need to"
+    r"|Let me"
+    r"|The user is asking"
+    r"|The user's"
+    r"|Just map"
+    r"|Map them"
+    r"|Now I"
+    r"|I will"
+    r"|I can"
+    r"|I'll"
+    r"|First,?"
+    r"|Next,?"
+    r"|So,?"
+    r")\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Detect leaked steering instructions echoed back in the response.
+# These are phrases we inject as directives — they should never appear in user output.
+_STEERING_LEAK_PATTERN = re.compile(
+    r"(?:"
+    r"Present these rows as a table"
+    r"|Do NOT reason about column indices"
+    r"|Do NOT call .+ tool"
+    r"|AMBIGUITY WARNING"
+    r"|Do NOT re-call this report tool"
+    r"|Synthesize the final answer"
+    r"|You already called"
+    r"|Filter rows by matching organizationName"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_response(text: str) -> str:
+    """Strip leaked internal reasoning from the final user-facing response.
+
+    Gemini thinking models may leak chain-of-thought text into the response.
+    This catches patterns like repeated "Step N: …" / "I'll call …" blocks
+    that are clearly internal reasoning, not an answer.  Also catches
+    echoed/parroted steering instructions.
+    """
+    if not text:
+        return text
+
+    lines = text.split("\n")
+
+    # --- 1. Detect repeated identical lines (echo/parrot pattern) ----------
+    # If any single non-empty line repeats >= 3 times, the entire response is
+    # likely a model repetition loop.  Strip those lines and try to salvage.
+    line_counts = Counter(ln.strip() for ln in lines if ln.strip())
+    repeated = {ln for ln, cnt in line_counts.items() if cnt >= 3}
+    if repeated:
+        logger.warning(
+            "[Sanitize ] Detected %d repeated line(s) in response (max count=%d). Stripping.",
+            len(repeated), max(line_counts[ln] for ln in repeated),
+        )
+        clean = [ln for ln in lines if ln.strip() not in repeated]
+        salvaged = "\n".join(clean).strip()
+        if salvaged and len(salvaged) > 20:
+            return salvaged
+        return ""  # empty → caller triggers synthesis fallback
+
+    # --- 2. Detect leaked steering instructions ---------------------------
+    steering_lines = sum(1 for ln in lines if _STEERING_LEAK_PATTERN.search(ln))
+    if steering_lines >= 2 and steering_lines > len(lines) * 0.3:
+        logger.warning(
+            "[Sanitize ] Detected leaked steering instructions in response (%d/%d lines). Stripping.",
+            steering_lines, len(lines),
+        )
+        clean = [ln for ln in lines if not _STEERING_LEAK_PATTERN.search(ln)]
+        salvaged = "\n".join(clean).strip()
+        if salvaged and len(salvaged) > 20:
+            return salvaged
+        return ""  # empty → caller triggers synthesis fallback
+
+    # --- 3. Detect leaked thinking/reasoning (chain-of-thought) -----------
+    thinking_lines = sum(1 for ln in lines if _THINKING_LEAK_PATTERN.search(ln))
+    if thinking_lines >= 4 and thinking_lines > len(lines) * 0.3:
+        logger.warning(
+            "[Sanitize ] Detected leaked thinking in response (%d/%d lines). Stripping.",
+            thinking_lines, len(lines),
+        )
+        # Try to salvage any non-thinking lines at the start/end
+        clean = []
+        for ln in lines:
+            if _THINKING_LEAK_PATTERN.search(ln):
+                break
+            clean.append(ln)
+        salvaged = "\n".join(clean).strip()
+        if salvaged and len(salvaged) > 20:
+            return salvaged
+        return (
+            "I processed your request but encountered an internal error formatting the response. "
+            "Please try again."
+        )
+    return text
 
 
 def _sanitize_user_message(message: str) -> str:
@@ -50,14 +190,30 @@ def _response_parts(response: types.GenerateContentResponse) -> list[types.Part]
 
 
 def _response_text(response: types.GenerateContentResponse) -> str:
-    """Extract plain text response with a safe fallback."""
-    if response.text:
-        return response.text
+    """Extract plain text response, always filtering thought parts.
+
+    Never trust ``response.text`` alone — some SDK versions / model
+    combinations include ``thought``-marked parts in that property.
+    Iterate explicitly and exclude any part flagged as thinking.
+    """
     texts: list[str] = []
     for part in _response_parts(response):
-        if part.text:
+        if part.text and not getattr(part, "thought", False):
             texts.append(part.text)
-    return "\n".join(texts).strip()
+    result = "\n".join(texts).strip()
+    if result:
+        return result
+    # Fallback 1 — try SDK property in case parts structure is unexpected
+    sdk_text = (response.text or "").strip()
+    if sdk_text:
+        return sdk_text
+    # Fallback 2 — last resort: use thought parts so _sanitize_response can
+    # attempt salvage rather than returning a silent empty string.
+    thought_texts: list[str] = []
+    for part in _response_parts(response):
+        if part.text and getattr(part, "thought", False):
+            thought_texts.append(part.text)
+    return "\n".join(thought_texts).strip()
 
 
 def _trim_text(value: str, limit: int) -> str:
@@ -246,6 +402,28 @@ _DETAIL_INTENT_KEYWORDS = (
     "건별",
 )
 
+_DRIVER_REPORT_KEYWORDS = (
+    # English — individual words and phrases
+    "driver",
+    # Korean
+    "기사",
+    "기사 보고서",
+    "기사 리포트",
+    "기사측",
+)
+
+_CUSTOMER_REPORT_KEYWORDS = (
+    # English
+    "customer",
+    "client",
+    "user order",
+    "customer order",
+    # Korean
+    "고객",
+    "사용",
+    "이용",
+)
+
 _SUMMARY_TOOL_NAMES = {
     "get_statement_of_use_summary",
     "get_statement_of_use_driver_summary",
@@ -316,6 +494,22 @@ def _wants_detail_level(message: str) -> bool:
     return any(kw in normalized for kw in _DETAIL_INTENT_KEYWORDS)
 
 
+def _wants_driver_report(message: str) -> bool:
+    """True when the user's message explicitly targets driver-side report data."""
+    normalized = (message or "").lower().strip()
+    if not normalized:
+        return False
+    return any(kw in normalized for kw in _DRIVER_REPORT_KEYWORDS)
+
+
+def _wants_customer_report(message: str) -> bool:
+    """True when the user's message explicitly targets customer-side report data."""
+    normalized = (message or "").lower().strip()
+    if not normalized:
+        return False
+    return any(kw in normalized for kw in _CUSTOMER_REPORT_KEYWORDS)
+
+
 def _message_has_explicit_date_intent(message: str) -> bool:
     """True when the current user message explicitly specifies a date/time filter."""
     normalized = (message or "").lower().strip()
@@ -336,13 +530,24 @@ def _sanitize_report_tool_args(tool_name: str, tool_args: dict[str, Any], messag
 
     This prevents Gemini from carrying old date ranges from prior context and
     lets the service client apply dynamic defaults (last 3 days from today).
+
+    Also strips the ``pay`` param when it contains all known payment types
+    (functionally identical to omitting it, but costs an unnecessary query-string).
     """
     if tool_name not in _REPORT_TOOL_NAMES:
         return tool_args
-    if _message_has_explicit_date_intent(message):
-        return tool_args
 
     sanitized = dict(tool_args)
+
+    # Strip pay param when it explicitly lists all types (equivalent to omitting it).
+    _ALL_PAY_TYPES = {"brandpay", "card", "cash", "credit", "point"}
+    pay_val = sanitized.get("pay")
+    if isinstance(pay_val, list) and set(v.lower() for v in pay_val) >= _ALL_PAY_TYPES:
+        sanitized.pop("pay", None)
+
+    if _message_has_explicit_date_intent(message):
+        return sanitized
+
     for key in ("from_date", "to_date", "fromDate", "toDate"):
         sanitized.pop(key, None)
     return sanitized
@@ -409,7 +614,7 @@ def _build_report_note(
         )
 
     parts = [
-        "Answer from these rows ONLY. Apply entity-resolution and answer-grounding rules.",
+        "Present these rows as a table NOW. Do NOT reason about column indices in your response.",
     ]
 
     # If search_organizations was called but report was not filtered by org_id,
@@ -492,16 +697,36 @@ class AIOrchestrator:
     """
 
     def __init__(self) -> None:
-        # Build model factories once at startup — safe to reuse across requests.
-        logger.info("[Orchestrator] Loading Flash model (%s) with %d tools...", settings.model_name, len(ALL_TOOL_FUNCTIONS))
-        self._model = create_gemini_model(ALL_TOOL_FUNCTIONS)
+        # Shared Vertex AI client — single auth session for both models.
+        shared_client = create_vertex_client()
 
-        # Optional Pro model for complex feature keys (report-summary, knowledge-code).
+        # Flash model — low latency, all 53 tools, deterministic.
+        # Cap thinking budget to prevent internal reasoning from dominating output.
+        logger.info("[Orchestrator] Loading Flash model (%s) with %d tools...", settings.model_name, len(ALL_TOOL_FUNCTIONS))
+        self._model = create_gemini_model(
+            ALL_TOOL_FUNCTIONS,
+            client=shared_client,
+            temperature=0.0,
+            max_output_tokens=4096,
+            thinking_config=types.ThinkingConfig(include_thoughts=False, thinking_budget=0),
+        )
+
+        # Pro model — deeper reasoning, scoped tool set, thinking enabled.
         # Falls back to Flash when pro_model_name is not configured.
         self._pro_model: "GeminiChatFactory | None" = None
         if settings.pro_model_name:
-            logger.info("[Orchestrator] Loading Pro model (%s)...", settings.pro_model_name)
-            self._pro_model = create_gemini_model(ALL_TOOL_FUNCTIONS, model_name=settings.pro_model_name)
+            logger.info(
+                "[Orchestrator] Loading Pro model (%s) with %d scoped tools...",
+                settings.pro_model_name, len(_PRO_TOOLS),
+            )
+            self._pro_model = create_gemini_model(
+                _PRO_TOOLS,
+                model_name=settings.pro_model_name,
+                client=shared_client,
+                temperature=0.0,
+                max_output_tokens=8192,
+                thinking_config=types.ThinkingConfig(include_thoughts=False, thinking_budget=-1),
+            )
             logger.info("[Orchestrator] Pro model ready. Dual-model routing enabled.")
 
         store = None
@@ -556,26 +781,64 @@ class AIOrchestrator:
         # This prevents the costly pattern of: Gemini answers text → retry call → lookup_enum call → report call.
         # By hinting upfront, Gemini calls the right report tool on the very first try.
         if feature_key == "report-summary":
-            if _wants_detail_level(message):
-                effective_message += (
-                    "\n\n[Instruction: Call get_statement_of_use_detail immediately. "
-                    "pay values: cash, credit, card, point, brandpay — omit pay to include all types. "
-                    "Do not call lookup_enum or any other tool first.]"
-                )
+            is_driver = _wants_driver_report(message)
+            is_customer = _wants_customer_report(message)
+            is_detail = _wants_detail_level(message)
+            if is_driver and not is_customer:
+                # Driver-only signal
+                if is_detail:
+                    effective_message += (
+                        "\n\n[Instruction: Call get_statement_of_use_driver_detail immediately. "
+                        "etax_status=14 to include all. Do NOT call customer tools. "
+                        "Do not call lookup_enum or any other tool first.]"
+                    )
+                else:
+                    effective_message += (
+                        "\n\n[Instruction: Call get_statement_of_use_driver_summary immediately. "
+                        "etax_status=14 to include all. Do NOT call customer tools. "
+                        "Do not call lookup_enum or any other tool first.]"
+                    )
+            elif is_customer and not is_driver:
+                # Customer-only signal
+                if is_detail:
+                    effective_message += (
+                        "\n\n[Instruction: Call get_statement_of_use_detail immediately. "
+                        "Omit pay param to include all types. Do NOT call driver tools. "
+                        "Do not call lookup_enum or any other tool first.]"
+                    )
+                else:
+                    effective_message += (
+                        "\n\n[Instruction: Call get_statement_of_use_summary immediately. "
+                        "Omit pay param to include all types. Do NOT call driver tools. "
+                        "Do not call lookup_enum or any other tool first.]"
+                    )
+            elif is_customer and is_driver:
+                # Both signals explicitly present
+                if is_detail:
+                    effective_message += (
+                        "\n\n[Instruction: Call get_statement_of_use_detail AND "
+                        "get_statement_of_use_driver_detail. etax_status=14. "
+                        "Omit pay param. Do not call lookup_enum first.]"
+                    )
+                else:
+                    effective_message += (
+                        "\n\n[Instruction: Call get_statement_of_use_summary AND "
+                        "get_statement_of_use_driver_summary. etax_status=14. "
+                        "Omit pay param. Do not call lookup_enum first.]"
+                    )
             else:
+                # Ambiguous — no explicit customer/driver signal. Default to both.
                 effective_message += (
-                    "\n\n[Instruction: Call get_statement_of_use_summary immediately. "
-                    "pay values: cash, credit, card, point, brandpay — omit pay to include all types. "
-                    "Do not call lookup_enum or any other tool first.]"
+                    "\n\n[Instruction: This report query has no customer/driver signal. "
+                    "Call BOTH get_statement_of_use_summary (customer) AND "
+                    "get_statement_of_use_driver_summary (etax_status=14, all statuses) "
+                    "for the requested date range. Present results as two sections: "
+                    "Customer Report and Driver Report. Do not call lookup_enum first.]"
                 )
 
         # A fresh session per request keeps state isolated between users.
-        # Route to Pro model for features that benefit from deeper reasoning.
-        active_model = (
-            self._pro_model
-            if self._pro_model and feature_key in ("report-summary", "knowledge-code")
-            else self._model
-        )
+        # Pro routing disabled — Flash handles all features for now.
+        active_model = self._model
         logger.info("[Model    ] Using %s for feature_key=%s", active_model.model_name, feature_key)
         chat_session = active_model.start_chat(
             enable_automatic_function_calling=False,
@@ -629,19 +892,41 @@ class AIOrchestrator:
                     )
                     gemini_calls += 1
                     t = time.perf_counter()
-                    if _wants_detail_level(message):
-                        retry_msg = (
-                            "This is a detail-level report query. Call get_statement_of_use_detail IMMEDIATELY "
-                            "(NOT summary, NOT lookup_enum, NOT any other tool first). "
-                            "Valid pay values: cash, credit, card, point, brandpay — use directly, do not look them up. "
-                            "Omit pay to include all types."
-                        )
+                    is_driver = _wants_driver_report(message)
+                    is_customer = _wants_customer_report(message)
+                    is_detail = _wants_detail_level(message)
+                    if is_driver and not is_customer:
+                        if is_detail:
+                            retry_msg = (
+                                "This is a driver detail-level report query. "
+                                "Call get_statement_of_use_driver_detail IMMEDIATELY (etax_status=14 for all). "
+                                "Do NOT call customer tools or lookup_enum."
+                            )
+                        else:
+                            retry_msg = (
+                                "This is a driver report query. "
+                                "Call get_statement_of_use_driver_summary IMMEDIATELY (etax_status=14 for all). "
+                                "Do NOT call customer tools or lookup_enum."
+                            )
+                    elif is_customer and not is_driver:
+                        if is_detail:
+                            retry_msg = (
+                                "This is a customer detail-level report query. "
+                                "Call get_statement_of_use_detail IMMEDIATELY. "
+                                "Omit pay to include all types. Do NOT call driver tools or lookup_enum."
+                            )
+                        else:
+                            retry_msg = (
+                                "This is a customer report query. "
+                                "Call get_statement_of_use_summary IMMEDIATELY. "
+                                "Omit pay to include all types. Do NOT call driver tools or lookup_enum."
+                            )
                     else:
                         retry_msg = (
-                            "This is a report query. Call get_statement_of_use_summary IMMEDIATELY. "
-                            "Do NOT call lookup_enum, search_codebase, or any other tool first. "
-                            "Valid pay values: cash, credit, card, point, brandpay — use directly, do not look them up. "
-                            "Omit pay to include all types. Do not answer from memory."
+                            "This is a report query with no customer/driver signal. "
+                            "Call BOTH get_statement_of_use_summary AND "
+                            "get_statement_of_use_driver_summary (etax_status=14) for the requested date range. "
+                            "Present as two sections. Do NOT call lookup_enum first."
                         )
                     response = chat_session.send_message(retry_msg)
                     gemini_elapsed = time.perf_counter() - t
@@ -673,7 +958,7 @@ class AIOrchestrator:
                 synthesis_reply = None
 
                 # 1. Check if the current response already contains text alongside tool calls
-                partial_text = _response_text(response)
+                partial_text = _sanitize_response(_response_text(response))
                 if partial_text and len(partial_text) > 20:
                     synthesis_reply = partial_text
                     logger.info("[Step %d  ] Using partial text from last response (%d chars)", loop, len(partial_text))
@@ -693,7 +978,7 @@ class AIOrchestrator:
                         synth_elapsed = time.perf_counter() - t
                         gemini_elapsed_total += synth_elapsed
                         logger.info("[Step %d  ] Synthesis response  elapsed=%.3fs", loop, synth_elapsed)
-                        synthesis_reply = _response_text(synthesis_response)
+                        synthesis_reply = _sanitize_response(_response_text(synthesis_response))
                     except Exception as e:
                         logger.warning("[Step %d  ] Synthesis call failed: %s", loop, e)
 
@@ -735,6 +1020,27 @@ class AIOrchestrator:
                     continue
                 seen_calls.add(call_key)
                 dedup_calls.append((tool_name, tool_args))
+
+            # Scope guard: block report tools that conflict with user intent.
+            # If user said "driver" only, suppress customer report tools and vice versa.
+            if feature_key == "report-summary":
+                _is_driver = _wants_driver_report(message)
+                _is_customer = _wants_customer_report(message)
+                _customer_tools = {"get_statement_of_use_summary", "get_statement_of_use_detail"}
+                _driver_tools = {"get_statement_of_use_driver_summary", "get_statement_of_use_driver_detail"}
+                blocked: set[str] = set()
+                if _is_driver and not _is_customer:
+                    blocked = _customer_tools
+                elif _is_customer and not _is_driver:
+                    blocked = _driver_tools
+                if blocked:
+                    before = len(dedup_calls)
+                    dedup_calls = [(n, a) for n, a in dedup_calls if n not in blocked]
+                    if len(dedup_calls) < before:
+                        logger.info(
+                            "[Tool     ] Scope guard blocked %d out-of-scope tool(s): %s",
+                            before - len(dedup_calls), blocked & {n for n, _ in dedup_calls} or blocked,
+                        )
 
             # Phase 1: execute all pending tools (no cache)
             pending_calls: list[tuple[str, dict]] = list(dedup_calls)
@@ -872,9 +1178,17 @@ class AIOrchestrator:
 
             # Append steering instructions as a dedicated text Part — clearly separate
             # from tool result data so the LLM reads them as directives, not as data.
+            # Deduplicate identical notes (e.g. multiple report tools may produce the
+            # same "present as table" instruction).
             if steering_notes and tool_response_parts:
+                seen: set[str] = set()
+                unique_notes: list[str] = []
+                for note in steering_notes:
+                    if note not in seen:
+                        seen.add(note)
+                        unique_notes.append(note)
                 tool_response_parts.append(
-                    types.Part.from_text(text="\n\n".join(steering_notes))
+                    types.Part.from_text(text="\n\n".join(unique_notes))
                 )
 
             if not tool_response_parts:
@@ -899,9 +1213,11 @@ class AIOrchestrator:
 
             # Send all tool results back to Gemini in one message
             gemini_calls += 1
+            n_tool_results = len(tools_called) - (len(tools_called) - len([p for p in tool_response_parts if not p.text]))
             logger.info(
-                "[Step %d  ] Sending %d tool result(s) back to Gemini...  (gemini_calls so far: %d/%d)",
-                loop, len(tool_response_parts), gemini_calls, MAX_TOOL_LOOPS + 1,
+                "[Step %d  ] Sending %d tool result(s)%s back to Gemini...  (gemini_calls so far: %d/%d)",
+                loop, len(tools_called), f" + {len(steering_notes)} steering note(s)" if steering_notes else "",
+                gemini_calls, MAX_TOOL_LOOPS + 1,
             )
             t = time.perf_counter()
             response = chat_session.send_message(tool_response_parts)
@@ -909,7 +1225,33 @@ class AIOrchestrator:
             gemini_elapsed_total += gemini_elapsed
             logger.info("[Step %d  ] Gemini responded  elapsed=%.3fs", loop, gemini_elapsed)
 
-        reply = _response_text(response)
+        reply = _sanitize_response(_response_text(response))
+        if not reply:
+            # The thinking model produced only thought-parts with no visible text.
+            # Send one forced-synthesis prompt to get a proper answer.
+            logger.warning(
+                "[Reply    ] Empty reply after sanitization (likely all-thought response). "
+                "Sending synthesis prompt..."
+            )
+            try:
+                gemini_calls += 1
+                t = time.perf_counter()
+                synth_response = chat_session.send_message(
+                    "Please write your final answer now based on the tool results you already received. "
+                    "Do NOT call any more tools. Provide a clear, concise response for the admin."
+                )
+                synth_elapsed = time.perf_counter() - t
+                gemini_elapsed_total += synth_elapsed
+                logger.info("[Reply    ] Synthesis response  elapsed=%.3fs", synth_elapsed)
+                reply = _sanitize_response(_response_text(synth_response))
+            except Exception as exc:
+                logger.warning("[Reply    ] Synthesis call failed: %s", exc)
+            if not reply:
+                logger.warning("[Reply    ] Still empty after synthesis — returning error fallback.")
+                reply = (
+                    "I processed your request but was unable to generate a response. "
+                    "Please try again."
+                )
 
         total_elapsed = time.perf_counter() - total_start
         _log_structured_metrics(
