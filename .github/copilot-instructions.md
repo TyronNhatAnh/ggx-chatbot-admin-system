@@ -8,10 +8,13 @@ Read-only logistics admin assistant (Python 3.11). Never add create/update/delet
 |---|---|---|
 | HTTP | `app/main.py` | Transport, auth guard, rate limit |
 | Orchestrator | `app/orchestrator/` | Prompt routing, tool loop, memory, summarization |
-| LLM | `app/llm/gemini_client.py` | Gemini API calls only |
+| LLM | `app/llm/` | Gemini API calls, Vertex AI context cache, credentials |
 | Tools | `app/tools/` | Thin schema wrappers only |
 | Services | `app/services/` | External API calls, auth, payload normalization |
 | Prompts | `app/prompts/` | Prompt assembly (`builder.py`) |
+| Persistence | `app/persistence/` | Optional SQLite session store (`CHAT_HISTORY_DB`) |
+| Schemas | `app/schemas/` | Pydantic request/response models |
+| Observability | `app/observability/` | Request ID context variable |
 | Indexer | `indexer/` | Offline codebase indexer — do not modify for runtime bugs |
 
 **Rules:** Never bypass orchestrator from routes. No business logic in tools/routes.
@@ -20,14 +23,18 @@ Read-only logistics admin assistant (Python 3.11). Never add create/update/delet
 
 - `GET /health` — liveness probe
 - `POST /chat` — request: `message` (required), `conversation_id` (optional); response: `reply`, `tools_called`, `conversation_id`
+- `GET /history` — paginated conversation list; query params: `page` (default 1), `page_size` (default 20, max 100)
+- `GET /history/{conversation_id}` — full turn history, summary, and long-term memory for a session
 - Auth: `X-API-Key` or `Authorization: Bearer <token>` header (when `CHAT_AUTH_ENABLED=true`)
-- Errors: `422` validation · `429` rate-limit/quota · `500` internal
+- Errors: `401` unauthorized · `422` validation · `429` rate-limit/quota · `500` internal
 
 ## Orchestrator
 
 - `MAX_TOOL_LOOPS = 3` — do not change
 - Suppress duplicate tool calls per turn; provide fallback reply on unproductive loops
-- Conversation context: in-memory TTL, process-local (`context_store.py`)
+- Conversation context: in-memory TTL 30 min (`SESSION_TTL_SECONDS = 1800`), process-local (`context_store.py`)
+- Optionally persisted to SQLite when `CHAT_HISTORY_DB` is set (`persistence/chat_store.py`)
+- Token-budgeted context assembly with CJK-aware estimation (`context_builder.py`)
 - 3-layer memory: `memory_service.py` (FACT / ENTITY / DECISION)
 - Conversation summarization: `summarizer.py`
 
@@ -36,6 +43,7 @@ Read-only logistics admin assistant (Python 3.11). Never add create/update/delet
 - Entry point: `app/prompts/builder.py`
 - Always loaded: `base/persona.md`, `base/safety.md`, `base/output-format.md`
 - Feature prompts in `app/prompts/features/`: `order-lookup` · `report-summary` · `driver-tracking` · `user-admin` · `common-data` · `knowledge-code`
+- Few-shot examples in `app/prompts/few-shots/`: `order-lookup`
 - `app/orchestrator/prompt_builder.py` is a thin re-export only
 
 ## Tools
