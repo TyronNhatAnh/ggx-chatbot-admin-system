@@ -139,7 +139,6 @@ _REPORT_TOOL_NAMES = frozenset({
     "get_statement_of_use_detail",
     "get_statement_of_use_driver_summary",
     "get_statement_of_use_driver_detail",
-    "get_b2b_tracking_service_detail",
 })
 
 

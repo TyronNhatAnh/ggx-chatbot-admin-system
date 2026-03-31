@@ -5,6 +5,7 @@ file path (e.g. ``data/chat_history.db``).  When the value is empty (default)
 the store is never instantiated and the application behaves exactly as before.
 """
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     summary               TEXT    NOT NULL DEFAULT '',
     turns_since_summary   INTEGER NOT NULL DEFAULT 0,
     feature_key           TEXT    DEFAULT NULL,
+    report_scope          TEXT    DEFAULT NULL,
     updated_at            REAL    NOT NULL
 );
 
@@ -93,6 +95,10 @@ class ChatStore:
             conn.execute("ALTER TABLE sessions ADD COLUMN feature_key TEXT DEFAULT NULL")
             conn.commit()
             logger.info("[ChatStore] Migrated sessions table — added feature_key column")
+        if "report_scope" not in columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN report_scope TEXT DEFAULT NULL")
+            conn.commit()
+            logger.info("[ChatStore] Migrated sessions table — added report_scope column")
 
     # ------------------------------------------------------------------
     # Session read / write
@@ -102,7 +108,7 @@ class ChatStore:
         """Hydrate a full SessionState from the database, or return None."""
         conn = self._conn()
         row = conn.execute(
-            "SELECT summary, turns_since_summary, feature_key, updated_at FROM sessions WHERE session_id = ?",
+            "SELECT summary, turns_since_summary, feature_key, report_scope, updated_at FROM sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         if row is None:
@@ -115,30 +121,40 @@ class ChatStore:
         state.summary = row["summary"]
         state.turns_since_summary = row["turns_since_summary"]
         state.feature_key = row["feature_key"]
+        state.report_scope = row["report_scope"]
         state.updated_at = row["updated_at"]
         state.turns = turns
         state.memory = memory
         return state
 
     def save_session_meta(self, state: SessionState) -> None:
-        """Upsert the session row (summary + counters + feature_key + timestamp)."""
+        """Upsert the session row (summary + counters + feature_key + report_scope + timestamp)."""
         conn = self._conn()
         conn.execute(
             """
-            INSERT INTO sessions(session_id, summary, turns_since_summary, feature_key, updated_at)
-            VALUES(?, ?, ?, ?, ?)
+            INSERT INTO sessions(session_id, summary, turns_since_summary, feature_key, report_scope, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 summary             = excluded.summary,
                 turns_since_summary = excluded.turns_since_summary,
                 feature_key         = excluded.feature_key,
+                report_scope        = excluded.report_scope,
                 updated_at          = excluded.updated_at
             """,
-            (state.session_id, state.summary, state.turns_since_summary, state.feature_key, state.updated_at),
+            (state.session_id, state.summary, state.turns_since_summary, state.feature_key, state.report_scope, state.updated_at),
         )
         conn.commit()
 
     def append_turn(self, session_id: str, turn: Turn) -> None:
-        """Persist a single turn; safe to call multiple times (INSERT OR IGNORE)."""
+        """Persist a single turn; idempotent — repeated calls with the same turn are ignored.
+
+        The row ID is derived from (session_id, role, created_at, content prefix) so
+        INSERT OR IGNORE correctly deduplicates if this method is called more than once
+        for the same turn (e.g., on retry after a transient error).
+        """
+        # Stable ID: hash the fields that uniquely identify a turn.
+        id_src = f"{session_id}:{turn.role}:{turn.created_at}:{turn.content[:200]}"
+        turn_id = hashlib.sha256(id_src.encode()).hexdigest()[:32]
         conn = self._conn()
         conn.execute(
             """
@@ -146,7 +162,7 @@ class ChatStore:
             VALUES(?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                str(uuid.uuid4()),
+                turn_id,
                 session_id,
                 turn.role,
                 turn.content,
@@ -179,7 +195,7 @@ class ChatStore:
               AND id NOT IN (
                   SELECT id FROM turns
                   WHERE session_id = ?
-                  ORDER BY created_at DESC
+                  ORDER BY created_at DESC, id DESC
                   LIMIT ?
               )
             """,

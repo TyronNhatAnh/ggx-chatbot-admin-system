@@ -13,6 +13,7 @@ Field names:
 - Do not render raw JSON key names (e.g. `priceBreakdown`, `createdAt`) as prose labels.
   Translate them to readable headers (e.g. "Price Breakdown", "Created At").
   Exception: expose the exact field/key name when the user is asking about data structure, schema, or code.
+  Exception: in report domain responses, keep exact tool key names as table headers (no translation/localization/renaming).
 
 Tables:
 - If a result contains more than 20 rows, display the first 20 and add "… and N more rows" at the bottom.

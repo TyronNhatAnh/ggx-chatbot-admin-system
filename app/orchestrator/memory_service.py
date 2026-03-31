@@ -80,6 +80,8 @@ class SessionState:
     summarization_in_progress: bool = False
     # Detected feature key from the first turn — persists across follow-ups
     feature_key: str | None = None
+    # Report scope from prior turn ("customer", "driver", or "both") — persists for follow-up detail requests
+    report_scope: str | None = None
     # Housekeeping
     updated_at: float = field(default_factory=time.time)
 
@@ -115,25 +117,33 @@ class MemoryService:
 
     def get_or_create(self, session_id: str | None) -> SessionState:
         with self._lock:
-            self._purge_expired()
+            _expired = self._purge_expired()
             sid = (session_id or "").strip()
             if sid and sid in self._sessions:
                 state = self._sessions[sid]
                 state.updated_at = time.time()
-                return state
-            new_id = sid or str(uuid.uuid4())
-            # Try to restore from persistent store before creating a blank session
-            if new_id and self._store is not None:
-                persisted = self._store.load_session(new_id)
-                if persisted is not None:
-                    self._sessions[new_id] = persisted
-                    persisted.updated_at = time.time()
-                    return persisted
-            state = SessionState(session_id=new_id)
-            self._sessions[new_id] = state
-            if self._store is not None:
-                self._store.save_session_meta(state)
-            return state
+                _result = state
+            else:
+                new_id = sid or str(uuid.uuid4())
+                # Try to restore from persistent store before creating a blank session
+                if new_id and self._store is not None:
+                    persisted = self._store.load_session(new_id)
+                    if persisted is not None:
+                        self._sessions[new_id] = persisted
+                        persisted.updated_at = time.time()
+                        _result = persisted
+                    else:
+                        _result = None
+                else:
+                    _result = None
+                if _result is None:
+                    _result = SessionState(session_id=new_id)
+                    self._sessions[new_id] = _result
+                    if self._store is not None:
+                        self._store.save_session_meta(_result)
+        # DB purge runs outside the lock to avoid blocking other threads.
+        self._purge_store(_expired)
+        return _result
 
     def get_session(self, session_id: str) -> SessionState | None:
         with self._lock:
@@ -142,13 +152,16 @@ class MemoryService:
     def list_sessions(self, limit: int = 20, offset: int = 0) -> list["SessionState"]:
         """Return in-memory sessions ordered by most-recently-updated."""
         with self._lock:
-            self._purge_expired()
+            _expired = self._purge_expired()
             sorted_states = sorted(
                 self._sessions.values(),
                 key=lambda s: s.updated_at,
                 reverse=True,
             )
-            return sorted_states[offset : offset + limit]
+            result = sorted_states[offset : offset + limit]
+        # DB purge runs outside the lock to avoid blocking other threads.
+        self._purge_store(_expired)
+        return result
 
     def count_sessions(self) -> int:
         with self._lock:
@@ -326,8 +339,12 @@ class MemoryService:
 
     # -- housekeeping --------------------------------------------------------
 
-    def _purge_expired(self) -> None:
-        """Must be called under lock."""
+    def _purge_expired(self) -> list[str]:
+        """Evict expired sessions from memory. Must be called under lock.
+
+        Returns the list of evicted session IDs so the caller can run slow
+        DB cleanup *outside* the lock.
+        """
         now = time.time()
         expired = [
             sid for sid, s in self._sessions.items()
@@ -335,6 +352,10 @@ class MemoryService:
         ]
         for sid in expired:
             self._sessions.pop(sid, None)
+        return expired
+
+    def _purge_store(self, expired: list[str]) -> None:
+        """Delete expired sessions from the persistent store. Call outside any lock."""
         if expired and self._store is not None:
             self._store.purge_expired_sessions(self._ttl_seconds)
 

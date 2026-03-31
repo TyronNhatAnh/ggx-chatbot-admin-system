@@ -1,3 +1,4 @@
+import hmac
 import logging
 import math
 import re
@@ -84,8 +85,12 @@ class InMemoryFixedWindowRateLimiter:
             while bucket and bucket[0] <= cutoff:
                 bucket.popleft()
 
-            # Evict empty buckets to prevent unbounded memory growth from spoofed IPs.
-            stale_keys = [k for k, q in self._events.items() if not q and k != key]
+            # Evict buckets whose most-recent event has aged out of the window.
+            # This covers spoofed IPs that make one request and never return.
+            stale_keys = [
+                k for k, q in self._events.items()
+                if k != key and (not q or q[-1] <= cutoff)
+            ]
             for k in stale_keys:
                 del self._events[k]
 
@@ -160,7 +165,7 @@ def _require_chat_auth(request: Request) -> None:
         raise HTTPException(status_code=500, detail="Chat authentication is not configured")
 
     provided_key = _extract_chat_api_key(request)
-    if provided_key != expected_key:
+    if not hmac.compare_digest(provided_key.encode(), expected_key.encode()):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 

@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 # API path prefix used by every Order Service endpoint.
 _API_PREFIX = "/api/v1"
+# Report endpoints are table-like and admins often need a wider slice.
+_REPORT_MAX_LIST_RESULTS = 10
 
 
 class OrderServiceClient:
@@ -39,10 +41,13 @@ class OrderServiceClient:
     Never raises to the tool / AI layer.
     """
 
+    _DEFAULT_TIMEOUT = 10.0
+    _REPORT_TIMEOUT = 30.0
+
     def __init__(self) -> None:
         self._base_url: str = settings.order_service_base_url.rstrip("/")
         # Persistent session — reuses TCP connections across tool calls.
-        self._http = httpx.Client(timeout=10.0)
+        self._http = httpx.Client(timeout=self._DEFAULT_TIMEOUT)
 
     # ------------------------------------------------------------------
     # Internal HTTP helpers with optional auth
@@ -56,6 +61,7 @@ class OrderServiceClient:
         params: dict | None = None,
         json_body: dict | None = None,
         requires_auth: bool = True,
+        timeout: float | None = None,
     ) -> dict | list:
         """Issue an HTTP request to ``{base_url}/api/v1{path}``.
 
@@ -77,6 +83,7 @@ class OrderServiceClient:
             headers=headers,
             params=params,
             json=json_body,
+            timeout=timeout,
         )
         logger.info(
             "[HTTP %s] %s  status=%s  elapsed=%.3fs",
@@ -689,8 +696,10 @@ class OrderServiceClient:
 
         normalized["fromDate"] = from_date
         normalized["toDate"] = to_date
-        # driverType is required (binding:"oneof=normalDriver")
-        normalized.setdefault("driverType", "normalDriver")
+        # driverType is required by the backend. Accept caller-supplied value first
+        # (e.g. "externalDriver"), then fall back to "normalDriver".
+        if "driverType" not in normalized:
+            normalized["driverType"] = source.get("driver_type", "normalDriver")
 
         # Normalize orgId
         org_id = source.get("orgId") or source.get("org_id")
@@ -725,16 +734,47 @@ class OrderServiceClient:
 
         return self._clean_query_params(normalized)
 
+    @staticmethod
+    def _shape_preview(value: object, *, max_items: int = 8) -> str:
+        """Return a compact, log-friendly shape preview for debugging API payloads."""
+        if value is None:
+            return "None"
+        if isinstance(value, dict):
+            keys = list(value.keys())[:max_items]
+            return f"dict(keys={keys})"
+        if isinstance(value, list):
+            if not value:
+                return "list(len=0)"
+            first = value[0]
+            if isinstance(first, dict):
+                return f"list(len={len(value)}, first=dict(keys={list(first.keys())[:max_items]}))"
+            if isinstance(first, list):
+                sample = first[:max_items]
+                return f"list(len={len(value)}, first=list(len={len(first)}, sample={sample}))"
+            return f"list(len={len(value)}, first={type(first).__name__}, sample={first!r})"
+        return f"{type(value).__name__}({value!r})"
+
     def _get_report_data(self, path: str, params: dict | None = None) -> dict:
         """Shared GET wrapper for report endpoints (non-download APIs only)."""
         try:
             normalized_params = self._normalize_report_params(params)
-            payload = self._get(path, params=normalized_params)
+            payload = self._request("GET", path, params=normalized_params, timeout=self._REPORT_TIMEOUT)
+
+            logger.info(
+                "[ReportDbg ] %s raw payload shape=%s",
+                path,
+                self._shape_preview(payload),
+            )
 
             # Preserve meta from PagingSuccessResponse before unwrapping.
             meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
 
             data = self._unwrap_success_payload(payload)
+            logger.info(
+                "[ReportDbg ] %s unwrapped data shape=%s",
+                path,
+                self._shape_preview(data),
+            )
             if isinstance(data, dict) and data.get("error"):
                 return data
 
@@ -743,10 +783,36 @@ class OrderServiceClient:
                 return {"rows": [], "count": 0, "total_count": meta.get("totalCount", 0)}
 
             if isinstance(data, list):
-                rows = truncate_list(data)
+                logger.info(
+                    "[ReportDbg ] %s list payload first-row shape=%s",
+                    path,
+                    self._shape_preview(data[:1]),
+                )
+                # API returns rows as positional arrays; zip with header metadata into named dicts.
+                headers: list[str] = (
+                    meta.get("additionalData", {}).get("header")
+                    or meta.get("additionalData", {}).get("headers")
+                    or []
+                )
+                if headers and data and isinstance(data[0], list):
+                    data = [dict(zip(headers, row)) for row in data]
+                    logger.info("[ReportDbg ] %s mapped %d array-rows to dicts using %d headers", path, len(data), len(headers))
+                rows = truncate_list(data, limit=_REPORT_MAX_LIST_RESULTS)
                 return {"rows": rows, "count": len(rows), "total_count": meta.get("totalCount", len(data))}
 
             if isinstance(data, dict):
+                column_meta = (
+                    data.get("columns")
+                    or data.get("headers")
+                    or data.get("fields")
+                    or data.get("columnNames")
+                )
+                if column_meta is not None:
+                    logger.info(
+                        "[ReportDbg ] %s column metadata shape=%s",
+                        path,
+                        self._shape_preview(column_meta),
+                    )
                 rows = (
                     data.get("rows")
                     or data.get("list")
@@ -754,7 +820,12 @@ class OrderServiceClient:
                     or data.get("data")
                 )
                 if isinstance(rows, list):
-                    slim_rows = truncate_list(rows)
+                    logger.info(
+                        "[ReportDbg ] %s extracted rows shape=%s",
+                        path,
+                        self._shape_preview(rows),
+                    )
+                    slim_rows = truncate_list(rows, limit=_REPORT_MAX_LIST_RESULTS)
                     extras = {
                         k: v
                         for k, v in data.items()
@@ -788,11 +859,22 @@ class OrderServiceClient:
         """GET wrapper for driver report endpoints (uses driver-specific param normalization)."""
         try:
             normalized_params = self._normalize_driver_report_params(params)
-            payload = self._get(path, params=normalized_params)
+            payload = self._request("GET", path, params=normalized_params, timeout=self._REPORT_TIMEOUT)
+
+            logger.info(
+                "[ReportDbg ] %s raw payload shape=%s",
+                path,
+                self._shape_preview(payload),
+            )
 
             meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
 
             data = self._unwrap_success_payload(payload)
+            logger.info(
+                "[ReportDbg ] %s unwrapped data shape=%s",
+                path,
+                self._shape_preview(data),
+            )
             if isinstance(data, dict) and data.get("error"):
                 return data
 
@@ -800,10 +882,36 @@ class OrderServiceClient:
                 return {"rows": [], "count": 0, "total_count": meta.get("totalCount", 0)}
 
             if isinstance(data, list):
-                rows = truncate_list(data)
+                logger.info(
+                    "[ReportDbg ] %s list payload first-row shape=%s",
+                    path,
+                    self._shape_preview(data[:1]),
+                )
+                # API returns rows as positional arrays; zip with header metadata into named dicts.
+                headers: list[str] = (
+                    meta.get("additionalData", {}).get("header")
+                    or meta.get("additionalData", {}).get("headers")
+                    or []
+                )
+                if headers and data and isinstance(data[0], list):
+                    data = [dict(zip(headers, row)) for row in data]
+                    logger.info("[ReportDbg ] %s mapped %d array-rows to dicts using %d headers", path, len(data), len(headers))
+                rows = truncate_list(data, limit=_REPORT_MAX_LIST_RESULTS)
                 return {"rows": rows, "count": len(rows), "total_count": meta.get("totalCount", len(data))}
 
             if isinstance(data, dict):
+                column_meta = (
+                    data.get("columns")
+                    or data.get("headers")
+                    or data.get("fields")
+                    or data.get("columnNames")
+                )
+                if column_meta is not None:
+                    logger.info(
+                        "[ReportDbg ] %s column metadata shape=%s",
+                        path,
+                        self._shape_preview(column_meta),
+                    )
                 rows = (
                     data.get("rows")
                     or data.get("list")
@@ -811,7 +919,12 @@ class OrderServiceClient:
                     or data.get("data")
                 )
                 if isinstance(rows, list):
-                    slim_rows = truncate_list(rows)
+                    logger.info(
+                        "[ReportDbg ] %s extracted rows shape=%s",
+                        path,
+                        self._shape_preview(rows),
+                    )
+                    slim_rows = truncate_list(rows, limit=_REPORT_MAX_LIST_RESULTS)
                     extras = {
                         k: v
                         for k, v in data.items()
