@@ -960,63 +960,24 @@ class OrderServiceClient:
 
     @staticmethod
     def _slim_history_entry(entry: dict) -> dict | None:
-        """Compact a single order history row for AI consumption."""
+        """Compact a single order history row for AI consumption.
+
+        Actual response shape from GET /orders/{orderId}/history (OrderHistResponse):
+          ID, OrderRequestID, TypeCD, Priority, Meta, Description,
+          CreatorCD, CreatorUserID, CreatedAt, Status
+        """
         if not isinstance(entry, dict):
             return None
         slim = {
-            "historyId": (
-                entry.get("historyId")
-                or entry.get("auditId")
-                or entry.get("id")
-                or entry.get("logId")
-            ),
-            "action": (
-                entry.get("action")
-                or entry.get("actionType")
-                or entry.get("event")
-                or entry.get("eventType")
-                or entry.get("type")
-                or entry.get("operationType")
-            ),
-            "changedBy": (
-                entry.get("changedBy")
-                or entry.get("updatedBy")
-                or entry.get("adminEmail")
-                or entry.get("operator")
-                or entry.get("operatorName")
-                or entry.get("operatorId")
-                or entry.get("userId")
-                or entry.get("email")
-            ),
-            "changedAt": (
-                entry.get("changedAt")
-                or entry.get("timestamp")
-                or entry.get("time")
-                or entry.get("createTime")
-                or entry.get("updatedAt")
-                or entry.get("createdAt")
-            ),
-            "before": (
-                entry.get("before")
-                or entry.get("previousData")
-                or entry.get("oldData")
-                or entry.get("oldValue")
-                or entry.get("snapshot")
-            ),
-            "after": (
-                entry.get("after")
-                or entry.get("currentData")
-                or entry.get("newData")
-                or entry.get("newValue")
-                or entry.get("changes")
-            ),
-            "note": (
-                entry.get("note")
-                or entry.get("remark")
-                or entry.get("description")
-                or entry.get("comment")
-                or entry.get("message")
-            ),
+            "historyId": entry.get("ID") or entry.get("id") or entry.get("historyId"),
+            "orderRequestId": entry.get("OrderRequestID") or entry.get("orderRequestId"),
+            "typeCode": entry.get("TypeCD") or entry.get("typeCd") or entry.get("type"),
+            "description": entry.get("Description") or entry.get("description") or entry.get("note"),
+            "creatorCode": entry.get("CreatorCD") or entry.get("creatorCd"),
+            "creatorUserId": entry.get("CreatorUserID") or entry.get("creatorUserId"),
+            "createdAt": entry.get("CreatedAt") or entry.get("createdAt"),
+            "status": entry.get("Status") or entry.get("status"),
+            "meta": entry.get("Meta") or entry.get("meta"),
         }
         if any(v is not None for v in slim.values()):
             return slim
@@ -1072,7 +1033,8 @@ class OrderServiceClient:
                         "history": entries,
                         "count": len(entries),
                         "total_count": (
-                            meta.get("totalCount")
+                            meta.get("totalRows")
+                            or meta.get("totalCount")
                             or meta.get("total")
                             or data.get("totalCount")
                             or len(rows)
@@ -1214,11 +1176,9 @@ class OrderServiceClient:
         if source.get("offset") is not None:
             out["pageIndex"] = int(source["offset"])
 
-        # ID filters
+        # Scalar int ID filters (organization/branch now use array filters below)
         _scalar_int = [
             ("order_request_id", "orderRequestId"),
-            ("organization_id", "organizationId"),
-            ("branch_id", "branchId"),
             ("user_id", "userId"),
             ("driver_id", "driverId"),
             ("request_vehicle_pool_id", "requestVehiclePoolId"),
@@ -1232,15 +1192,9 @@ class OrderServiceClient:
                 except (TypeError, ValueError):
                     logger.warning("Invalid %s value %r — ignoring", src_key, val)
 
-        # String filters
+        # String filters (phone/address/org-name text searches removed in commit 243a8c64)
         _scalar_str = [
-            ("external_order_id", "externalOrderId"),
             ("keyword", "keyword"),
-            ("phone_number", "phoneNumber"),
-            ("driver_phone_number", "driverPhoneNumber"),
-            ("organization", "organization"),
-            ("branch", "branch"),
-            ("address", "address"),
             ("sort_by", "sortBy"),
             ("sort_order", "sortOrder"),
         ]
@@ -1249,18 +1203,11 @@ class OrderServiceClient:
             if val is not None and str(val).strip():
                 out[dst_key] = str(val).strip()
 
-        # Date range filters
-        _date_pairs = [
+        # Date range filters — only appointmentFrom/To remain after commit 243a8c64
+        for src_key, dst_key in [
             ("appointment_from", "appointmentFrom"),
             ("appointment_to", "appointmentTo"),
-            ("created_from", "createdFrom"),
-            ("created_to", "createdTo"),
-            ("pickup_from", "pickupFrom"),
-            ("pickup_to", "pickupTo"),
-            ("completed_from", "completedFrom"),
-            ("completed_to", "completedTo"),
-        ]
-        for src_key, dst_key in _date_pairs:
+        ]:
             normalized = self._normalize_date_yyyy_mm_dd(source.get(src_key))
             if normalized:
                 out[dst_key] = normalized
@@ -1284,9 +1231,20 @@ class OrderServiceClient:
             items = val if isinstance(val, list) else [val]
             return [str(i).strip() for i in items if str(i).strip()]
 
+        # Organization/branch array filters (IN / NOT IN conditions)
+        for src_key, dst_key in [
+            ("organization_ids", "organizationIds"),
+            ("not_organization_ids", "notOrganizationIds"),
+            ("branch_ids", "branchIds"),
+            ("not_branch_ids", "notBranchIds"),
+        ]:
+            ids = _to_int_list(source.get(src_key))
+            if ids:
+                out[dst_key] = ids
+
         status_cd = _to_int_list(source.get("status_cd"))
         if status_cd:
-            out["statusCd"] = status_cd
+            out["statusCD"] = status_cd
 
         order_type = _to_str_list(source.get("order_type"))
         if order_type:
@@ -1294,27 +1252,16 @@ class OrderServiceClient:
 
         pay_cd = _to_int_list(source.get("pay_cd"))
         if pay_cd:
-            out["payCd"] = pay_cd
+            out["payCD"] = pay_cd
 
         group_type_cd = _to_int_list(source.get("group_type_cd"))
         if group_type_cd:
-            out["groupTypeCd"] = group_type_cd
-
-        # Boolean flags
-        for src_key, dst_key in [
-            ("is_express", "isExpress"),
-            ("is_round_trip", "isRoundTrip"),
-            ("is_multiple_waypoint", "isMultipleWaypoint"),
-            ("is_hub", "isHub"),
-        ]:
-            val = source.get(src_key)
-            if val is not None:
-                out[dst_key] = bool(val)
+            out["groupTypeCD"] = group_type_cd
 
         # Safety net: if no date filter AND no targeted ID/keyword filter, default to last 7 days
         # on appointmentFrom/To to prevent full-table scans that time out on large datasets.
-        _has_date = any(k in out for k in ("appointmentFrom", "appointmentTo", "createdFrom", "createdTo", "pickupFrom", "pickupTo", "completedFrom", "completedTo"))
-        _has_targeted = any(k in out for k in ("orderRequestId", "externalOrderId", "userId", "driverId", "phoneNumber", "keyword"))
+        _has_date = any(k in out for k in ("appointmentFrom", "appointmentTo"))
+        _has_targeted = any(k in out for k in ("orderRequestId", "userId", "driverId", "keyword"))
         if not _has_date and not _has_targeted:
             today = date.today()
             out["appointmentFrom"] = (today - timedelta(days=7)).isoformat()
@@ -1347,7 +1294,8 @@ class OrderServiceClient:
                         "orders": slim_orders,
                         "count": len(slim_orders),
                         "total_count": (
-                            pagination.get("total")
+                            pagination.get("totalRows")
+                            or pagination.get("total")
                             or pagination.get("totalCount")
                             or meta.get("totalCount", len(orders))
                         ),

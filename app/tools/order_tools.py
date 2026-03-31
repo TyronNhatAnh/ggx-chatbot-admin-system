@@ -205,17 +205,18 @@ def get_orders_admin_panel(
     status_cd: list[int] | None = None,
     order_type: list[str] | None = None,
     pay_cd: list[int] | None = None,
+    group_type_cd: list[int] | None = None,
     appointment_from: str | None = None,
     appointment_to: str | None = None,
-    created_from: str | None = None,
-    created_to: str | None = None,
-    organization_id: int | None = None,
-    branch_id: int | None = None,
+    organization_ids: list[int] | None = None,
+    not_organization_ids: list[int] | None = None,
+    branch_ids: list[int] | None = None,
+    not_branch_ids: list[int] | None = None,
     user_id: int | None = None,
     driver_id: int | None = None,
-    phone_number: str | None = None,
     order_request_id: int | None = None,
-    external_order_id: str | None = None,
+    request_vehicle_pool_id: int | None = None,
+    delivery_vehicle_pool_id: int | None = None,
     sort_by: str | None = None,
     sort_order: str | None = None,
     limit: int | None = None,
@@ -226,26 +227,29 @@ def get_orders_admin_panel(
     For aggregated revenue reports, use get_statement_of_use_summary/detail instead.
 
     Args:
-        keyword: Free-text search across order fields.
-        status_cd: Filter by status codes (e.g. [1] for Pending, [4] for InTransit, [3] for Completed, [5] for Cancelled, [2] for Active).
-                   Multiple values = OR. Omit for all statuses.
+        keyword: Free-text search across order ID, vehicle, customer name, driver name,
+                 contact info, pickup and destination locations.
+        status_cd: Filter by status codes (e.g. [1] for Pending, [4] for InTransit, [3] for Completed,
+                   [5] for Cancelled, [2] for Active). Multiple values = OR. Omit for all statuses.
         order_type: Filter by order type strings (e.g. ["Quick", "Delivery", "HomeMoving"]).
         pay_cd: Filter by payment method codes.
+        group_type_cd: Filter by group type codes (0=Normal, 1=Parent, 2=ChildOrder1, 3=ChildOrder2).
         appointment_from: Appointment date range start (YYYY-MM-DD).
         appointment_to: Appointment date range end (YYYY-MM-DD).
-        created_from: Order creation date range start (YYYY-MM-DD).
-        created_to: Order creation date range end (YYYY-MM-DD).
-        organization_id: Filter by organization (system ID).
-        branch_id: Filter by branch ID.
+        organization_ids: Include only these organization IDs (IN condition). Use for org-specific queries.
+        not_organization_ids: Exclude these organization IDs (NOT IN condition).
+        branch_ids: Include only these branch IDs (IN condition).
+        not_branch_ids: Exclude these branch IDs (NOT IN condition).
         user_id: Filter by customer user ID.
         driver_id: Filter by assigned driver ID.
-        phone_number: Filter by customer phone number.
         order_request_id: Look up a specific order by its internal integer ID.
-        external_order_id: Look up by external order ID string.
-        sort_by: Field to sort by (e.g. "createdAt", "appointmentAt").
+        request_vehicle_pool_id: Filter by vehicle pool requested in the order.
+        delivery_vehicle_pool_id: Filter by driver's registered vehicle pool.
+        sort_by: Field to sort by. Allowed: "id", "createdAt", "appointmentAt", "completedAt",
+                 "cancelledAt", "pickupAt", "statusCd", "payCD", "orderType", "groupTypeCD", "quantity".
         sort_order: Sort direction: "asc" or "desc".
         limit: Max number of results (system-enforced max: 5).
-        offset: Pagination offset.
+        offset: Pagination offset (0-based page index).
     """
     return get_order_client().get_orders_admin_panel(
         params={
@@ -253,17 +257,18 @@ def get_orders_admin_panel(
             "status_cd": status_cd,
             "order_type": order_type,
             "pay_cd": pay_cd,
+            "group_type_cd": group_type_cd,
             "appointment_from": appointment_from,
             "appointment_to": appointment_to,
-            "created_from": created_from,
-            "created_to": created_to,
-            "organization_id": organization_id,
-            "branch_id": branch_id,
+            "organization_ids": organization_ids,
+            "not_organization_ids": not_organization_ids,
+            "branch_ids": branch_ids,
+            "not_branch_ids": not_branch_ids,
             "user_id": user_id,
             "driver_id": driver_id,
-            "phone_number": phone_number,
             "order_request_id": order_request_id,
-            "external_order_id": external_order_id,
+            "request_vehicle_pool_id": request_vehicle_pool_id,
+            "delivery_vehicle_pool_id": delivery_vehicle_pool_id,
             "sort_by": sort_by,
             "sort_order": sort_order,
             "limit": limit,

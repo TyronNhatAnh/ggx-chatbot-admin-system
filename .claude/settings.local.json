@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Bash(grep -r \"GetOrderHist\\\\|history\" /Users/tyron/Documents/work/Gogox/ggx-kr-order-service/internal/api/http/v1/*.go)",
+      "Bash(python -c \"from app.services.order_service_client import OrderServiceClient; from app.tools.order_tools import get_orders_admin_panel, get_order_history; print\\(''OK''\\)\")"
     ]
   }
 }
