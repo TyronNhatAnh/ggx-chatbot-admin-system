@@ -24,7 +24,7 @@ from app.prompts.builder import build_system_prompt
 from app.tools import ALL_TOOL_FUNCTIONS, TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
-MAX_TOOL_LOOPS = 3      # max tool-result round-trips; synthesis fallback is outside this cap (MAX_TOOL_LOOPS+2 worst case)
+MAX_TOOL_LOOPS = 6      # max tool-result round-trips; synthesis fallback is outside this cap (MAX_TOOL_LOOPS+2 worst case)
 # Accept explicit ORD-* IDs or numeric IDs only.
 # Prevent false positives like organization names (e.g. "DHLSC").
 ORDER_ID_PATTERN = re.compile(r"\b(?:ORD-[A-Za-z0-9-]{3,}|\d{5,})\b", re.IGNORECASE)
@@ -65,80 +65,19 @@ _fallback_counter_lock = threading.Lock()
 # Markers we inject ourselves; strip them from user input to prevent prompt injection.
 _INJECTION_PATTERN = re.compile(r"\[\s*(?:Instruction|Today's date)\s*:", re.IGNORECASE)
 
-# Detect leaked Gemini thinking/reasoning in the final response.
-# These patterns match internal chain-of-thought that should never reach users.
-_THINKING_LEAK_PATTERN = re.compile(
-    r"(?:"
-    r"(?:^|\n)\s*(?:"
-    r"Step \d+"
-    r"|Wait,"
-    r"|I'll call"
-    r"|I should"
-    r"|I need to"
-    r"|Let me"
-    r"|The user is asking"
-    r"|The user's"
-    r"|Just map"
-    r"|Map them"
-    r"|Now I"
-    r"|I will"
-    r"|I can"
-    r"|I'll"
-    r"|First,?"
-    r"|Next,?"
-    r"|So,?"
-    r")\b"
-    r")",
-    re.IGNORECASE,
-)
-
-# Detect leaked steering instructions echoed back in the response.
-# These are phrases we inject as directives — they should never appear in user output.
-_STEERING_LEAK_PATTERN = re.compile(
-    r"(?:"
-    r"Present these rows as a table"
-    r"|Do NOT reason about column indices"
-    r"|Do NOT call .+ tool"
-    r"|AMBIGUITY WARNING"
-    r"|Do NOT re-call this report tool"
-    r"|Synthesize the final answer"
-    r"|You already called"
-    r"|Filter rows by matching organizationName"
-    r")",
-    re.IGNORECASE,
-)
-
-# Detect leaked index-mapping/schema reasoning that should never be shown to users.
-_INDEX_MAPPING_LEAK_PATTERN = re.compile(
-    r"(?:"
-    r"Use the headers:"
-    r"|Map the indices"
-    r"|Index\s*\d+\s*:"
-    r"|Row\s*\d+\s*:\s*\["
-    r"|\b\d+(?:st|nd|rd|th)\s+column\b"
-    r"|tool result for .* has a specific schema"
-    r"|Final response must be in"
-    r")",
-    re.IGNORECASE,
-)
-
-
 def _sanitize_response(text: str) -> str:
-    """Strip leaked internal reasoning from the final user-facing response.
+    """Detect and strip pathological response artifacts.
 
-    Gemini thinking models may leak chain-of-thought text into the response.
-    This catches patterns like repeated "Step N: …" / "I'll call …" blocks
-    that are clearly internal reasoning, not an answer.  Also catches
-    echoed/parroted steering instructions.
+    With include_thoughts=True the API routes all internal reasoning into
+    thought-flagged parts that _response_text() already filters out before
+    this function is ever called.  The only case that still needs handling
+    here is the echo/parrot loop — a model repetition bug where the same
+    line appears 3+ times in a single response.
     """
     if not text:
         return text
 
     lines = text.split("\n")
-
-    # --- 1. Detect repeated identical lines (echo/parrot pattern) ----------
-    # If any single non-empty line repeats >= 3 times, the entire response is
-    # likely a model repetition loop.  Strip those lines and try to salvage.
     line_counts = Counter(ln.strip() for ln in lines if ln.strip())
     repeated = {ln for ln, cnt in line_counts.items() if cnt >= 3}
     if repeated:
@@ -148,59 +87,8 @@ def _sanitize_response(text: str) -> str:
         )
         clean = [ln for ln in lines if ln.strip() not in repeated]
         salvaged = "\n".join(clean).strip()
-        if salvaged and len(salvaged) > 20:
-            return salvaged
-        return ""  # empty → caller triggers synthesis fallback
+        return salvaged if salvaged and len(salvaged) > 20 else ""
 
-    # --- 2. Detect leaked index-mapping/schema reasoning ------------------
-    # Keep user-facing table output, strip planning/mapping narration.
-    index_lines = sum(1 for ln in lines if _INDEX_MAPPING_LEAK_PATTERN.search(ln))
-    if index_lines >= 2:
-        matched_samples = [ln.strip()[:160] for ln in lines if _INDEX_MAPPING_LEAK_PATTERN.search(ln)][:3]
-        logger.warning(
-            "[Sanitize ] Detected index-mapping/schema leak in response (%d/%d lines). Stripping. samples=%s",
-            index_lines, len(lines),
-            matched_samples,
-        )
-        clean = [ln for ln in lines if not _INDEX_MAPPING_LEAK_PATTERN.search(ln)]
-        salvaged = "\n".join(clean).strip()
-        if salvaged and len(salvaged) > 20:
-            return salvaged
-        return ""  # empty -> caller triggers synthesis fallback
-
-    # --- 3. Detect leaked steering instructions ---------------------------
-    steering_lines = sum(1 for ln in lines if _STEERING_LEAK_PATTERN.search(ln))
-    if steering_lines >= 2 and steering_lines > len(lines) * 0.3:
-        logger.warning(
-            "[Sanitize ] Detected leaked steering instructions in response (%d/%d lines). Stripping.",
-            steering_lines, len(lines),
-        )
-        clean = [ln for ln in lines if not _STEERING_LEAK_PATTERN.search(ln)]
-        salvaged = "\n".join(clean).strip()
-        if salvaged and len(salvaged) > 20:
-            return salvaged
-        return ""  # empty → caller triggers synthesis fallback
-
-    # --- 4. Detect leaked thinking/reasoning (chain-of-thought) -----------
-    thinking_lines = sum(1 for ln in lines if _THINKING_LEAK_PATTERN.search(ln))
-    if thinking_lines >= 4 and thinking_lines > len(lines) * 0.3:
-        logger.warning(
-            "[Sanitize ] Detected leaked thinking in response (%d/%d lines). Stripping.",
-            thinking_lines, len(lines),
-        )
-        # Try to salvage any non-thinking lines at the start/end
-        clean = []
-        for ln in lines:
-            if _THINKING_LEAK_PATTERN.search(ln):
-                break
-            clean.append(ln)
-        salvaged = "\n".join(clean).strip()
-        if salvaged and len(salvaged) > 20:
-            return salvaged
-        return (
-            "I processed your request but encountered an internal error formatting the response. "
-            "Please try again."
-        )
     return text
 
 
@@ -225,25 +113,17 @@ def _response_text(response: types.GenerateContentResponse) -> str:
     Never trust ``response.text`` alone — some SDK versions / model
     combinations include ``thought``-marked parts in that property.
     Iterate explicitly and exclude any part flagged as thinking.
+
+    Intentionally returns empty string when the model produced only thought
+    parts — the caller's empty-reply handler (synthesis fallback) handles
+    that case correctly.  Falling back to ``response.text`` or leaking thought
+    parts bypasses the synthesis fallback and sends raw reasoning to the user.
     """
     texts: list[str] = []
     for part in _response_parts(response):
         if part.text and not getattr(part, "thought", False):
             texts.append(part.text)
-    result = "\n".join(texts).strip()
-    if result:
-        return result
-    # Fallback 1 — try SDK property in case parts structure is unexpected
-    sdk_text = (response.text or "").strip()
-    if sdk_text:
-        return sdk_text
-    # Fallback 2 — last resort: use thought parts so _sanitize_response can
-    # attempt salvage rather than returning a silent empty string.
-    thought_texts: list[str] = []
-    for part in _response_parts(response):
-        if part.text and getattr(part, "thought", False):
-            thought_texts.append(part.text)
-    return "\n".join(thought_texts).strip()
+    return "\n".join(texts).strip()
 
 
 def _trim_text(value: str, limit: int) -> str:
@@ -769,15 +649,19 @@ class AIOrchestrator:
         # Shared Vertex AI client — single auth session for both models.
         shared_client = create_vertex_client()
 
-        # Flash model — low latency, all 53 tools, deterministic.
-        # Cap thinking budget to prevent internal reasoning from dominating output.
+        # Flash model — low latency, all tools, deterministic.
+        # include_thoughts=True causes the API to route internal reasoning into
+        # thought-flagged parts; _response_text() filters those out, so they
+        # never reach the user.  Capped at 8 000 tokens — enough for complex
+        # tool selection and response planning without burning 20+ seconds on
+        # formatting decisions.
         logger.info("[Orchestrator] Loading Flash model (%s) with %d tools...", settings.model_name, len(ALL_TOOL_FUNCTIONS))
         self._model = create_gemini_model(
             ALL_TOOL_FUNCTIONS,
             client=shared_client,
             temperature=0.0,
             max_output_tokens=4096,
-            thinking_config=types.ThinkingConfig(include_thoughts=False, thinking_budget=0),
+            thinking_config=types.ThinkingConfig(include_thoughts=True, thinking_budget=8000),
         )
 
         # Pro model — deeper reasoning, scoped tool set, thinking enabled.
@@ -794,7 +678,7 @@ class AIOrchestrator:
                 client=shared_client,
                 temperature=0.0,
                 max_output_tokens=8192,
-                thinking_config=types.ThinkingConfig(include_thoughts=False, thinking_budget=-1),
+                thinking_config=types.ThinkingConfig(include_thoughts=True, thinking_budget=-1),
             )
             logger.info("[Orchestrator] Pro model ready. Dual-model routing enabled.")
 
@@ -953,8 +837,13 @@ class AIOrchestrator:
                 session.report_scope = "customer"
 
         # A fresh session per request keeps state isolated between users.
-        # Pro routing disabled — Flash handles all features for now.
-        active_model = self._model
+        # Route report-summary and knowledge-code to the Pro model for deeper
+        # reasoning; fall back to Flash when Pro is not configured.
+        use_pro = (
+            self._pro_model is not None
+            and feature_key in ("report-summary", "knowledge-code")
+        )
+        active_model = self._pro_model if use_pro else self._model
         logger.info("[Model    ] Using %s for feature_key=%s", active_model.model_name, feature_key)
         chat_session = active_model.start_chat(
             enable_automatic_function_calling=False,
@@ -1092,14 +981,17 @@ class AIOrchestrator:
                             json.dumps(tool_results_collected, indent=2, default=str)[:5000],  # Cap at 5k chars
                             "\nDo NOT call any more tools. Answer the user's question NOW using only the data above.",
                             "If some details are uncertain, say so, but still give your best answer.",
-                            "For report-domain responses:",
-                            "- Render only the fields that exist in the rows (do not invent columns)",
-                            "- Use EXACT field names as headers: organizationId, organizationName, serviceType, orderCount, totalRevenue, paymentBreakdown, orderId, revenue, surcharge, paymentMethod, createdAt",
-                            "- Do NOT translate, rename, or localize field names",
-                            "- Include all non-null fields from each row",
-                            "- Add a TOTAL row for numeric columns",
-                            "- NEVER mention row arrays, column indices, index mapping, or internal schema reasoning",
                         ]
+                        if any(t in _REPORT_TOOL_NAMES for t in tools_called):
+                            synth_msg_parts_max += [
+                                "For report-domain responses:",
+                                "- Render only the fields that exist in the rows (do not invent columns)",
+                                "- Use EXACT field names as headers: organizationId, organizationName, serviceType, orderCount, totalRevenue, paymentBreakdown, orderId, revenue, surcharge, paymentMethod, createdAt",
+                                "- Do NOT translate, rename, or localize field names",
+                                "- Include all non-null fields from each row",
+                                "- Add a TOTAL row for numeric columns",
+                                "- NEVER mention row arrays, column indices, index mapping, or internal schema reasoning",
+                            ]
                         synth_msg_max = "\n\n".join(synth_msg_parts_max)
                         synthesis_response = chat_session.send_message(synth_msg_max)
                         synth_elapsed = time.perf_counter() - t
@@ -1437,14 +1329,20 @@ class AIOrchestrator:
                     "Here are your tool results. Please write your final answer NOW using this data:",
                     json.dumps(tool_results_collected, indent=2, default=str)[:5000],  # Cap at 5k chars
                     "\nDo NOT call any more tools. Provide a clear, concise response for the admin.",
-                    "For report-domain responses:",
-                    "- Render only the fields that exist in the rows (do not invent columns)",
-                    "- Use EXACT field names as headers: organizationId, organizationName, serviceType, orderCount, totalRevenue, paymentBreakdown, orderId, revenue, surcharge, paymentMethod, createdAt",
-                    "- Do NOT translate, rename, or localize field names",
-                    "- Include all non-null fields from each row",
-                    "- Add a TOTAL row for numeric columns",
-                    "- NEVER mention row arrays, column indices, index mapping, or internal schema reasoning",
                 ]
+                # Only add report-specific formatting instructions when report tools were called.
+                # Adding them for non-report queries (e.g. search_organizations) causes Gemini to
+                # look for report fields that don't exist and fail to present the actual data.
+                if any(t in _REPORT_TOOL_NAMES for t in tools_called):
+                    synth_msg_parts += [
+                        "For report-domain responses:",
+                        "- Render only the fields that exist in the rows (do not invent columns)",
+                        "- Use EXACT field names as headers: organizationId, organizationName, serviceType, orderCount, totalRevenue, paymentBreakdown, orderId, revenue, surcharge, paymentMethod, createdAt",
+                        "- Do NOT translate, rename, or localize field names",
+                        "- Include all non-null fields from each row",
+                        "- Add a TOTAL row for numeric columns",
+                        "- NEVER mention row arrays, column indices, index mapping, or internal schema reasoning",
+                    ]
                 synth_msg = "\n\n".join(synth_msg_parts)
                 synth_response = chat_session.send_message(synth_msg)
                 synth_elapsed = time.perf_counter() - t

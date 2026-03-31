@@ -21,10 +21,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Token budget
 # ---------------------------------------------------------------------------
-MAX_CONTEXT_TOKENS = 8000
-# Use ~55% for input context (summary + memory + turns).
-# Remaining 45% is reserved for system prompt, tool schemas, and output.
-INPUT_TOKEN_BUDGET = int(MAX_CONTEXT_TOKENS * 0.55)       # ~4400
+# Gemini 3 Flash/Pro support 1M token context.  We use 200K as a practical
+# cap — large enough for long conversation history while staying well within
+# limits.  85% goes to conversation context; the remaining 15% is reserved
+# for the system prompt, tool schemas, and output.
+MAX_CONTEXT_TOKENS = 200_000
+INPUT_TOKEN_BUDGET = int(MAX_CONTEXT_TOKENS * 0.85)       # ~170K
 
 # Rough chars-per-token ratios.
 # English/ASCII averages ~4 chars per token; CJK (Korean, Chinese, Japanese)

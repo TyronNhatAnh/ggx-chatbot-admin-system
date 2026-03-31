@@ -6,6 +6,10 @@ Read-only AI chatbot service for internal logistics/admin operations. Answers qu
 
 **Stack:** FastAPI · Python 3.11 · Google Gemini (Vertex AI) · SQLite · ChromaDB · httpx
 
+**Gemini Models Used:**
+- `gemini-3-flash-preview` — default for most queries (fast, cost effective)
+- `gemini-3-pro-preview` — for complex reports and knowledge-heavy queries (slower, more expensive)
+
 ---
 
 ## Common Commands

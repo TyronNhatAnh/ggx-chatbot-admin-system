@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     # When set, feature keys "report-summary" and "knowledge-code" are routed here.
     # Leave empty to use model_name for all queries.
     # gemini-3-pro-preview is available on Vertex AI in: global, us-central1
-    pro_model_name: str = "gemini-3-pro-preview"
+    pro_model_name: str = ""
 
     # ---------------------------------------------------------------------------
     # Vertex AI service account credentials
