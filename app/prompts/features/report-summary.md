@@ -30,8 +30,8 @@ AFTER TOOLS RETURN:
 - Do NOT call the same report tool twice in one turn.
 - Output ONLY the date-range label and the data table. No column analysis, no reasoning, no "let me check" commentary.
 - Row display: show up to 10 rows when available (5-10 rows is acceptable based on readability/token budget).
-- Keep report field keys EXACTLY as returned by tools (e.g. organizationId, organizationName, serviceType, orderCount, totalRevenue, paymentBreakdown, orderId, revenue, surcharge, paymentMethod, createdAt).
-  Do NOT translate, localize, or rename report field names in headers.
+- Keep report field keys EXACTLY as returned by tools. Summary rows have English keys (e.g. organizationId, organizationName, serviceType, orderCount, totalRevenue, paymentBreakdown). Detail rows have Korean keys (e.g. 주문번호, 기업, 기업코드, 지점, 거래유형, 총 운임, 결제 방식).
+  Do NOT translate, localize, or rename report field names in headers. Use the key names as-is from the tool result.
 - Summary rows: do NOT drop fields. Display ALL non-null fields returned in each summary row.
 - Detail rows: compact display is allowed (core columns first) when too many fields are present.
   If user asks for more detail or additional fields, switch to FULL display: show ALL non-null fields from the tool result for those rows. Do NOT re-call the tool — use the already-returned data.

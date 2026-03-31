@@ -184,8 +184,8 @@ def _extract_context_hints(tool_results: dict[str, Any]) -> str:
         org_entries: list[str] = []
         for row in rows[:5]:  # First 5 orgs
             if isinstance(row, dict):
-                name = row.get("organizationName") or ""
-                oid = row.get("organizationId") or ""
+                name = row.get("organizationName") or row.get("기업명") or row.get("기업") or ""
+                oid = row.get("organizationId") or row.get("기업ID") or row.get("기업코드") or ""
                 if name and isinstance(name, str):
                     label = f"{name} (id:{oid})" if oid else name
                     if label not in org_entries:
@@ -198,8 +198,8 @@ def _extract_context_hints(tool_results: dict[str, Any]) -> str:
         user_data = tool_results.get(usr_name)
         if not isinstance(user_data, dict):
             continue
-        uid = user_data.get("userId") or user_data.get("id")
-        uname = user_data.get("name") or user_data.get("userName")
+        uid = user_data.get("userId") or user_data.get("id") or user_data.get("사용자ID") or user_data.get("유저ID")
+        uname = user_data.get("name") or user_data.get("userName") or user_data.get("이름") or user_data.get("사용자명")
         if uid:
             label = f"{uname} (id:{uid})" if uname else f"id:{uid}"
             hints.append(f"User in context: {label}")
@@ -533,8 +533,8 @@ def _build_report_note(
     for row in rows:
         if not isinstance(row, dict):
             continue
-        name = row.get("organizationName") or ""
-        oid = str(row.get("organizationId") or "")
+        name = row.get("organizationName") or row.get("기업명") or row.get("기업") or ""
+        oid = str(row.get("organizationId") or row.get("기업ID") or row.get("기업코드") or "")
         if name and name not in org_entries:
             org_entries[name] = oid
 
@@ -574,8 +574,8 @@ def _build_report_note(
             org_hints = []
             for o in searched_orgs[:5]:
                 if isinstance(o, dict):
-                    oname = o.get("organizationName") or o.get("name") or ""
-                    oid = o.get("organizationId") or o.get("id") or ""
+                    oname = o.get("organizationName") or o.get("name") or o.get("기업명") or o.get("기업") or ""
+                    oid = o.get("organizationId") or o.get("id") or o.get("기업ID") or o.get("기업코드") or ""
                     if oname:
                         org_hints.append(f"{oname} (id:{oid})")
             if org_hints:
@@ -583,7 +583,7 @@ def _build_report_note(
                     "IMPORTANT: You already searched for organizations and found: "
                     + ", ".join(org_hints)
                     + ". The report data above contains ALL organizations. "
-                    "Filter rows by matching organizationName or organizationId to the user's query. "
+                    "Filter rows by matching organizationName/기업명/기업 or organizationId/기업ID/기업코드 to the user's query. "
                     "Do NOT re-call this report tool — answer from these rows now."
                 )
 
@@ -1180,8 +1180,8 @@ class AIOrchestrator:
                         org_ids = []
                         for o in orgs[:10]:
                             if isinstance(o, dict):
-                                oname = o.get("organizationName") or o.get("name") or ""
-                                oid = o.get("organizationId") or o.get("id") or ""
+                                oname = o.get("organizationName") or o.get("name") or o.get("기업명") or o.get("기업") or ""
+                                oid = o.get("organizationId") or o.get("id") or o.get("기업ID") or o.get("기업코드") or ""
                                 if oname:
                                     org_labels.append(f"{oname} (id:{oid})")
                                     org_ids.append(str(oid))
