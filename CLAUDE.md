@@ -18,8 +18,14 @@ Read-only AI chatbot service for internal logistics/admin operations. Answers qu
 make install          # Create venv + install dependencies
 make run              # Start server at http://localhost:8000
 make debug            # Auto-reload dev mode
-make index-all        # Run full codebase indexer + cross-linker
-make index-order-service  # Index order-service Go repo only
+make index-all        # Index all configured services + run cross-linker
+make index-order-service   # Index order-service (Go)
+make index-user-service    # Index user-service (Go)
+make index-driver-service  # Index driver-service (Go)
+make index-common-service  # Index common-service (Go)
+make index-web2            # Index consumer web frontend (React)
+make index-admin-service   # Index admin-service (Java Spring Boot)
+make link                  # Run cross-linker (React → Go handler matching) only
 ```
 
 Swagger docs available at `http://localhost:8000/docs` when running.
@@ -50,19 +56,21 @@ Never put business logic in `app/services/` — that belongs in the orchestrator
 | `indexer/` | Offline codebase knowledge pipeline (Go/Java/React) |
 
 ### Tool-Calling Loop
-- Max iterations: `MAX_TOOL_LOOPS=3`
+- Max iterations: `MAX_TOOL_LOOPS=6`
 - Duplicate suppression is active — same tool+args won't fire twice
 - Falls back to synthesis if loop exhausted without final answer
 
 ### Memory Layers
-1. **Short-term** — last 5 verbatim turns
-2. **Summary** — Gemini-compressed older turns
-3. **Long-term** — auto-extracted facts/entities/decisions via regex
+1. **Short-term** — last 5 verbatim turns (`SHORT_TERM_MAX_TURNS=5`)
+2. **Summary** — Gemini-compressed older turns (triggered every 5 new turns, `SUMMARIZE_THRESHOLD=5`)
+3. **Long-term** — auto-extracted facts/entities/decisions via regex (max 50 items per session)
 
 ### Feature Detection
 The orchestrator routes each query to a modular system prompt and selects model tier:
-- Flash model (`MODEL_NAME`) — default for most queries
-- Pro model (`PRO_MODEL_NAME`) — reports and knowledge-heavy queries
+- Flash model (`MODEL_NAME`) — default for most queries; thinking_budget=8000, max_output_tokens=4096
+- Pro model (`PRO_MODEL_NAME`) — reports and knowledge-heavy queries; thinking uncapped, max_output_tokens=8192
+- Both models run with `include_thoughts=True`; thought parts are filtered before sending responses to users
+- Detected `feature_key` persists in `SessionState` across follow-up turns
 
 ---
 
@@ -70,24 +78,39 @@ The orchestrator routes each query to a modular system prompt and selects model 
 
 **Required:**
 ```
-GEMINI_API_KEY        # Google AI Studio API key
-CHAT_API_KEY          # Auth secret for /chat endpoint
+CHAT_API_KEY                    # Auth secret for /chat endpoint
+VERTEX_AI_CREDENTIALS_FILE      # Path to JSON file containing Vertex AI SA key(s) (default: app/config/vertex-ai.json)
+```
+
+**Vertex AI (optional, have defaults):**
+```
+VERTEX_AI_SA_KEY=gemini-kr-sa-staging    # Key name inside credentials JSON file
+VERTEX_AI_LOCATION=global                # Model location (global or us-central1)
+```
+
+**Models (optional, have defaults):**
+```
+MODEL_NAME=gemini-3-flash-preview        # Flash model for most queries
+PRO_MODEL_NAME=gemini-3-pro-preview      # Pro model for reports/knowledge (leave empty to use Flash for all)
 ```
 
 **Common optional:**
 ```
-MODEL_NAME=gemini-3-flash-preview
-PRO_MODEL_NAME=gemini-3-pro-preview
-CHAT_HISTORY_DB=data/chat_history.db
-CONTEXT_CACHING_ENABLED=true
+CHAT_HISTORY_DB=data/chat_history.db    # SQLite persistence (omit for in-memory only)
+CONTEXT_CACHING_ENABLED=true            # Vertex AI context cache (requires versioned model name)
 
 ORDER_SERVICE_BASE_URL
 USER_SERVICE_BASE_URL
 DRIVER_SERVICE_BASE_URL
 COMMON_SERVICE_BASE_URL
 
-ORDER_SERVICE_REPO_PATH    # For indexer
+# Indexer repo paths (not required at runtime)
+ORDER_SERVICE_REPO_PATH
 USER_SERVICE_REPO_PATH
+DRIVER_SERVICE_REPO_PATH
+COMMON_SERVICE_REPO_PATH
+ADMIN_SERVICE_REPO_PATH
+WEB2_REPO_PATH
 ```
 
 Copy `.env.example` to `.env` to get started.
@@ -106,7 +129,7 @@ The `data/` directory is gitignored. Persistence is optional — omit `CHAT_HIST
 
 ## Codebase Indexer
 
-Lives in `indexer/`. Parses Go (Gin routes + service flows), Java (Spring Boot enums/types), and React (API call graph) using tree-sitter AST + regex fallback.
+Lives in `indexer/`. Parses Go (Gin routes + service flows), Java (Spring Boot enums/types), and React (API call graph) using tree-sitter AST + regex fallback. Services indexed: order-service, user-service, driver-service, common-service (Go); admin-service (Java); web2 (React).
 
 - Incremental: uses SHA-256 hashing, only re-indexes changed files
 - Cross-linker (`indexer/linker.py`) matches React API calls to Go handlers

@@ -22,7 +22,7 @@ Read-only logistics admin assistant (Python 3.11). Never add create/update/delet
 ## API Contract (stable)
 
 - `GET /health` — liveness probe
-- `POST /chat` — request: `message` (required), `conversation_id` (optional); response: `reply`, `tools_called`, `conversation_id`
+- `POST /chat` — request: `message` (required), `service_token` (required — admin bearer token forwarded to downstream services), `conversation_id` (optional); response: `reply`, `tools_called`, `conversation_id`
 - `GET /history` — paginated conversation list; query params: `page` (default 1), `page_size` (default 20, max 100)
 - `GET /history/{conversation_id}` — full turn history, summary, and long-term memory for a session
 - Auth: `X-API-Key` or `Authorization: Bearer <token>` header (when `CHAT_AUTH_ENABLED=true`)
@@ -30,12 +30,13 @@ Read-only logistics admin assistant (Python 3.11). Never add create/update/delet
 
 ## Orchestrator
 
-- `MAX_TOOL_LOOPS = 3` — do not change
+- `MAX_TOOL_LOOPS = 6` — do not change
 - Suppress duplicate tool calls per turn; provide fallback reply on unproductive loops
-- Conversation context: in-memory TTL 30 min (`SESSION_TTL_SECONDS = 1800`), process-local (`context_store.py`)
+- Conversation context: in-memory TTL 30 min (`SESSION_TTL_SECONDS = 1800`), process-local (`memory_service.py`)
 - Optionally persisted to SQLite when `CHAT_HISTORY_DB` is set (`persistence/chat_store.py`)
 - Token-budgeted context assembly with CJK-aware estimation (`context_builder.py`)
-- 3-layer memory: `memory_service.py` (FACT / ENTITY / DECISION)
+- 3-layer memory: `memory_service.py` (FACT / ENTITY / DECISION); short-term 5 turns (`SHORT_TERM_MAX_TURNS`), summarize every 5 new turns (`SUMMARIZE_THRESHOLD`)
+- LLM thinking enabled on both models (`include_thoughts=True`); Flash capped at 8 000 thinking tokens, 4 096 output; Pro uncapped thinking, 8 192 output
 - Conversation summarization: `summarizer.py`
 
 ## Prompts
