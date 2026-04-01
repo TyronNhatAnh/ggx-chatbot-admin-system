@@ -345,26 +345,37 @@ _SUMMARY_TOOL_NAMES = {
 # ---------------------------------------------------------------------------
 _FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "report-summary": (
-        "statement", "report", "revenue", "통계", "보고서", "매출", "요약",
+        "statement", "report", "revenue", "summary", "statistics", "stat",
+        "doanh thu", "tổng hợp", "báo cáo", "tuần", "tháng", "thống kê",
+        "통계", "보고서", "매출", "요약",
     ),
     "order-lookup": (
         "order", "delivery", "coupon", "cancel fee", "reorder", "shipping record",
-        "price estimate", "pricing", "주문", "배달", "배송", "쿠폰", "취소",
+        "price estimate", "pricing", "invoice", "track",
+        "đơn hàng", "đơn", "giao hàng", "vận chuyển", "hóa đơn", "mã đơn",
+        "주문", "배달", "배송", "쿠폰", "취소",
     ),
     "driver-tracking": (
-        "driver", "route", "tracking", "기사", "운전", "배차",
+        "driver", "route", "tracking", "location", "fare", "online driver",
+        "tài xế", "tài_xế", "vị trí", "lộ trình", "cước phí",
+        "기사", "운전", "배차", "위치",
     ),
     "user-admin": (
-        "user profile", "organization", "branch", "admin role", "permission",
-        "feature flag", "department", "사용자", "조직", "지점", "권한",
+        "user profile", "organization", "org", "branch", "admin role", "permission",
+        "feature flag", "department", "account", "user",
+        "tài khoản", "người dùng", "tổ chức", "chi nhánh", "phân quyền", "quyền",
+        "사용자", "조직", "지점", "권한",
     ),
     "common-data": (
-        "vehicle pool", "vehicle service", "vehicle prices", "address search",
-        "home moving", "ads", "common service", "차량", "차종", "주소", "이사",
+        "vehicle pool", "vehicle service", "vehicle prices", "vehicle type", "address search",
+        "home moving", "ads", "common service",
+        "xe", "loại xe", "địa chỉ", "chuyển nhà",
+        "차량", "차종", "주소", "이사",
     ),
     "knowledge-code": (
         "enum", "status code", "struct", "handler", "service flow",
-        "endpoint", "codebase", "api consumer", "graph",
+        "endpoint", "codebase", "api consumer", "graph", "code", "source", "flow",
+        "mã", "luồng", "mã trạng thái",
     ),
 }
 

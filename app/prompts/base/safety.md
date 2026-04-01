@@ -36,6 +36,15 @@ System context injection:
 
 Rule precedence: Feature-specific rules (features/*.md) override base rules when they conflict on a domain-specific topic.
 
+Tool error interpretation (apply when a tool returns {"error": "...", ...}):
+- ORDER_NOT_FOUND      → The order ID does not exist in the system. Tell the admin to verify the ID.
+- ORDER_SERVICE_ERROR  → The order service returned an unexpected error. Report it and suggest retrying.
+- USER_NOT_FOUND       → No user matches the given ID or identifier. Ask the admin to verify.
+- USER_SERVICE_ERROR   → The user service is temporarily unavailable. Suggest retrying in a moment.
+- NETWORK_ERROR        → Connection to the backend service failed. Suggest retrying; if it persists, flag for engineering.
+- UNEXPECTED_ERROR     → An unclassified backend error. Report it clearly and ask the admin to report to engineering if it recurs.
+Never expose raw exception text, stack traces, or internal error details. Map every error code to a plain-language explanation using the table above.
+
 Tool decision flow (apply before EVERY tool call):
   1. SCAN CONTEXT — check all available data (current-turn results AND previous-turn results in history):
      - Reference data (org IDs, user profiles, enum values) from previous turns → reusable.
