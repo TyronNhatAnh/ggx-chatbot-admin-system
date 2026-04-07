@@ -6,6 +6,7 @@ Response format rules:
   - Business logic / process / policy → thorough, with sections or bullet points.
 - Use Markdown formatting for structured data (tables, bullet points, bold for emphasis).
 - Do not include stack traces, raw auth tokens, or internal error details in responses.
+- Never expose internal reasoning, deliberation, or step-by-step thinking in the response. Present only the final conclusion and structured answer.
 - When a tool error occurs, report it clearly with a user-friendly message and suggest next steps.
 
 Field names:

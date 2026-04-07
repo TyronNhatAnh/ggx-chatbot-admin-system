@@ -63,14 +63,14 @@ make clean          # Delete .venv
 
 - Entry point: `app/prompts/builder.py`
 - Always loaded: `base/persona.md`, `base/safety.md`, `base/output-format.md`
-- Feature prompts in `app/prompts/features/`: `order-lookup` · `report-summary` · `driver-tracking` · `user-admin` · `common-data` · `knowledge-code`
+- Feature prompts in `app/prompts/features/`: `order-lookup` · `report-summary` · `driver-tracking` · `user-admin` · `common-data` · `knowledge-code` · `email-dispatch`
 - Few-shot examples in `app/prompts/few-shots/`: `order-lookup`
 - `app/orchestrator/prompt_builder.py` is a thin re-export only
 - Prompt file inventory: see [docs/prompt-consolidation-map.md](../docs/prompt-consolidation-map.md)
 
 ## Tools
 
-- 6 tool files: `order_tools.py` · `user_tools.py` · `driver_tools.py` · `common_tools.py` · `docs_tools.py` · `knowledge_tools.py` — 50 functions total
+- 6 tool files: `order_tools.py` · `user_tools.py` · `driver_tools.py` · `common_tools.py` · `docs_tools.py` · `knowledge_tools.py` — 54 functions total
 - Keep `ALL_TOOL_FUNCTIONS` and `TOOL_REGISTRY` in sync (`app/tools/__init__.py`); `_validate_unique_tool_names()` asserts uniqueness at startup
 - `get_delayed_orders` stays unregistered (overlaps `get_orders_admin_panel(status_cd=[4])`)
 - Summary tools → aggregate; Detail tools → per-order. Don't call both in one turn unless requested

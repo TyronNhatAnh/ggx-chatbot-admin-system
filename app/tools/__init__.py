@@ -47,6 +47,7 @@ from app.tools.order_tools import (
     get_statement_of_use_driver_summary,
     get_statement_of_use_summary,
     get_tax_invoice_states,
+    submit_order,
 )
 from app.tools.user_tools import (
     get_accessible_menu_tree,
@@ -77,6 +78,7 @@ ALL_TOOL_FUNCTIONS: list = [
     get_statement_of_use_detail,
     get_statement_of_use_driver_summary,
     get_statement_of_use_driver_detail,
+    submit_order,
     estimate_guest_price,
     check_driver_price,
     estimate_guest_home_moving_price,
@@ -147,3 +149,48 @@ _validate_unique_tool_names(ALL_TOOL_FUNCTIONS)
 
 # Maps function name → callable so the orchestrator can execute tool calls.
 TOOL_REGISTRY: dict = {fn.__name__: fn for fn in ALL_TOOL_FUNCTIONS}
+
+# Per-feature tool subsets for Flash model session scoping.
+# When a feature_key is detected, the orchestrator passes only the listed names via
+# ToolConfig.allowed_function_names — restricting model choice without extra LLM calls.
+# Pro model features (report-summary, knowledge-code) are scoped at factory creation via _PRO_TOOLS.
+FLASH_TOOL_SETS: dict[str, frozenset[str]] = {
+    "order-lookup": frozenset({
+        "get_order_detail", "get_order_payment_status", "get_order_cancel_fee",
+        "get_order_history", "get_orders_admin_panel", "get_tax_invoice_states",
+        "submit_order", "estimate_guest_price", "check_driver_price",
+        "estimate_guest_home_moving_price",
+        # supporting lookups for order cross-references
+        "search_users", "get_user_profile", "search_organizations", "get_organization_by_id",
+    }),
+    "driver-tracking": frozenset({
+        "get_driver", "search_drivers", "get_driver_location_history",
+        "search_driver_report", "calculate_driver_fare", "get_vehicle_pools",
+        "get_vehicle_prices",
+        "get_order_detail",  # needed for driver-order cross-reference
+    }),
+    "user-admin": frozenset({
+        "get_user_profile", "search_users", "get_user_driver",
+        "get_branch_by_id", "search_branches", "get_organization_by_id",
+        "search_organizations", "list_admin_roles", "list_admin_departments",
+        "list_admin_menus", "get_admin_permissions", "get_accessible_menu_tree",
+        "verify_biz_registration_number",
+    }),
+    "common-data": frozenset({
+        "get_vehicle_prices", "get_common_vehicle_pools", "get_services_by_vehicle_pool",
+        "get_addresses", "search_api_addresses", "search_api_address_details",
+        "list_guest_ads", "list_home_moving_goods_categories", "list_home_moving_vehicles",
+    }),
+    "email-dispatch": frozenset({
+        # order read + submit
+        "get_order_detail", "get_order_history", "get_orders_admin_panel",
+        "submit_order",
+        # user / org lookup (Step A)
+        "get_user_profile", "search_users",
+        "get_organization_by_id", "search_organizations",
+        # address geocoding (Step B)
+        "search_api_address_details", "search_api_addresses",
+        # vehicle pool ID resolution (Step C)
+        "get_common_vehicle_pools",
+    }),
+}

@@ -39,6 +39,7 @@ class GeminiChatFactory:
         enable_automatic_function_calling: bool = False,
         system_instruction: str | None = None,
         feature_key: str | None = None,
+        allowed_function_names: list[str] | None = None,
     ):
         """Create a new chat session with deterministic function-calling behavior.
 
@@ -47,15 +48,22 @@ class GeminiChatFactory:
             system_instruction: Override the factory default system prompt.
                                 Pass a per-request prompt built by PromptBuilder.
             feature_key: Feature key used to look up the right context cache entry.
+            allowed_function_names: When set, restricts the model to only call tools
+                                    in this list for the session (ToolConfig scoping).
+                                    None means all registered tools are available.
         """
         effective_instruction = system_instruction or self.system_instruction
         afc = types.AutomaticFunctionCallingConfig(disable=not enable_automatic_function_calling)
 
-        # NOTE: Do NOT use FunctionCallingConfigMode.ANY at session level.
-        # mode=ANY forces tool calls on EVERY turn (including tool-result turns),
-        # preventing Gemini from producing a final text answer → infinite loop.
-        # temperature=0 + instruction injection is sufficient to get tool calls
-        # on the first turn.
+        # Scope tools by filtering the list rather than using ToolConfig.allowed_function_names.
+        # The Gemini API only allows allowed_function_names with mode=ANY, but ANY forces a tool
+        # call on every turn (including tool-result turns), causing an infinite loop.
+        # Filtering the tools list achieves the same scoping without that risk.
+        allowed_set = set(allowed_function_names) if allowed_function_names else None
+        effective_tools = (
+            [t for t in self.tools if getattr(t, "__name__", None) in allowed_set]
+            if allowed_set else self.tools
+        )
 
         if self.cache_manager is not None:
             cache_name = self.cache_manager.get_cache_name(effective_instruction, feature_key)
@@ -74,7 +82,7 @@ class GeminiChatFactory:
         # Uncached path (default, or when cache creation failed)
         config = types.GenerateContentConfig(
             system_instruction=effective_instruction,
-            tools=self.tools,
+            tools=effective_tools,
             temperature=self.temperature,
             max_output_tokens=self.max_output_tokens,
             automatic_function_calling=afc,

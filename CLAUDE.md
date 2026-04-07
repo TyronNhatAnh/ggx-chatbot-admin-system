@@ -49,7 +49,7 @@ Never put business logic in `app/services/` — that belongs in the orchestrator
 | `app/orchestrator/ai_orchestrator.py` | Tool-calling loop, feature detection, context injection |
 | `app/orchestrator/memory_service.py` | 3-layer memory: short-term (5 turns) + summary + long-term facts |
 | `app/orchestrator/context_builder.py` | Token-budgeted context assembly |
-| `app/tools/` | 50+ tool schemas (thin wrappers, no logic) |
+| `app/tools/` | 54 tool schemas (thin wrappers, no logic) |
 | `app/services/` | External API clients (httpx, connection pooling) |
 | `app/prompts/` | Modular prompt files assembled per feature key |
 | `app/persistence/chat_store.py` | SQLite chat history (WAL mode) |

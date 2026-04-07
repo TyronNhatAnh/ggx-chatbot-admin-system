@@ -21,7 +21,7 @@ from app.orchestrator.context_store import ConversationState
 from app.orchestrator.memory_service import MemoryService
 from app.orchestrator.summarizer import summarize_conversation
 from app.prompts.builder import build_system_prompt
-from app.tools import ALL_TOOL_FUNCTIONS, TOOL_REGISTRY
+from app.tools import ALL_TOOL_FUNCTIONS, FLASH_TOOL_SETS, TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
 MAX_TOOL_LOOPS = 6      # max tool-result round-trips; synthesis fallback is outside this cap (MAX_TOOL_LOOPS+2 worst case)
@@ -64,6 +64,12 @@ _fallback_counters = {
 _fallback_counter_lock = threading.Lock()
 # Markers we inject ourselves; strip them from user input to prevent prompt injection.
 _INJECTION_PATTERN = re.compile(r"\[\s*(?:Instruction|Today's date)\s*:", re.IGNORECASE)
+# Lines that look like model "thinking out loud" leaked into a text part rather than a thought part.
+# Strip them from the final response so admins never see raw internal reasoning.
+_REASONING_LEAK_RE = re.compile(
+    r"^(?:Wait[,.]?\s|I'?ll\s+try\s+to\s|I'?ll\s+assume\s|Also[,.]?\s+I'?ll?\s+try)",
+    re.IGNORECASE,
+)
 
 def _sanitize_response(text: str) -> str:
     """Detect and strip pathological response artifacts.
@@ -78,6 +84,20 @@ def _sanitize_response(text: str) -> str:
         return text
 
     lines = text.split("\n")
+
+    # Strip lines that are leaked model reasoning ("Wait, I'll try to...", etc.).
+    # These appear when the model writes its deliberation as plain text instead of thought parts.
+    leaked = [ln for ln in lines if _REASONING_LEAK_RE.match(ln.strip())]
+    if leaked:
+        logger.warning(
+            "[Sanitize ] Stripped %d reasoning-leak line(s) from response.",
+            len(leaked),
+        )
+        lines = [ln for ln in lines if not _REASONING_LEAK_RE.match(ln.strip())]
+        text = "\n".join(lines).strip()
+        if not text or len(text) < 20:
+            return ""
+
     line_counts = Counter(ln.strip() for ln in lines if ln.strip())
     repeated = {ln for ln, cnt in line_counts.items() if cnt >= 3}
     if repeated:
@@ -376,6 +396,12 @@ _FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "enum", "status code", "struct", "handler", "service flow",
         "endpoint", "codebase", "api consumer", "graph", "code", "source", "flow",
         "mã", "luồng", "mã trạng thái",
+    ),
+    "email-dispatch": (
+        "상차", "하차", "도착지", "수령인", "배차", "박스", "카고", "eta",
+        "dispatch email", "email dispatch", "parse email", "email order",
+        "email này", "đoạn email", "từ email", "parse email",
+        "order#", "외부주문", "오더번호",
     ),
 }
 
@@ -678,6 +704,11 @@ class AIOrchestrator:
         # Pro model — deeper reasoning, scoped tool set, thinking enabled.
         # Falls back to Flash when pro_model_name is not configured.
         self._pro_model: "GeminiChatFactory | None" = None
+        if not settings.pro_model_name:
+            logger.warning(
+                "[Orchestrator] PRO_MODEL_NAME not set — report-summary and knowledge-code "
+                "will use Flash instead.",
+            )
         if settings.pro_model_name:
             logger.info(
                 "[Orchestrator] Loading Pro model (%s) with %d scoped tools...",
@@ -699,7 +730,14 @@ class AIOrchestrator:
             store = ChatStore(settings.chat_history_db)
 
         self._memory = MemoryService(store=store)
-        logger.info("[Orchestrator] Gemini model ready.")
+        logger.info(
+            "[Orchestrator] Ready.  Flash=%s (%d tools)  |  Pro=%s (%d tools)  |  Routing=%s",
+            settings.model_name,
+            len(ALL_TOOL_FUNCTIONS),
+            settings.pro_model_name if self._pro_model else "(disabled)",
+            len(_PRO_TOOLS) if self._pro_model else 0,
+            "dual-model" if self._pro_model else "flash-only",
+        )
 
     def chat(self, message: str, conversation_id: str | None = None) -> tuple[str, list[str], str]:
         """
@@ -856,10 +894,23 @@ class AIOrchestrator:
         )
         active_model = self._pro_model if use_pro else self._model
         logger.info("[Model    ] Using %s for feature_key=%s", active_model.model_name, feature_key)
+
+        # Flash model: restrict to feature-scoped tool subset via ToolConfig.allowed_function_names.
+        # Pro model skips this — it already uses a scoped tool list from _PRO_TOOLS.
+        # No feature_key or unknown key → all tools remain available (safe fallback).
+        allowed_names: list[str] | None = None
+        if not use_pro and feature_key and feature_key in FLASH_TOOL_SETS:
+            allowed_names = sorted(FLASH_TOOL_SETS[feature_key])
+            logger.info(
+                "[Model    ] Flash tool scoping: feature_key=%s allowed=%d/%d tools",
+                feature_key, len(allowed_names), len(ALL_TOOL_FUNCTIONS),
+            )
+
         chat_session = active_model.start_chat(
             enable_automatic_function_calling=False,
             system_instruction=system_prompt,
             feature_key=feature_key,
+            allowed_function_names=allowed_names,
         )
 
         # Step 1 — send the user message to Gemini
@@ -888,11 +939,19 @@ class AIOrchestrator:
             # Collect every function_call part from the current response turn.
             # Must happen BEFORE the MAX_TOOL_LOOPS guard so that a final-text
             # response is never mistaken for a loop-overrun.
-            function_calls = [
-                part.function_call
+            _fc_raw_parts = [
+                part
                 for part in _response_parts(response)
                 if getattr(part, "function_call", None) and part.function_call.name
             ]
+            function_calls = [p.function_call for p in _fc_raw_parts]
+            # Vertex AI thinking mode requires each FunctionResponse to echo the
+            # thought_signature from its matching FunctionCall.  Build a name→sig
+            # map now; last-call-wins when the same tool is requested twice.
+            _fc_thought_sigs: dict[str, bytes | None] = {
+                p.function_call.name: getattr(p, "thought_signature", None)
+                for p in _fc_raw_parts
+            }
 
             # No tool calls → Gemini produced the final answer
             if not function_calls:
@@ -1040,6 +1099,10 @@ class AIOrchestrator:
 
             # Separate tool calls into cache-servable, parallel-eligible, and deferred
             dedup_calls: list[tuple[str, dict]] = []  # (tool_name, tool_args)
+            # Track calls skipped by dedup or scope guard so we can still send a
+            # placeholder function_response for each — Gemini requires response count
+            # to equal call count in a turn (400 INVALID_ARGUMENT otherwise).
+            skipped_names: list[str] = []
             for fc in function_calls:
                 tool_name = fc.name
                 tool_args = dict(fc.args or {})
@@ -1048,6 +1111,7 @@ class AIOrchestrator:
                 call_key = (tool_name, json.dumps(tool_args, sort_keys=True, default=str))
                 if call_key in seen_calls:
                     logger.warning("[Tool     ] skipping duplicate tool call %s(%s)", tool_name, tool_args)
+                    skipped_names.append(tool_name)
                     continue
                 seen_calls.add(call_key)
                 dedup_calls.append((tool_name, tool_args))
@@ -1077,6 +1141,7 @@ class AIOrchestrator:
                     blocked = _driver_tools
                 if blocked:
                     before = len(dedup_calls)
+                    skipped_names.extend(n for n, _ in dedup_calls if n in blocked)
                     dedup_calls = [(n, a) for n, a in dedup_calls if n not in blocked]
                     if len(dedup_calls) < before:
                         logger.info(
@@ -1267,12 +1332,32 @@ class AIOrchestrator:
                 # Note: if same tool is called multiple times in one turn, we keep first result
                 # (usually sufficient for context, and avoids token bloat from repeated data)
 
-                tool_response_parts.append(
-                    types.Part.from_function_response(
+                _tsig = _fc_thought_sigs.get(tool_name)
+                _fn_resp_kwargs: dict[str, Any] = {
+                    "function_response": types.FunctionResponse(
                         name=tool_name,
                         response={"result": json.dumps(result, default=str)},
-                    )
-                )
+                    ),
+                }
+                if _tsig is not None:
+                    _fn_resp_kwargs["thought_signature"] = _tsig
+                tool_response_parts.append(types.Part(**_fn_resp_kwargs))
+
+            # Gemini requires one function_response per function_call in the turn.
+            # Send placeholder responses for calls that were skipped (dedup / scope guard)
+            # so the response count always matches the call count.
+            # Include thought_signature in stubs too — Vertex AI validates every response.
+            for skipped_name in skipped_names:
+                _tsig = _fc_thought_sigs.get(skipped_name)
+                _skip_kwargs: dict[str, Any] = {
+                    "function_response": types.FunctionResponse(
+                        name=skipped_name,
+                        response={"result": json.dumps({"note": "duplicate or out-of-scope — prior result applies"}, default=str)},
+                    ),
+                }
+                if _tsig is not None:
+                    _skip_kwargs["thought_signature"] = _tsig
+                tool_response_parts.append(types.Part(**_skip_kwargs))
 
             # Append steering instructions as a dedicated text Part — clearly separate
             # from tool result data so the LLM reads them as directives, not as data.

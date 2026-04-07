@@ -41,7 +41,7 @@ class ChatRequest(BaseModel):
     message: str = Field(
         ...,
         min_length=1,
-        max_length=2000,
+        max_length=8000,
         description="The user's query for the admin assistant.",
         examples=["What is the status of order ORD-002?"],
     )

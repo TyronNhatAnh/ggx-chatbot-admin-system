@@ -1379,6 +1379,27 @@ class OrderServiceClient:
             requires_auth=False,
         )
 
+    def submit_order(self, payload: dict) -> dict:
+        """POST /api/v1/admin/orders — create and submit a new order as an admin."""
+        try:
+            raw = self._post("/admin/orders", json_body=payload, requires_auth=True)
+            data = self._unwrap_success_payload(raw)
+            if isinstance(data, dict) and data.get("error"):
+                return data
+            return data if isinstance(data, dict) else {"raw": data}
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "submit_order HTTP %s — body: %s",
+                exc.response.status_code, exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("submit_order network error — %s", exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error("submit_order unexpected error — %s: %s", type(exc).__name__, exc)
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
     def estimate_guest_home_moving(self, payload: dict) -> dict:
         """POST /api/v1/guest/home-moving/estimate."""
         return self._call_price_endpoint(

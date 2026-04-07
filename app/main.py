@@ -1,3 +1,4 @@
+import contextlib
 import hmac
 import logging
 import math
@@ -50,6 +51,13 @@ logger = logging.getLogger(__name__)
 # App
 # ---------------------------------------------------------------------------
 
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Eagerly initialise the orchestrator so model-loading logs appear at startup."""
+    get_orchestrator()
+    yield
+
+
 app = FastAPI(
     title="AI Admin Assistant",
     description=(
@@ -57,6 +65,7 @@ app = FastAPI(
         "orders, drivers, and analytics. Powered by Google Gemini."
     ),
     version="1.0.0",
+    lifespan=_lifespan,
 )
 
 _orchestrator: AIOrchestrator | None = None

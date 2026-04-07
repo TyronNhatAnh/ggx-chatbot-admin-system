@@ -10,6 +10,8 @@ The assistant answers questions about orders, drivers, organizations, and indexe
 
 - `GET /health`
 - `POST /chat`
+- `GET /history` — paginated conversation list (`page`, `page_size`)
+- `GET /history/{conversation_id}` — full turn history, summary, and long-term memory
 
 `/chat` response contract:
 
@@ -42,7 +44,7 @@ The assistant answers questions about orders, drivers, organizations, and indexe
   - `429` Gemini quota / rate-limit errors
   - `500` internal server errors
 - Tool loop protections in orchestrator:
-  - `MAX_TOOL_LOOPS = 3`
+  - `MAX_TOOL_LOOPS = 6`
   - duplicate tool-call suppression
   - fallback answer when loop becomes unproductive
 
@@ -66,7 +68,7 @@ The assistant answers questions about orders, drivers, organizations, and indexe
 │  app/orchestrator/ai_orchestrator.py  (singleton)   │
 │  · Feature detection → per-request system prompt    │
 │  · Injects today's date + conversation context      │
-│  · Gemini tool-calling loop (MAX_TOOL_LOOPS = 3)    │
+│  · Gemini tool-calling loop (MAX_TOOL_LOOPS = 6)    │
 │  · Parallel tool execution (ThreadPoolExecutor)     │
 │  · Duplicate tool-call suppression                  │
 │  · Synthesis fallback when loop exhausted           │
@@ -100,7 +102,7 @@ The assistant answers questions about orders, drivers, organizations, and indexe
 └──────┬──────────────────────────────────────────────┘
        │
 ┌──────▼──────────────────────────────────────────────┐
-│  app/tools/  (57 registered tools)                  │
+│  app/tools/  (54 registered tools)                  │
 │                                                     │
 │  order_tools.py   — orders, pricing, reports        │
 │  user_tools.py    — users, orgs, branches, roles    │
@@ -138,7 +140,7 @@ The assistant answers questions about orders, drivers, organizations, and indexe
    d. Detect feature key → load modular system prompt
    e. Inject [Today's date] + report tool hints into message
    f. Gemini round 1: send_message(effective_message)
-   ┌─ TOOL LOOP (repeat up to MAX_TOOL_LOOPS=3) ────────┐
+   ┌─ TOOL LOOP (repeat up to MAX_TOOL_LOOPS=6) ────────┐
    │  g. Extract function_calls from response            │
    │  h. Execute tools in parallel via ThreadPoolExecutor│
    │  i. Collect results + steering notes                │
@@ -246,20 +248,23 @@ cp .env.example .env
 Required keys (minimum):
 
 ```env
-GEMINI_API_KEY=your-gemini-api-key
 CHAT_API_KEY=replace-with-strong-random-secret
+VERTEX_AI_CREDENTIALS_FILE=app/config/vertex-ai.json
 ```
 
 Optional but commonly used:
 
 ```env
-MODEL_NAME=gemini-2.5-pro
+MODEL_NAME=gemini-3-flash-preview
+PRO_MODEL_NAME=gemini-3-pro-preview
+VERTEX_AI_SA_KEY=gemini-kr-sa-staging
+VERTEX_AI_LOCATION=global
 CHAT_AUTH_ENABLED=true
 CHAT_RATE_LIMIT_ENABLED=true
 CHAT_RATE_LIMIT_REQUESTS=30
 CHAT_RATE_LIMIT_WINDOW_SECONDS=60
-CHAT_ORDER_CACHE_TTL_SECONDS=60
-COMMON_SERVICE_BASE_URL=https://stag-api.gogox.co.kr/common
+CHAT_HISTORY_DB=data/chat_history.db
+CONTEXT_CACHING_ENABLED=false
 ```
 
 Indexer repo paths:
@@ -292,15 +297,17 @@ Swagger: `http://localhost:8000/docs`
 
 ## Tool Inventory (Current)
 
-Total registered tools: **50**
+Total registered tools: **54**
 
-- Order/report tools: 18
-- User/admin tools: 20
+- Order/report tools: 14
+- User/admin tools: 13
+- Common tools: 9
+- Driver tools: 6
 - Docs tools: 3
 - Knowledge tools: 9
 
 Important note:
-- `get_delayed_orders` is intentionally not registered to avoid duplicate logical calls with `get_orders(status='Transit')`.
+- `get_delayed_orders` is intentionally not registered (overlaps `get_orders_admin_panel(status_cd=[4])`).
 
 ## Authentication Model
 

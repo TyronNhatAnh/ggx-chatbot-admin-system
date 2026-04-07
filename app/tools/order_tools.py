@@ -287,6 +287,17 @@ def get_tax_invoice_states(mgt_keys: list[str]) -> dict:
     return get_order_client().get_tax_invoice_states(mgt_keys)
 
 
+def submit_order(payload: dict) -> dict:
+    """Submit a new order on behalf of an admin (POST /admin/orders).
+    THIS IS THE ONLY WRITE ACTION PERMITTED. Only call after the admin has explicitly confirmed
+    the order details. Never call speculatively or without a confirmed approval in the same turn.
+
+    Args:
+        payload: Full order creation body as required by POST /admin/orders.
+    """
+    return get_order_client().submit_order(payload)
+
+
 def get_order_history(
     order_id: str,
     page_size: int = 20,
