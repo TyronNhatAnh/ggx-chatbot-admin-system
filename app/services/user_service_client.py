@@ -91,14 +91,19 @@ class UserServiceClient:
     @staticmethod
     def _slim_user_profile(user: dict) -> dict:
         """Normalize user profile fields for chatbot responses."""
+        branch = user.get("branch") or {}
+        org = branch.get("organization") or {}
         return {
             "userId": user.get("userId") or user.get("id") or user.get("UserID"),
             "name": user.get("name") or user.get("fullName") or user.get("username"),
             "phoneNumber": user.get("phoneNumber") or user.get("mobileNo"),
             "email": user.get("email"),
-            "organizationId": user.get("organizationId") or user.get("OrganizationID"),
-            "branchId": user.get("branchId") or user.get("BranchID"),
-            "status": user.get("status") or user.get("statusCd"),
+            "typeCd": user.get("typeCd"),
+            "statusCd": user.get("statusCd") or user.get("status"),
+            "branchId": branch.get("id") or user.get("branchId") or user.get("BranchID"),
+            "branchName": branch.get("name"),
+            "organizationId": org.get("id") or user.get("organizationId") or user.get("OrganizationID"),
+            "organizationName": org.get("name"),
             "lastSignIn": user.get("lastSignIn") or user.get("LastSignIn"),
             "lastAccessedAt": user.get("lastAccessedAt") or user.get("LastAccessedAt"),
             "loginTypeCd": user.get("loginTypeCd") or user.get("LoginTypeCD"),

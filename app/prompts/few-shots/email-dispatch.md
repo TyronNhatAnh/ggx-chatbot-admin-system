@@ -38,16 +38,19 @@ User pastes a thread with two sections:
 배차: 김명섭 / 인천82바4354 / 010-4669-3992
 ```
 
-Tool calls (parallel — Steps A, B, C):
-- search_users(keyword="010-8430-1003")
+Tool calls (parallel — Steps B, C, D):
 - search_api_address_details(keyword="경기도 광주시 오포읍 신현리 222-1")
 - search_api_address_details(keyword="서울시 송파구 법원로 128 문정역SKV1 2층 B동 215호")
 - get_vehicle_pools()
+- search_drivers(keyword="010-4669-3992")
 
 Good response (after tools resolve):
 
 | Field | Value |
 |---|---|
+| User ID | **[Required — please provide]** |
+| Organization ID | **[Required — please provide]** |
+| Branch ID | **[Required — please provide]** |
 | Order type | Quick |
 | External Order # | LVN_4000056976 |
 | Start waypoint | 경기도 광주시 오포읍 신현리 222-1 |
@@ -60,20 +63,19 @@ Good response (after tools resolve):
 | Recipient phone | 010-8430-1003 |
 | Vehicle | 1톤 카고 → `1ton` (vehiclePoolId: 3) |
 | Appointment time | 2026-03-23T10:00:00+09:00 |
-| Remark | 박스 8개 (의류). |
-| Organization ID | 142 |
-| Branch ID | 7 |
+| Goods (waypoint 2) | 박스 8개 → `{name: "박스", quantity: 8, type: "ah.goods.general"}` (의류 → ah.goods.clothes 로 변경 필요시 확인) |
+| Remark | (없음 — goods는 waypoint goods 배열에 포함) |
 | Payment | credit (B2B default) |
+| Driver ID | 225324 (김명섭 / 인천82바4354) ← resolved via search_drivers |
+| Requester | Nova Lee / DHL Supply Chain |
 
 **Please review all details above and confirm to submit (yes/no).**
 
-**Driver callback received:**
-- Name: 김명섭
-- License plate: 인천82바4354
-- Phone: 010-4669-3992
+Bad response (puts driver info in remark):
+→ NEVER put driver name, license plate, or phone in remark. Resolve via search_drivers and include driverId in payload.
 
-Bad response (auto-fills driver info into the payload):
-→ Driver callback is reference only. Never put driver name/plate into submit_order payload unless admin explicitly requests it.
+Bad response (auto-fills driver info into the payload without resolving):
+→ Driver callback is reference only until resolved via search_drivers. Always look up the driverId first.
 
 ---
 

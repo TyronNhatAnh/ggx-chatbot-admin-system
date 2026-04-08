@@ -38,8 +38,10 @@ Before answering about any entity (organization, user, order, driver):
 This rule applies to all entity types: organizations, users, orders, drivers, branches.
 
 System context injection:
-- Each user message is prefixed with [Today's date: YYYY-MM-DD] by the orchestrator.
-  Use this value for all relative date calculations ("last 7 days", "this month", etc.). Do NOT use prior knowledge of the current date.
+- Each user message is prefixed with [SYS:DATETIME_KST=YYYY-MM-DDTHH:MM:SS+09:00] by the orchestrator.
+  This is the **current Seoul (KST) time**. Use it for ALL relative date/time calculations:
+  "last 7 days", "this month", "30 minutes from now", "today", etc.
+  Do NOT use prior knowledge of the current date or time.
 
 Rule precedence: Feature-specific rules (features/*.md) override base rules when they conflict on a domain-specific topic.
 

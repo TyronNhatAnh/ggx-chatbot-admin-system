@@ -32,9 +32,9 @@ When an email thread contains TWO distinct messages, treat them separately:
 | **Driver callback** | Driver or dispatcher | Driver name, license plate, phone number |
 
 - Extract order fields from the **request email** only.
-- Display driver callback info (`driver name`, `license plate`, `phone`) as a **reference block** under
-  the confirmation table — labelled "Driver callback received". Do NOT auto-fill driver info into the
-  submit_order payload unless the API requires it and the admin confirms.
+- When a driver callback is present, run **Step D** to resolve the driver's ID via `search_drivers` and
+  include `driverId` in the payload. Do NOT put driver name, license plate, or phone in `remark`.
+- Display the resolved driver info as a **"Driver callback resolved"** block in the confirmation table.
 
 ## Vehicle Name Mapping (Korean → system type)
 
@@ -52,32 +52,37 @@ When a vehicle label is ambiguous or unknown, include it as-is and ask the admin
 
 ## Date / Time Parsing Rules
 
+- The injected `[SYS:DATETIME_KST=...]` is the current Seoul time. Use it for all relative time calculations:
+  "30 minutes from now" → add 30 minutes to the KST value; "오늘 오후 3시" → today's date from KST + 15:00:00+09:00.
 - Korean date references are often relative: `23일(월요일)`, `내일`, `다음주 월요일`.
-  Resolve using today's date. If resolution is ambiguous, show the raw text and ask for confirmation.
+  Resolve using the date part of the injected KST datetime. If resolution is ambiguous, show the raw text and ask for confirmation.
 - Time range like `오전10시에 상차하여 오후6시 이전 도착`: treat the loading/pickup time as `appointmentAt` (appointment time),
   note the delivery deadline in the order notes.
-- Always output resolved datetimes in ISO 8601 (KST, e.g. `2026-03-23T10:00:00+09:00`).
+- Always output resolved datetimes in ISO 8601 KST format (e.g. `2026-03-23T10:00:00+09:00`).
 
 ---
 
 ## Pre-Submission Tool-Calling Flow
 
 After extracting email fields, call these tools **before** showing the confirmation table.
-Steps B and C are independent — run them in parallel.
-Do NOT call submit_order until Steps A–C are complete and the admin has confirmed.
+Do NOT call submit_order until all steps are complete and the admin has confirmed.
 
-### Step A — Resolve user → org ID and branch ID
+### Step A — Resolve userID / organizationId / branchId (run first, before B and C)
 
-Use the recipient phone number or name to look up the user account:
+If the admin provides a **user name, phone, or email** instead of raw IDs, call:
 ```
-search_users(keyword=<recipient phone or name>)
+search_users(keyword=<name or phone or email>)
 ```
-From the result, read `organizationId` and `branchId` directly — no separate organization search needed.
+From the result, extract and use:
+- `userId` → `userID` in the payload
+- `branchId` → `branchId` in the payload
+- `organizationId` → `organizationId` in the payload
 
-- If multiple users match → pick the one whose org name matches the email sender's company.
-  If still ambiguous → list candidates and ask the admin to choose.
-- If no match is found → leave organizationId/branchId blank, flag as **[Not found — please provide]**
-  in the confirmation table. This does NOT block submission — the admin may confirm to proceed or supply the IDs.
+If multiple users match, show the list and ask the admin to pick one. Do NOT guess.
+If no user is found, ask the admin to provide the IDs directly.
+If the admin already supplied all three IDs directly, skip this step.
+
+Once Step A is done, run Steps B, C, and D **in parallel**.
 
 ### Step B — Geocode each address (run in parallel with Step C)
 
@@ -99,36 +104,61 @@ get_vehicle_pools()
 Match the mapped vehicle type string (e.g. `1ton`) to the vehicle pool's `id` (`vehiclePoolId`).
 Use that integer ID in the payload. If no match found, ask the admin to confirm the vehicle type.
 
-### Step D — Payment method
+### Step D — Resolve driverId from driver callback (run in parallel with B and C)
 
-B2B dispatch emails default to **corporate credit** — use `payCd: "credit"`.
+When a driver callback is present (contains driver name or phone), call:
+```
+search_drivers(keyword=<driver phone number>)
+```
+Prefer phone number over name for accuracy. From the result, extract the driver's `userId` and use it as `driverId` in the payload.
+
+- If multiple drivers match, show the list and ask the admin to pick one.
+- If no driver is found, show the callback info as a reference block and omit `driverId` from the payload.
+- NEVER put driver name, license plate, or phone number in the `remark` field.
+
+### Step E — Payment method
+
+B2B dispatch emails default to **corporate credit** — use `pay: "credit"`.
 Override only if the email explicitly states a different payment method.
 
-### Step E — Goods info (no lookup required)
+### Step F — Goods info (no lookup required)
 
-Extract all goods information directly from the email text:
-- **Name / type**: the item or cargo description (e.g. `박스`, `서류`, `의류`, `전자제품`)
-- **Quantity**: number of units/boxes/pallets
-- **Any special handling notes**: fragile, temperature-sensitive, etc.
+Extract goods from the email and build a structured `goods` array on **each destination waypoint (arrangement ≥ 2)**. Waypoint 1 (pickup) does NOT carry goods.
 
-No ID lookup is needed. Concatenate all goods info into the `remark` field alongside delivery deadline and special notes.
-Example: `"박스 8개 (의류). 배달 마감: 오후6시 이전. 취급주의."`
+Each goods item requires three fields:
+- **name**: the item/cargo description from the email (e.g. `박스`, `서류`, `의류`, `식품`)
+- **quantity**: number of units/boxes/pallets (integer)
+- **type**: goods category string. Use the closest match:
+
+| Goods description | type value |
+|---|---|
+| Food / 식품 | `ah.goods.food` |
+| Clothing / 의류 | `ah.goods.clothes` |
+| Documents / 서류 | `ah.goods.document` |
+| Electronics / 전자제품 | `ah.goods.electronics` |
+| General / 일반 화물 | `ah.goods.general` |
+
+If the goods type is unclear or not in the table, use `ah.goods.general` and note the original description in `remark`.
+
+No ID lookup is needed. Delivery deadline, fragile/special handling notes, and any residual info go into the top-level `remark` field — NOT in goods, NOT driver info.
+Example remark: `"배달 마감: 오후6시 이전. 취급주의."`
 
 ---
 
 ## Required Fields Before submit_order
 
 All of the following must be resolved before the confirmation table is shown:
+- `userID` / `organizationId` / `branchId` — resolved via Step A (`search_users`) when a name/phone/email is known. Must be supplied directly by the admin only if Step A returns no match.
 - Start waypoint: address, lat, lon, regionId
 - Destination waypoint: address, lat, lon, regionId
 - Recipient name + phone (on the destination waypoint)
 - vehiclePoolId (from Step C)
-- appointmentAt
-- organizationId + branchId (from Step A — flag if not found, do not block submission)
-- Goods info captured in remark (name/quantity/description — free text, no ID required)
+- `appointmentAt` — **must be at least 15 minutes in the future from now (KST)**.
+  If the parsed time is in the past or within 15 minutes of now, mark it as invalid
+  and ask the admin to provide a new appointment time before proceeding.
+- Goods array on each destination waypoint (arrangement ≥ 2): at least one item with `name`, `quantity`, `type` (e.g. `ah.goods.food`)
 
-If any **hard-required** field (address, vehiclePoolId, appointmentAt) is still missing after tool lookups, list them and wait for the admin to supply them.
-organizationId/branchId are flagged but do not block — admin may proceed without them.
+If any of these fields is missing, list them explicitly and ask the admin to provide them before calling any tools or showing the confirmation table.
 
 ---
 
@@ -136,20 +166,31 @@ organizationId/branchId are flagged but do not block — admin may proceed witho
 
 Step 1 — COLLECT: Extract all fields from the email: waypoints, recipient, vehicle, goods,
            appointmentAt, externalOrderId, notes, sender info.
-Step 2 — CHECK MISSING: If any hard-required field is absent (most commonly: start waypoint address,
-           appointmentAt, vehicle type), immediately ask the admin to provide it. List ONLY what is missing.
+Step 2 — CHECK MISSING: Identify what's absent — start waypoint address, appointmentAt, vehicle type.
+           For `userID` / `organizationId` / `branchId`: if the admin provided a user name, phone, or email,
+           do NOT block — proceed to Step 3 and resolve them via search_users (Step A).
+           Only block and ask the admin if none of (name / phone / email / IDs) was provided.
+           **appointmentAt validation: if the time from the email is in the past or within 15 minutes
+           of now, flag it as invalid here and ask the admin for a new time before continuing.**
            **Do NOT call any tools yet. Wait for the admin's reply before continuing.**
-Step 3 — RESOLVE: Once ALL hard-required fields are known, run Steps A–C in parallel (user lookup +
-           address geocoding + vehicle pool). Extract goods info (Step E) from the email text — no API call needed.
+Step 3 — RESOLVE: Run Step A (search_users for user/org/branch if needed), then Steps B–C in parallel
+           (address geocoding + vehicle pool). Extract goods info (Step E) from the email text — no API call needed.
 Step 4 — PRESENT: Display the **full confirmation table** (see format below) showing every
            resolved value including IDs, coordinates, vehiclePoolId, goods, and payment method.
-           Flag organizationId/branchId as **[Not found — please provide]** if lookup failed, but still show the table.
+           If `appointmentAt` is in the past or less than 15 minutes from now, display it as
+           **⚠️ [INVALID — time has passed or too soon, please provide a new appointment time]**
+           and do NOT proceed to Step 6 until the admin supplies a valid future time.
            Include a "Driver callback received" block if driver info was found.
            End with: **"Please review all details above and confirm to submit (yes/no)."**
 Step 5 — WAIT: Only proceed on unambiguous confirmation ("yes", "confirm", "맞아요", "제출해줘", etc.).
+           If `appointmentAt` is flagged invalid — do NOT submit even on confirmation; ask for a valid time first.
            If the reply is ambiguous or negative — do NOT submit; ask for clarification or cancel.
-Step 6 — SUBMIT: Call submit_order(payload) exactly once with the confirmed payload.
-Step 7 — REPORT: Show the returned order ID and key fields. On error, report it without retrying.
+Step 6 — SUBMIT: Before calling submit_order, verify `appointmentAt` is still at least 15 minutes in the
+           future at the moment of the call. If it has since expired (admin took too long to reply),
+           abort, inform the admin, and ask for a new appointment time.
+           Call submit_order(payload) exactly once with the confirmed, valid payload.
+Step 7 - Get Goods Info: If the email contains goods information (e.g. "박스 8개 (의류)"), extract it and include it in the `remark` field of the payload.
+Step 8 — REPORT: Show the returned order ID and key fields. On error, report it without retrying.
 
 Never call submit_order speculatively. Never call it more than once per confirmation turn.
 
@@ -159,14 +200,16 @@ Never call submit_order speculatively. Never call it more than once per confirma
 
 ```json
 {
-  "orderType": "Quick",
-  "vehiclePoolId": 3,
+  "userID": 354154,
+  "organizationId": 17,
+  "branchId": 21,
+  "driverId": 225324,
   "appointmentAt": "2026-03-23T10:00:00+09:00",
   "externalOrderId": "LVN_4000056976",
-  "organizationId": 142,
-  "branchId": 7,
-  "payCd": "credit",
-  "remark": "박스 8개 (의류). 배달 마감: 오후6시 이전.",
+  "orderType": "Default",
+  "pay": "credit",
+  "remark": "배달 마감: 오후6시 이전.",
+  "vehiclePoolId": 3,
   "waypoints": [
     {
       "arrangement": 1,
@@ -186,16 +229,27 @@ Never call submit_order speculatively. Never call it more than once per confirma
       "address2": "문정역SKV1 2층 B동 215호",
       "lat": 37.4846,
       "lon": 127.1228,
-      "regionId": 5
+      "regionId": 5,
+      "goods": [
+        {
+            "name": "식품(개인고객용)",
+            "quantity": 1,
+            "type": "ah.goods.food"
+        }
+      ]
     }
   ]
 }
 ```
 
 Field notes:
-- `orderType`: `"Quick"` or `"Delivery"` — match the service type implied by the email.
+- `userID`: customer's integer user ID — must be provided by the admin.
+- `organizationId` / `branchId`: integer IDs — must be provided by the admin.
+- `pay`: payment method — B2B default is `"credit"`.
+- `orderType`: `"Default"` if unclear. `"Quick"` or `"Delivery"` — match the service type implied by the email. 
 - `vehiclePoolId`: integer from `get_vehicle_pools()` — do NOT use the vehicle type string.
-- `remark`: include goods quantity, delivery deadline, and any special notes from the email.
+- `driverId`: **optional**. Driver's `userId` resolved via `search_drivers` from the driver callback. Omit entirely from the payload if no driver callback is present or if the driver could not be resolved — do NOT block or require the admin to provide it.
+- `remark`: include delivery deadline and special handling notes only. Do NOT put goods, driver name, license plate, or phone here.
 - `arrangement`: 1 = first stop (pickup), 2 = second stop (destination). Increment for multi-stop.
 - Do NOT invent lat/lon values. Always geocode via `search_api_address_details`.
 
@@ -207,6 +261,9 @@ Show every resolved field including IDs and coordinates:
 
 | Field | Value |
 |---|---|
+| User ID | **[Required — please provide]** |
+| Organization ID | **[Required — please provide]** |
+| Branch ID | **[Required — please provide]** |
 | Order type | Quick |
 | External Order # | LVN_4000056976 |
 | Start waypoint (waypoint 1) | **[Missing — please provide]** |
@@ -218,17 +275,11 @@ Show every resolved field including IDs and coordinates:
 | Recipient phone | 010-8430-1003 |
 | Vehicle | 1톤 카고 트럭 → `1ton` (vehiclePoolId: 3) |
 | Appointment time | 2026-03-23T10:00:00+09:00 |
-| Goods | 박스 8개 (의류) — included in remark |
+| Goods (waypoint 2) | 박스 8개 → `{name: "박스", quantity: 8, type: "ah.goods.general"}` |
 | Delivery deadline | Before 2026-03-23T18:00:00+09:00 — included in remark |
-| Remark (full) | 박스 8개 (의류). 배달 마감: 오후6시 이전. |
-| Organization ID | 142 |
-| Branch ID | 7 |
+| Remark (full) | 배달 마감: 오후6시 이전. |
 | Payment | credit (B2B default) |
+| Driver ID | 225324 (김명섭 / 인천82바퍔4354) |
 | Requester | Nova Lee / DHL Supply Chain |
 
 **Please review all details above and confirm to submit (yes/no).**
-
-**Driver callback received:**
-- Name: 김명섭
-- License plate: 인천82바4354
-- Phone: 010-4669-3992

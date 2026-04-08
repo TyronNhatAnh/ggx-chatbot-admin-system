@@ -112,12 +112,12 @@ def get_orders_admin_panel(
 
 
 def submit_order(payload: dict) -> dict:
-    """Submit a new order on behalf of an admin (POST /admin/orders).
+    """Submit a new order on behalf of an admin (POST /admin/orders/submit).
     THIS IS THE ONLY WRITE ACTION PERMITTED. Only call after the admin has explicitly confirmed
     the order details. Never call speculatively or without a confirmed approval in the same turn.
 
     Args:
-        payload: Full order creation body as required by POST /admin/orders.
+        payload: Full order creation body as required by POST /admin/orders/submit.
     """
     return get_order_client().submit_order(payload)
 

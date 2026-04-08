@@ -997,9 +997,9 @@ class OrderServiceClient:
         )
 
     def submit_order(self, payload: dict) -> dict:
-        """POST /api/v1/admin/orders — create and submit a new order as an admin."""
+        """POST /api/v1/admin/orders/submit — create and submit a new order as an admin."""
         try:
-            raw = self._post("/admin/orders", json_body=payload, requires_auth=True)
+            raw = self._post("/admin/orders/submit", json_body=payload, requires_auth=True)
             data = self._unwrap_success_payload(raw)
             if isinstance(data, dict) and data.get("error"):
                 return data

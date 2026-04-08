@@ -133,9 +133,6 @@ FLASH_TOOL_SETS: dict[str, frozenset[str]] = {
         "search_branches",
         "search_organizations", "list_admin_roles", "list_admin_departments",
         "list_admin_menus", "get_admin_permissions", "get_accessible_menu_tree",
-        "verify_biz_registration_number",
-        # user-admin.md: last-login flow — resolve userId from order owner field
-        "get_order_detail",
     }),
     "common-data": frozenset({
         "get_vehicle_prices",
@@ -147,13 +144,14 @@ FLASH_TOOL_SETS: dict[str, frozenset[str]] = {
         # order read + submit
         "get_order_detail", "get_order_history", "get_orders_admin_panel",
         "submit_order",
-        # user / org lookup (Step A)
+        # user/org/branch resolution (Step A)
         "search_users",
-        "search_organizations",
         # address geocoding (Step B)
         "search_api_address_details", "search_api_addresses",
         # vehicle pool ID resolution (Step C)
         "get_vehicle_pools",
+        # driver resolution from callback info (Step D)
+        "search_drivers",
     }),
     "knowledge-code": frozenset({
         # org lookup

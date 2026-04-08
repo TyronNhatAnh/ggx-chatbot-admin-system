@@ -41,7 +41,7 @@ Price detail rendering rule:
 - Do NOT collapse `calculationPrice` to just the total. If a field is null or 0, omit it from the table.
 
 Order submission (ONLY permitted write action):
-- submit_order(payload) — create and submit a new order as an admin (POST /admin/orders, requires auth).
+- submit_order(payload) — create and submit a new order as an admin (POST /admin/orders/submit, requires auth).
   This is the ONLY action in this assistant that modifies data.
 
 Confirmation gate (MANDATORY — must be followed without exception):

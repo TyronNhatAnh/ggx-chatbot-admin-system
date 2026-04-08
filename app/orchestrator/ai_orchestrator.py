@@ -8,7 +8,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from google.genai import types
@@ -296,7 +296,7 @@ _FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
     "user-admin": (
         "user profile", "organization", "org", "branch", "admin role", "permission",
-        "feature flag", "department", "account", "user",
+        "feature flag", "department", "account", "find user", "search user", "user account",
         "tài khoản", "người dùng", "tổ chức", "chi nhánh", "phân quyền", "quyền",
         "사용자", "조직", "지점", "권한",
     ),
@@ -314,6 +314,8 @@ _FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "email-dispatch": (
         "상차", "하차", "도착지", "수령인", "배차", "박스", "카고", "eta",
         "dispatch email", "email dispatch", "parse email", "email order",
+        "make order", "create order", "submit order", "place order",
+        "origin address", "pickup address", "from email",
         "email này", "đoạn email", "từ email", "parse email",
         "order#", "외부주문", "오더번호",
     ),
@@ -461,8 +463,10 @@ class AIOrchestrator:
         # Build native Gemini conversation history from the three memory layers.
         # History is seeded into the chat session; only the current message is sent fresh.
         history = build_history(sid, safe_message, self._memory)
-        # Always inject today's date so Gemini can compute relative periods ("last 7 days", etc.).
-        effective_message = f"[SYS:DATE={date.today().isoformat()}]\n\n{safe_message}"
+        # Inject current KST datetime so Gemini can compute relative times ("30 minutes from now", etc.).
+        _KST = timezone(timedelta(hours=9))
+        _now_kst = datetime.now(_KST)
+        effective_message = f"[SYS:DATETIME_KST={_now_kst.strftime('%Y-%m-%dT%H:%M:%S+09:00')}]\n\n{safe_message}"
 
         # Build a feature-specific system prompt for this request.
         # Re-use the feature key from the first turn if available; re-detect only
