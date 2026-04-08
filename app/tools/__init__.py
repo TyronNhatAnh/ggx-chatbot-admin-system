@@ -11,20 +11,17 @@ from app.tools.common_tools import (
     search_api_addresses,
 )
 from app.tools.docs_tools import (
-    get_handler_context,
+    # get_handler_context,  # s16 — temporarily disabled
     list_available_docs,
-    search_endpoints,
+    # search_endpoints,  # s16 — temporarily disabled
 )
 from app.tools.knowledge_tools import (
     explain_status,
-    find_api_consumers,
-    get_knowledge_stats,
-    get_struct_definition,
+    # find_api_consumers,  # s18 — temporarily disabled
+    # get_knowledge_stats,  # s18 — temporarily disabled
     lookup_enum,
-    search_codebase,
-    trace_full_stack,
-    trace_service_flow,
-    traverse_graph,
+    # search_codebase,  # s17 — temporarily disabled
+    # traverse_graph,  # s18 — temporarily disabled
 )
 from app.tools.order_tools import (
     get_order_cancel_fee,
@@ -37,8 +34,6 @@ from app.tools.order_tools import (
 from app.tools.user_tools import (
     get_accessible_menu_tree,
     get_admin_permissions,
-    get_branch_by_id,
-    get_organization_by_id,
     list_admin_departments,
     list_admin_menus,
     list_admin_roles,
@@ -59,9 +54,7 @@ ALL_TOOL_FUNCTIONS: list = [
     submit_order,
     # user tools — read-only user-service queries
     search_users,
-    get_branch_by_id,
     search_branches,
-    get_organization_by_id,
     search_organizations,
     list_admin_roles,
     list_admin_departments,
@@ -81,19 +74,16 @@ ALL_TOOL_FUNCTIONS: list = [
     get_vehicle_pools,
     # docs tools — two-tier knowledge (endpoint search → handler source code)
     list_available_docs,
-    search_endpoints,
-    get_handler_context,
-    # knowledge tools — indexed codebase knowledge (enums, flows, structs, search)
+    # search_endpoints,  # s16 — temporarily disabled
+    # get_handler_context,  # s16 — temporarily disabled
+    # knowledge tools — indexed codebase knowledge (enums, search)
     lookup_enum,
     explain_status,
-    trace_service_flow,
-    get_struct_definition,
-    search_codebase,
+    # search_codebase,  # s17 — temporarily disabled
     # graph traversal tools — cross-service flow tracing
-    traverse_graph,
-    find_api_consumers,
-    trace_full_stack,
-    get_knowledge_stats,
+    # traverse_graph,  # s18 — temporarily disabled
+    # find_api_consumers,  # s18 — temporarily disabled
+    # get_knowledge_stats,  # s18 — temporarily disabled
 ]
 
 
@@ -126,7 +116,11 @@ FLASH_TOOL_SETS: dict[str, frozenset[str]] = {
         "get_order_history", "get_orders_admin_panel",
         "submit_order",
         # supporting lookups for order cross-references
-        "search_users", "search_organizations", "get_organization_by_id",
+        "search_users", "search_organizations",
+        # driver fare breakdown (order-lookup.md: driver price perspective)
+        "calculate_driver_fare",
+        # enum/status code lookups
+        "lookup_enum", "explain_status",
     }),
     "driver-tracking": frozenset({
         "get_driver", "search_drivers", "calculate_driver_fare", "get_vehicle_pools",
@@ -136,14 +130,18 @@ FLASH_TOOL_SETS: dict[str, frozenset[str]] = {
     }),
     "user-admin": frozenset({
         "search_users",
-        "get_branch_by_id", "search_branches", "get_organization_by_id",
+        "search_branches",
         "search_organizations", "list_admin_roles", "list_admin_departments",
         "list_admin_menus", "get_admin_permissions", "get_accessible_menu_tree",
         "verify_biz_registration_number",
+        # user-admin.md: last-login flow — resolve userId from order owner field
+        "get_order_detail",
     }),
     "common-data": frozenset({
         "get_vehicle_prices",
         "get_addresses", "search_api_addresses", "search_api_address_details",
+        # enum/status code lookups
+        "lookup_enum", "explain_status",
     }),
     "email-dispatch": frozenset({
         # order read + submit
@@ -151,10 +149,22 @@ FLASH_TOOL_SETS: dict[str, frozenset[str]] = {
         "submit_order",
         # user / org lookup (Step A)
         "search_users",
-        "get_organization_by_id", "search_organizations",
+        "search_organizations",
         # address geocoding (Step B)
         "search_api_address_details", "search_api_addresses",
         # vehicle pool ID resolution (Step C)
         "get_vehicle_pools",
+    }),
+    "knowledge-code": frozenset({
+        # org lookup
+        "search_organizations",
+        # knowledge tools
+        "lookup_enum", "explain_status",
+        # "search_codebase",  # s17 — temporarily disabled
+        # "traverse_graph", "find_api_consumers", "get_knowledge_stats",  # s18 — temporarily disabled
+        # docs tools
+        "list_available_docs",
+        # "search_endpoints",  # s16 — temporarily disabled
+        # "get_handler_context",  # s16 — temporarily disabled
     }),
 }

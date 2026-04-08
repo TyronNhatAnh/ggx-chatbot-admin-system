@@ -12,6 +12,9 @@ Call guidance:
 - For address lookup:
   - Start with get_addresses when user-specific/saved address context is expected.
   - Use search_api_addresses and search_api_address_details for public/external map lookup.
+- For enum or constant group questions (e.g. "what values does VehicleType have?") → lookup_enum(enum_name).
+- For named enum + specific value (e.g. "what is PayCd=2?") → lookup_enum(enum_name) only — do NOT also call explain_status.
+- For numeric code explanations without a named enum (e.g. "what does statusCd=7 mean?") → explain_status(code).
 - Keep each turn focused: avoid mixing unrelated Common tools in one response unless user asks.
 
 Output guidance:

@@ -99,7 +99,7 @@ def get_handler_context(handler_name: str) -> dict:
     Contains: endpoint path, handler Go code, detected service calls.
     Use for technical questions about how a specific handler or endpoint works.
     Call list_available_docs() first to see valid handler names.
-    handler_name examples: EstimateGuest, GetOrderDetail, CancelOrderB2C
+    handler_name examples: EstimateGuest, GetOrderDetail
     """
     safe = handler_name.strip().replace("\x00", "") if handler_name else ""
     if not safe or "/" in safe or "\\" in safe or ".." in safe:

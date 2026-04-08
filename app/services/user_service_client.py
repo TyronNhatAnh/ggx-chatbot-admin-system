@@ -175,26 +175,6 @@ class UserServiceClient:
             logger.error("get_user_driver unexpected error - %s: %s", type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
-    def get_branch_by_id(self, branch_id: int) -> dict:
-        """GET /api/v1/branch?id={branch_id}."""
-        try:
-            payload = self._request("GET", "/branch", params={"id": branch_id}, requires_auth=True)
-            data = self._unwrap_success_payload(payload)
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            return data if isinstance(data, dict) else {"raw": data}
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return {"error": "BRANCH_NOT_FOUND", "branch_id": branch_id}
-            logger.error("get_branch_by_id HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "USER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("get_branch_by_id network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("get_branch_by_id unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
     def search_branches(
         self,
         *,
@@ -237,26 +217,6 @@ class UserServiceClient:
             return {"error": "NETWORK_ERROR", "detail": str(exc)}
         except Exception as exc:  # noqa: BLE001
             logger.error("search_branches unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
-    def get_organization_by_id(self, organization_id: int) -> dict:
-        """GET /api/v1/organization?id={organization_id}."""
-        try:
-            payload = self._request("GET", "/organization", params={"id": organization_id}, requires_auth=True)
-            data = self._unwrap_success_payload(payload)
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            return data if isinstance(data, dict) else {"raw": data}
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return {"error": "ORGANIZATION_NOT_FOUND", "organization_id": organization_id}
-            logger.error("get_organization_by_id HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "USER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("get_organization_by_id network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("get_organization_by_id unexpected error - %s: %s", type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
     def search_organizations(

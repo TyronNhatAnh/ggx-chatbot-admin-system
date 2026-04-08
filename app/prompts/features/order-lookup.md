@@ -24,6 +24,9 @@ Tool selection rules:
 - Payment/branchPay status check → get_order_payment_status
 - Cancellation fee preview → get_order_cancel_fee
 - Order change history / audit trail / who updated what → get_order_history
+- Enum or constant group lookup (e.g. "what is OrderStatus?") → lookup_enum(enum_name)
+- Named enum + specific value (e.g. "what is PayCd=2?", "what is OrderStatus=3?") → lookup_enum(enum_name) only — do NOT also call explain_status
+- Numeric code without a named enum (e.g. "what does statusCd=3 mean?") → explain_status(code)
 
 Price perspective (IMPORTANT — read before answering any price or VAT question):
 - `calculationPrice` = CUSTOMER-side price breakdown. `vatAmount` inside it is the VAT charged to the customer (may be 0 for non-VAT customers).

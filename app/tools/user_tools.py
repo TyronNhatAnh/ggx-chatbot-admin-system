@@ -25,11 +25,6 @@ def search_users(
     )
 
 
-def get_branch_by_id(branch_id: int) -> dict:
-    """Get branch by ID (GET /branch?id=)."""
-    return get_user_client().get_branch_by_id(branch_id)
-
-
 def search_branches(
     keyword: str = "",
     organization_id: int = 0,
@@ -43,11 +38,6 @@ def search_branches(
         page_index=page_index,
         page_size=page_size,
     )
-
-
-def get_organization_by_id(organization_id: int) -> dict:
-    """Get organization by ID (GET /organization?id=)."""
-    return get_user_client().get_organization_by_id(organization_id)
 
 
 def search_organizations(

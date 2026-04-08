@@ -3,9 +3,8 @@
 These tools are registered alongside the existing order_tools and docs_tools.
 They give Gemini access to:
   - Enum/status code lookups (what does statusCd=3 mean?)
-  - Service flow tracing (what happens when GetOrderDetail is called?)
-  - Struct definitions (what fields does B2COrder have?)
   - Full-text + semantic code search
+  - Graph traversal across indexed services
 
 All reads go through the KnowledgeStore (SQLite) and optionally the VectorStore.
 """
@@ -65,61 +64,16 @@ def explain_status(code: str) -> dict:
         return {"error": "KNOWLEDGE_ERROR", "message": str(e)}
 
 
-def trace_service_flow(handler_name: str) -> dict:
-    """Trace the execution flow for a backend handler function.
-    Shows the full chain: handler → service layer → repository layer.
-    Use when the user asks "what happens when X is called?" or "how does Y endpoint work?".
-    handler_name is the Go function name, e.g. GetOrderDetail, EstimateGuest, CancelOrderB2C.
-    """
-    if not handler_name or not handler_name.strip():
-        return {"error": "MISSING_HANDLER", "message": "Provide a handler function name."}
-    try:
-        store = get_knowledge_store()
-        result = store.get_flow(handler_name.strip())
-        if result.get("matches", 0) == 0:
-            result["message"] = (
-                f"No service flow found for '{handler_name}'. "
-                "Try search_endpoints() to find the right handler name, "
-                "or get_handler_context() for source-level detail."
-            )
-        return result
-    except Exception as e:
-        logger.exception("[knowledge_tools] trace_service_flow failed: %s", e)
-        return {"error": "KNOWLEDGE_ERROR", "message": str(e)}
-
-
-def get_struct_definition(struct_name: str) -> dict:
-    """Look up a Go struct definition including all fields, types, and JSON tags.
-    Use when the user asks about request/response shapes, data models, or field names.
-    The JSON tags show how Go fields map to API JSON field names.
-    Examples: get_struct_definition("Order"), get_struct_definition("B2COrderDetail")
-    """
-    if not struct_name or not struct_name.strip():
-        return {"error": "MISSING_NAME", "message": "Provide a struct name."}
-    try:
-        store = get_knowledge_store()
-        result = store.get_struct(struct_name.strip())
-        if result.get("matches", 0) == 0:
-            result["message"] = (
-                f"No struct found matching '{struct_name}'. "
-                "Try a shorter keyword or search_codebase() to find the right struct name."
-            )
-        return result
-    except Exception as e:
-        logger.exception("[knowledge_tools] get_struct_definition failed: %s", e)
-        return {"error": "KNOWLEDGE_ERROR", "message": str(e)}
-
-
-def search_codebase(query: str) -> dict:
+def search_codebase(keyword: str) -> dict:
     """Search the indexed codebase using natural language or keywords.
     Searches across functions, enums, structs, and service flows.
     Use for broad questions like "how is pricing calculated?" or "where is order validation?".
     Falls back to full-text search if vector search is not available.
     """
-    if not query or not query.strip():
-        return {"error": "MISSING_QUERY", "message": "Provide a search query."}
+    if not keyword or not keyword.strip():
+        return {"error": "MISSING_QUERY", "message": "Provide a search keyword."}
 
-    query = query.strip()
+    query = keyword.strip()
 
     # Try vector search first (semantic)
     try:
@@ -219,25 +173,6 @@ def find_api_consumers(endpoint: str) -> dict:
         return result
     except Exception as e:
         logger.exception("[knowledge_tools] find_api_consumers failed: %s", e)
-        return {"error": "KNOWLEDGE_ERROR", "message": str(e)}
-
-
-def trace_full_stack(endpoint: str) -> dict:
-    """Trace the full request path for an API endpoint across frontend and backend.
-    Returns the complete chain: React page/component -> API endpoint -> Go handler -> service calls -> repository calls.
-    Works with partial endpoint matches. Use when the user asks:
-      - "What happens end-to-end when this API is called?"
-      - "Which page triggers this handler and what does it do?"
-      - "Trace the full flow for order creation"
-    Examples: trace_full_stack("/orders"), trace_full_stack("GetOrderDetail"), trace_full_stack("SubmitOrder")
-    """
-    if not endpoint or not endpoint.strip():
-        return {"error": "MISSING_ENDPOINT", "message": "Provide an API endpoint or handler name."}
-    try:
-        store = get_knowledge_store()
-        return store.trace_full_stack(endpoint.strip())
-    except Exception as e:
-        logger.exception("[knowledge_tools] trace_full_stack failed: %s", e)
         return {"error": "KNOWLEDGE_ERROR", "message": str(e)}
 
 

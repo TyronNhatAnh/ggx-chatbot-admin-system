@@ -3,10 +3,9 @@
 User tools:
 - search_users(keyword, organization_id, branch_id) → matching users. keyword searches name/phone/email/ID.
   Results paginated (default page_size=5, max 5 per call). If user asks for more results, re-call with page_index=2, 3, etc.
-- get_organization_by_id(id) → org detail.
 - search_organizations(keyword, org_division) → org list with id/name. org_division: b2c, b2b, driver, customer.
   Results paginated — use page_index if the target org is not in the first page.
-- get_branch_by_id(branch_id) / search_branches(keyword, organization_id) → branch records. Paginated.
+- search_branches(keyword, organization_id) → branch records. Paginated.
 - verify_biz_registration_number(biz_number, user_id?) — compliance: validate tax/business registration. user_id optional.
 - Admin roles & permissions:
   - list_admin_departments() → all departments. Use first to get department_id before listing roles by dept.

@@ -33,21 +33,17 @@ ORDER_ID_PATTERN = re.compile(r"\b(?:ORD-[A-Za-z0-9-]{3,}|\d{5,})\b", re.IGNOREC
 _PRO_TOOL_NAMES: frozenset[str] = frozenset({
     # org lookup
     "search_organizations",
-    "get_organization_by_id",
     # knowledge tools
     "lookup_enum",
     "explain_status",
-    "trace_service_flow",
-    "get_struct_definition",
-    "search_codebase",
-    "traverse_graph",
-    "find_api_consumers",
-    "trace_full_stack",
-    "get_knowledge_stats",
+    # "search_codebase",  # s17 — temporarily disabled
+    # "traverse_graph",  # s18 — temporarily disabled
+    # "find_api_consumers",  # s18 — temporarily disabled
+    # "get_knowledge_stats",  # s18 — temporarily disabled
     # docs tools (used by knowledge-code)
     "list_available_docs",
-    "search_endpoints",
-    "get_handler_context",
+    # "search_endpoints",  # s16 — temporarily disabled
+    # "get_handler_context",  # s16 — temporarily disabled
 })
 _PRO_TOOLS: list = [fn for fn in ALL_TOOL_FUNCTIONS if fn.__name__ in _PRO_TOOL_NAMES]
 
@@ -484,12 +480,8 @@ class AIOrchestrator:
         system_prompt = build_system_prompt(feature_key=feature_key)
 
         # A fresh session per request keeps state isolated between users.
-        # Route knowledge-code to the Pro model for deeper reasoning;
-        # fall back to Flash when Pro is not configured.
-        use_pro = (
-            self._pro_model is not None
-            and feature_key == "knowledge-code"
-        )
+        # knowledge-code is handled by Flash (faster, sufficient for endpoint/handler lookup).
+        use_pro = False
         use_bare = not use_pro and feature_key is None
         active_model = self._pro_model if use_pro else (self._bare_model if use_bare else self._model)
         logger.info("[Model    ] Using %s for feature_key=%s", active_model.model_name, feature_key)

@@ -94,3 +94,4 @@ data/knowledge/
 data/vectordb/
 date/*
 
+tests/logs/
