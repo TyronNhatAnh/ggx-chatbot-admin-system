@@ -126,8 +126,8 @@ Override only if the email explicitly states a different payment method.
 Extract goods from the email and build a structured `goods` array on **each destination waypoint (arrangement ≥ 2)**. Waypoint 1 (pickup) does NOT carry goods.
 
 Each goods item requires three fields:
-- **name**: the item/cargo description from the email (e.g. `박스`, `서류`, `의류`, `식품`)
-- **quantity**: number of units/boxes/pallets (integer)
+- **name**: the item type ONLY — strip numbers and counters. e.g. `"박스 8개"` → name=`"박스"`, `"팔레트 5개"` → name=`"팔레트"`. Never include the quantity in the name.
+- **quantity**: the integer count extracted separately from the email text (e.g. `8` from `"박스 8개"`, `5` from `"팔레트 5개"`).
 - **type**: goods category string. Use the closest match:
 
 | Goods description | type value |
