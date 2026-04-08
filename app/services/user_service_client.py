@@ -105,33 +105,6 @@ class UserServiceClient:
             "invalidLoginCount": user.get("invalidLoginCount") or user.get("InvalidLoginCount"),
         }
 
-    def get_user_profile(self, user_id: int) -> dict:
-        """GET /api/v1/users?id={user_id}."""
-        try:
-            payload = self._request("GET", "/users", params={"id": user_id}, requires_auth=True)
-            data = self._unwrap_success_payload(payload)
-            if isinstance(data, dict) and data.get("error"):
-                return data
-
-            user = self._find_user_record(data)
-            if not user:
-                return {"error": "USER_NOT_FOUND", "user_id": user_id}
-
-            result = self._slim_user_profile(user)
-            result["source"] = "GET /api/v1/users?id="
-            return result
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return {"error": "USER_NOT_FOUND", "user_id": user_id}
-            logger.error("get_user_profile HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "USER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("get_user_profile network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("get_user_profile unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
     def search_users(
         self,
         *,

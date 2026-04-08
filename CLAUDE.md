@@ -8,7 +8,7 @@ Read-only AI chatbot service for internal logistics/admin operations. Answers qu
 
 **Gemini Models Used:**
 - `gemini-3-flash-preview` — default for most queries (fast, cost effective)
-- `gemini-3-pro-preview` — for complex reports and knowledge-heavy queries (slower, more expensive)
+- `gemini-3.1-pro-preview` — for complex reports and knowledge-heavy queries (slower, more expensive)
 
 ---
 
@@ -49,7 +49,7 @@ Never put business logic in `app/services/` — that belongs in the orchestrator
 | `app/orchestrator/ai_orchestrator.py` | Tool-calling loop, feature detection, context injection |
 | `app/orchestrator/memory_service.py` | 3-layer memory: short-term (5 turns) + summary + long-term facts |
 | `app/orchestrator/context_builder.py` | Token-budgeted context assembly |
-| `app/tools/` | 54 tool schemas (thin wrappers, no logic) |
+| `app/tools/` | 38 tool schemas (thin wrappers, no logic) |
 | `app/services/` | External API clients (httpx, connection pooling) |
 | `app/prompts/` | Modular prompt files assembled per feature key |
 | `app/persistence/chat_store.py` | SQLite chat history (WAL mode) |
@@ -67,7 +67,7 @@ Never put business logic in `app/services/` — that belongs in the orchestrator
 
 ### Feature Detection
 The orchestrator routes each query to a modular system prompt and selects model tier:
-- Flash model (`MODEL_NAME`) — default for most queries; thinking_budget=8000, max_output_tokens=4096
+- Flash model (`MODEL_NAME`) — default for most queries; thinking_budget=1024, max_output_tokens=4096
 - Pro model (`PRO_MODEL_NAME`) — reports and knowledge-heavy queries; thinking uncapped, max_output_tokens=8192
 - Both models run with `include_thoughts=True`; thought parts are filtered before sending responses to users
 - Detected `feature_key` persists in `SessionState` across follow-up turns
@@ -91,7 +91,7 @@ VERTEX_AI_LOCATION=global                # Model location (global or us-central1
 **Models (optional, have defaults):**
 ```
 MODEL_NAME=gemini-3-flash-preview        # Flash model for most queries
-PRO_MODEL_NAME=gemini-3-pro-preview      # Pro model for reports/knowledge (leave empty to use Flash for all)
+PRO_MODEL_NAME=gemini-3.1-pro-preview    # Pro model for reports/knowledge (leave empty to use Flash for all)
 ```
 
 **Common optional:**

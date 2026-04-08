@@ -104,7 +104,7 @@ def get_handler_context(handler_name: str) -> dict:
     safe = handler_name.strip().replace("\x00", "") if handler_name else ""
     if not safe or "/" in safe or "\\" in safe or ".." in safe:
         try:
-            available = get_knowledge_store().list_handlers()
+            available = truncate_list(get_knowledge_store().list_handlers())
         except Exception:
             available = []
         return {
@@ -119,8 +119,8 @@ def get_handler_context(handler_name: str) -> dict:
         if not result:
             return {
                 "error": "HANDLER_NOT_FOUND",
-                "message": f"No handler found for '{safe}'.",
-                "available_handlers": store.list_handlers(),
+                "message": f"No handler found for '{safe}'. Try list_available_docs() to see valid handler names.",
+                "available_handlers": truncate_list(store.list_handlers()),
             }
         return result
     except Exception as e:

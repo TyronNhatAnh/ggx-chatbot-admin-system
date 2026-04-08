@@ -94,7 +94,7 @@ From each result read: `address1` (road address), `address2` (detail/unit), `lat
 ### Step C — Resolve vehiclePoolId (run in parallel with Step B)
 
 ```
-get_common_vehicle_pools()
+get_vehicle_pools()
 ```
 Match the mapped vehicle type string (e.g. `1ton`) to the vehicle pool's `id` (`vehiclePoolId`).
 Use that integer ID in the payload. If no match found, ask the admin to confirm the vehicle type.
@@ -194,7 +194,7 @@ Never call submit_order speculatively. Never call it more than once per confirma
 
 Field notes:
 - `orderType`: `"Quick"` or `"Delivery"` — match the service type implied by the email.
-- `vehiclePoolId`: integer from `get_common_vehicle_pools()` — do NOT use the vehicle type string.
+- `vehiclePoolId`: integer from `get_vehicle_pools()` — do NOT use the vehicle type string.
 - `remark`: include goods quantity, delivery deadline, and any special notes from the email.
 - `arrangement`: 1 = first stop (pickup), 2 = second stop (destination). Increment for multi-stop.
 - Do NOT invent lat/lon values. Always geocode via `search_api_address_details`.

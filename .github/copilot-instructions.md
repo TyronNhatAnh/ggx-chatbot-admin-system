@@ -18,7 +18,7 @@ make clean          # Delete .venv
 
 **Indexing flags:** `FORCE=1 make index-all` bypasses incremental hash check and re-indexes all files.
 
-**No test suite.** No `tests/` directory and no pytest configuration exist — do not look for or run tests.
+**No test suite.** `tests/test_report_e2e.py` exists but there is no pytest configuration — do not look for or run tests.
 
 ## Architecture
 
@@ -54,8 +54,8 @@ make clean          # Delete .venv
 - Optionally persisted to SQLite when `CHAT_HISTORY_DB` is set (`persistence/chat_store.py`)
 - Token-budgeted context assembly with CJK-aware estimation (`context_builder.py`)
 - 3-layer memory: `memory_service.py` (FACT / ENTITY / DECISION); short-term 5 turns (`SHORT_TERM_MAX_TURNS`), summarize every 5 new turns (`SUMMARIZE_THRESHOLD`)
-- LLM thinking enabled on both models (`include_thoughts=True`); Flash capped at 8 000 thinking tokens, 4 096 output; Pro uncapped thinking, 8 192 output
-- Pro model auto-selected for feature keys `report-summary` and `knowledge-code`; Flash used for all others
+- LLM thinking enabled on both models (`include_thoughts=True`); Flash capped at 1 024 thinking tokens, 4 096 output; Pro uncapped thinking, 8 192 output
+- Pro model auto-selected for feature key `knowledge-code`; Flash used for all others
 - `_sanitize_user_message()` strips prompt injection markers (`[Instruction:`, `[Today's date:`) before the LLM sees the input
 - Conversation summarization: `summarizer.py`
 
@@ -63,15 +63,16 @@ make clean          # Delete .venv
 
 - Entry point: `app/prompts/builder.py`
 - Always loaded: `base/persona.md`, `base/safety.md`, `base/output-format.md`
-- Feature prompts in `app/prompts/features/`: `order-lookup` · `report-summary` · `driver-tracking` · `user-admin` · `common-data` · `knowledge-code` · `email-dispatch`
-- Few-shot examples in `app/prompts/few-shots/`: `order-lookup`
+- Feature prompts in `app/prompts/features/`: `order-lookup` · `driver-tracking` · `user-admin` · `common-data` · `knowledge-code` · `email-dispatch`
+- Few-shot examples in `app/prompts/few-shots/`: `order-lookup` · `email-dispatch`
 - `app/orchestrator/prompt_builder.py` is a thin re-export only
 - Prompt file inventory: see [docs/prompt-consolidation-map.md](../docs/prompt-consolidation-map.md)
 
 ## Tools
 
-- 6 tool files: `order_tools.py` · `user_tools.py` · `driver_tools.py` · `common_tools.py` · `docs_tools.py` · `knowledge_tools.py` — 54 functions total
-- Keep `ALL_TOOL_FUNCTIONS` and `TOOL_REGISTRY` in sync (`app/tools/__init__.py`); `_validate_unique_tool_names()` asserts uniqueness at startup
+- 6 tool files: `order_tools.py` · `user_tools.py` · `driver_tools.py` · `common_tools.py` · `docs_tools.py` · `knowledge_tools.py` — 38 functions total
+- Keep `ALL_TOOL_FUNCTIONS`, `TOOL_REGISTRY`, and `FLASH_TOOL_SETS` in sync (`app/tools/__init__.py`); `_validate_unique_tool_names()` asserts uniqueness at startup
+- `FLASH_TOOL_SETS` maps each `feature_key` to its scoped tool list (reduces schema tokens for Flash model); must be updated when tools are added or removed
 - `get_delayed_orders` stays unregistered (overlaps `get_orders_admin_panel(status_cd=[4])`)
 - Summary tools → aggregate; Detail tools → per-order. Don't call both in one turn unless requested
 - Knowledge/docs tools query `data/vectordb/` (ChromaDB) and `data/knowledge/` — read-only
@@ -103,7 +104,7 @@ The assistant is always used by **admins**. "Persona" refers to the **data conte
 Before finishing any update or fix:
 1. **Check related files** — if you change a tool signature, param name, or add/remove a tool, update ALL of the following that reference it:
    - `app/prompts/features/*.md` (tool names, params, usage rules)
-   - `app/tools/__init__.py` (`ALL_TOOL_FUNCTIONS` + `TOOL_REGISTRY`)
+   - `app/tools/__init__.py` (`ALL_TOOL_FUNCTIONS` + `TOOL_REGISTRY` + `FLASH_TOOL_SETS`)
    - `app/services/` (matching service client method)
    - `.github/copilot-instructions.md` (architecture notes if affected)
 2. **Cross-check prompt ↔ tool ↔ service** — every tool name in prompt files must exist in `ALL_TOOL_FUNCTIONS`; every param name in prompt files must match the actual function signature.

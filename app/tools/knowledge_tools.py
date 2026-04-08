@@ -29,7 +29,13 @@ def lookup_enum(enum_name: str) -> dict:
         return {"error": "MISSING_NAME", "message": "Provide an enum name to look up."}
     try:
         store = get_knowledge_store()
-        return store.lookup_enum(enum_name.strip())
+        result = store.lookup_enum(enum_name.strip())
+        if result.get("matches", 0) == 0:
+            result["message"] = (
+                f"No enum found matching '{enum_name}'. "
+                "Try a shorter keyword or call get_knowledge_stats() to verify what is indexed."
+            )
+        return result
     except Exception as e:
         logger.exception("[knowledge_tools] lookup_enum failed: %s", e)
         return {"error": "KNOWLEDGE_ERROR", "message": str(e)}
@@ -47,7 +53,13 @@ def explain_status(code: str) -> dict:
         return {"error": "MISSING_CODE", "message": "Provide a status code value."}
     try:
         store = get_knowledge_store()
-        return store.explain_status_code(str(code).strip())
+        result = store.explain_status_code(str(code).strip())
+        if result.get("matches", 0) == 0:
+            result["message"] = (
+                f"No enum values found for code '{code}'. "
+                "Try lookup_enum() with a related name, or get_knowledge_stats() to verify indexing."
+            )
+        return result
     except Exception as e:
         logger.exception("[knowledge_tools] explain_status failed: %s", e)
         return {"error": "KNOWLEDGE_ERROR", "message": str(e)}
@@ -63,7 +75,14 @@ def trace_service_flow(handler_name: str) -> dict:
         return {"error": "MISSING_HANDLER", "message": "Provide a handler function name."}
     try:
         store = get_knowledge_store()
-        return store.get_flow(handler_name.strip())
+        result = store.get_flow(handler_name.strip())
+        if result.get("matches", 0) == 0:
+            result["message"] = (
+                f"No service flow found for '{handler_name}'. "
+                "Try search_endpoints() to find the right handler name, "
+                "or get_handler_context() for source-level detail."
+            )
+        return result
     except Exception as e:
         logger.exception("[knowledge_tools] trace_service_flow failed: %s", e)
         return {"error": "KNOWLEDGE_ERROR", "message": str(e)}
@@ -79,7 +98,13 @@ def get_struct_definition(struct_name: str) -> dict:
         return {"error": "MISSING_NAME", "message": "Provide a struct name."}
     try:
         store = get_knowledge_store()
-        return store.get_struct(struct_name.strip())
+        result = store.get_struct(struct_name.strip())
+        if result.get("matches", 0) == 0:
+            result["message"] = (
+                f"No struct found matching '{struct_name}'. "
+                "Try a shorter keyword or search_codebase() to find the right struct name."
+            )
+        return result
     except Exception as e:
         logger.exception("[knowledge_tools] get_struct_definition failed: %s", e)
         return {"error": "KNOWLEDGE_ERROR", "message": str(e)}
@@ -184,7 +209,14 @@ def find_api_consumers(endpoint: str) -> dict:
         return {"error": "MISSING_ENDPOINT", "message": "Provide an API endpoint or handler name."}
     try:
         store = get_knowledge_store()
-        return store.find_edges(endpoint.strip(), edge_type="calls_api", direction="incoming")
+        result = store.find_edges(endpoint.strip(), edge_type="calls_api", direction="incoming")
+        if result.get("matches", 0) == 0:
+            result["message"] = (
+                f"No frontend consumers found for '{endpoint}'. "
+                "Try traverse_graph() with broader edge types, or search_endpoints() "
+                "to confirm the endpoint path."
+            )
+        return result
     except Exception as e:
         logger.exception("[knowledge_tools] find_api_consumers failed: %s", e)
         return {"error": "KNOWLEDGE_ERROR", "message": str(e)}

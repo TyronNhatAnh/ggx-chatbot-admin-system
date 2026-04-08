@@ -27,7 +27,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     summary               TEXT    NOT NULL DEFAULT '',
     turns_since_summary   INTEGER NOT NULL DEFAULT 0,
     feature_key           TEXT    DEFAULT NULL,
-    report_scope          TEXT    DEFAULT NULL,
     updated_at            REAL    NOT NULL
 );
 
@@ -38,6 +37,7 @@ CREATE TABLE IF NOT EXISTS turns (
     content      TEXT NOT NULL,
     tools_called TEXT NOT NULL DEFAULT '[]',
     tool_results TEXT NOT NULL DEFAULT '{}',
+    tool_params  TEXT NOT NULL DEFAULT '{}',
     created_at   REAL NOT NULL,
     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
@@ -86,6 +86,7 @@ class ChatStore:
     def _init_schema(self) -> None:
         self._conn().executescript(_DDL)
         self._migrate_feature_key()
+        self._migrate_tool_params()
 
     def _migrate_feature_key(self) -> None:
         """Add feature_key column to sessions if missing (upgrading from older schema)."""
@@ -95,11 +96,15 @@ class ChatStore:
             conn.execute("ALTER TABLE sessions ADD COLUMN feature_key TEXT DEFAULT NULL")
             conn.commit()
             logger.info("[ChatStore] Migrated sessions table — added feature_key column")
-        if "report_scope" not in columns:
-            conn.execute("ALTER TABLE sessions ADD COLUMN report_scope TEXT DEFAULT NULL")
-            conn.commit()
-            logger.info("[ChatStore] Migrated sessions table — added report_scope column")
 
+    def _migrate_tool_params(self) -> None:
+        """Add tool_params column to turns if missing (upgrading from older schema)."""
+        conn = self._conn()
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(turns)").fetchall()}
+        if "tool_params" not in columns:
+            conn.execute("ALTER TABLE turns ADD COLUMN tool_params TEXT NOT NULL DEFAULT '{}'")
+            conn.commit()
+            logger.info("[ChatStore] Migrated turns table — added tool_params column")
     # ------------------------------------------------------------------
     # Session read / write
     # ------------------------------------------------------------------
@@ -108,7 +113,7 @@ class ChatStore:
         """Hydrate a full SessionState from the database, or return None."""
         conn = self._conn()
         row = conn.execute(
-            "SELECT summary, turns_since_summary, feature_key, report_scope, updated_at FROM sessions WHERE session_id = ?",
+            "SELECT summary, turns_since_summary, feature_key, updated_at FROM sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         if row is None:
@@ -121,27 +126,25 @@ class ChatStore:
         state.summary = row["summary"]
         state.turns_since_summary = row["turns_since_summary"]
         state.feature_key = row["feature_key"]
-        state.report_scope = row["report_scope"]
         state.updated_at = row["updated_at"]
         state.turns = turns
         state.memory = memory
         return state
 
     def save_session_meta(self, state: SessionState) -> None:
-        """Upsert the session row (summary + counters + feature_key + report_scope + timestamp)."""
+        """Upsert the session row (summary + counters + feature_key + timestamp)."""
         conn = self._conn()
         conn.execute(
             """
-            INSERT INTO sessions(session_id, summary, turns_since_summary, feature_key, report_scope, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?)
+            INSERT INTO sessions(session_id, summary, turns_since_summary, feature_key, updated_at)
+            VALUES(?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 summary             = excluded.summary,
                 turns_since_summary = excluded.turns_since_summary,
                 feature_key         = excluded.feature_key,
-                report_scope        = excluded.report_scope,
                 updated_at          = excluded.updated_at
             """,
-            (state.session_id, state.summary, state.turns_since_summary, state.feature_key, state.report_scope, state.updated_at),
+            (state.session_id, state.summary, state.turns_since_summary, state.feature_key, state.updated_at),
         )
         conn.commit()
 
@@ -158,8 +161,8 @@ class ChatStore:
         conn = self._conn()
         conn.execute(
             """
-            INSERT OR IGNORE INTO turns(id, session_id, role, content, tools_called, tool_results, created_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO turns(id, session_id, role, content, tools_called, tool_results, tool_params, created_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 turn_id,
@@ -168,6 +171,7 @@ class ChatStore:
                 turn.content,
                 json.dumps(turn.tools_called),
                 json.dumps(turn.tool_results),
+                json.dumps(turn.tool_params),
                 turn.created_at,
             ),
         )
@@ -247,7 +251,7 @@ class ChatStore:
     def _load_turns(self, conn: sqlite3.Connection, session_id: str) -> list[Turn]:
         rows = conn.execute(
             """
-            SELECT role, content, tools_called, tool_results, created_at
+            SELECT role, content, tools_called, tool_results, tool_params, created_at
             FROM turns
             WHERE session_id = ?
             ORDER BY created_at ASC
@@ -259,6 +263,7 @@ class ChatStore:
             t = Turn(role=row["role"], content=row["content"])
             t.tools_called = json.loads(row["tools_called"])
             t.tool_results = json.loads(row["tool_results"])
+            t.tool_params = json.loads(row["tool_params"])
             t.created_at = row["created_at"]
             turns.append(t)
         return turns

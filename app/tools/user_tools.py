@@ -8,11 +8,6 @@ from app.services.user_service_client import get_user_client
 from app.limits import MAX_LIST_RESULTS
 
 
-def get_user_profile(user_id: int) -> dict:
-    """Get user profile by user ID (GET /users?id=). Includes lastSignIn and lastAccessedAt when available."""
-    return get_user_client().get_user_profile(user_id)
-
-
 def search_users(
     keyword: str = "",
     organization_id: int = 0,
@@ -28,11 +23,6 @@ def search_users(
         page_index=page_index,
         page_size=page_size,
     )
-
-
-def get_user_driver(user_id: int) -> dict:
-    """Get driver-related user profile (GET /user-driver?id=)."""
-    return get_user_client().get_user_driver(user_id)
 
 
 def get_branch_by_id(branch_id: int) -> dict:

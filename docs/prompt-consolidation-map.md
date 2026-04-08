@@ -26,7 +26,6 @@ Files:
 - app/prompts/base/persona.md
 - app/prompts/base/safety.md
 - app/prompts/base/output-format.md
-- app/prompts/features/report-summary.md
 - app/prompts/features/order-lookup.md
 - app/prompts/features/driver-tracking.md
 
@@ -78,7 +77,6 @@ Target approach:
 ### Phase 1 (Low Risk)
 1. Keep current runtime guards.
 2. Minimize runtime natural-language instruction text; prefer neutral metadata notes.
-3. Ensure report formatting contract is fully defined only in report-summary.md.
 
 ### Phase 2 (Medium Risk)
 1. Replace hardcoded "Call tool immediately" strings with a structured planner hint object (non-natural-language).
@@ -103,4 +101,3 @@ When conflicts occur, enforce this order:
 1. All business/report policy text lives in app/prompts.
 2. Runtime code contains guard logic, not duplicated policy prose.
 3. No contradictory statements across base/features/runtime.
-4. Regression tests cover the top 4 report invariants.

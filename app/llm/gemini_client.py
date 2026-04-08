@@ -8,7 +8,6 @@ from google.genai import types
 
 from app.config import settings
 from app.llm.vertex_credentials import create_vertex_client
-from app.orchestrator.prompt_builder import build_system_prompt
 
 if TYPE_CHECKING:
     from app.llm.context_cache import ContextCacheManager
@@ -40,6 +39,7 @@ class GeminiChatFactory:
         system_instruction: str | None = None,
         feature_key: str | None = None,
         allowed_function_names: list[str] | None = None,
+        history: list[types.Content] | None = None,
     ):
         """Create a new chat session with deterministic function-calling behavior.
 
@@ -51,6 +51,8 @@ class GeminiChatFactory:
             allowed_function_names: When set, restricts the model to only call tools
                                     in this list for the session (ToolConfig scoping).
                                     None means all registered tools are available.
+            history: Prior conversation turns to seed the chat session with.
+                     Built by context_builder.build_history().
         """
         effective_instruction = system_instruction or self.system_instruction
         afc = types.AutomaticFunctionCallingConfig(disable=not enable_automatic_function_calling)
@@ -77,18 +79,18 @@ class GeminiChatFactory:
                     automatic_function_calling=afc,
                     thinking_config=self.thinking_config,
                 )
-                return self.client.chats.create(model=self.model_name, config=config)
+                return self.client.chats.create(model=self.model_name, config=config, history=history)
 
         # Uncached path (default, or when cache creation failed)
         config = types.GenerateContentConfig(
             system_instruction=effective_instruction,
-            tools=effective_tools,
+            tools=effective_tools if effective_tools else None,
             temperature=self.temperature,
             max_output_tokens=self.max_output_tokens,
             automatic_function_calling=afc,
             thinking_config=self.thinking_config,
         )
-        return self.client.chats.create(model=self.model_name, config=config)
+        return self.client.chats.create(model=self.model_name, config=config, history=history)
 
 
 def create_gemini_model(
@@ -135,7 +137,7 @@ def create_gemini_model(
         client=client,
         model_name=resolved_model,
         tools=tools,
-        system_instruction=build_system_prompt(),
+        system_instruction="",  # always overridden per-request via start_chat(system_instruction=...)
         temperature=temperature,
         max_output_tokens=max_output_tokens,
         thinking_config=thinking_config,

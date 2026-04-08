@@ -92,7 +92,13 @@ def summarize_conversation(
                 max_output_tokens=280,  # ≤200 words × ~1.4 tokens/word
             ),
         )
-        summary = (response.text or "").strip()
+        # Filter thought parts explicitly — consistent with orchestrator pattern.
+        parts = []
+        if response.candidates:
+            content = response.candidates[0].content
+            if content and content.parts:
+                parts = [p.text for p in content.parts if p.text and not getattr(p, "thought", False)]
+        summary = "\n".join(parts).strip()
         if summary:
             logger.info(
                 "[Summarizer] Compressed %d turns → %d chars",
@@ -104,10 +110,6 @@ def summarize_conversation(
 
     # Fallback: simple extractive summary (no LLM needed)
     return _fallback_summary(turns, existing_summary)
-
-
-_FALLBACK_SUMMARY_MAX_CHARS = 800
-
 
 def _fallback_summary(turns: list["Turn"], existing_summary: str) -> str:
     """Deterministic fallback when LLM is unavailable."""

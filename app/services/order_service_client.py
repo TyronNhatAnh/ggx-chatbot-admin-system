@@ -20,10 +20,9 @@ from app.services.auth_token_manager import bearer_header, ensure_token
 
 logger = logging.getLogger(__name__)
 
+
 # API path prefix used by every Order Service endpoint.
 _API_PREFIX = "/api/v1"
-# Report endpoints are table-like and admins often need a wider slice.
-_REPORT_MAX_LIST_RESULTS = 10
 
 
 class OrderServiceClient:
@@ -42,7 +41,6 @@ class OrderServiceClient:
     """
 
     _DEFAULT_TIMEOUT = 10.0
-    _REPORT_TIMEOUT = 30.0
 
     def __init__(self) -> None:
         self._base_url: str = settings.order_service_base_url.rstrip("/")
@@ -584,375 +582,31 @@ class OrderServiceClient:
         }
 
     @staticmethod
-    def _normalize_date_yyyy_mm_dd(value: object) -> str | None:
-        """Normalize common date inputs to YYYY-MM-DD accepted by report APIs."""
-        if not isinstance(value, str):
+    def _normalize_date_yyyy_mm_dd(val: object) -> str | None:
+        """Coerce a date value to an ISO-8601 YYYY-MM-DD string, or return None if invalid."""
+        from datetime import datetime as _datetime
+        if val is None:
             return None
-        raw = value.strip()
-        if not raw:
+        if isinstance(val, date):
+            return val.isoformat()
+        s = str(val).strip()
+        if not s:
             return None
-
-        # Accept YYYY-MM-DD, YYYY/MM/DD, and datetime forms like YYYY-MM-DDTHH:MM:SS.
-        token = raw.split("T", 1)[0].replace("/", "-")
-        parts = token.split("-")
-        if len(parts) != 3:
-            return None
-        y, m, d = parts
-        if len(y) == 4 and m.isdigit() and d.isdigit():
+        # Already in YYYY-MM-DD format
+        parts = s[:10].split("-")
+        if len(parts) == 3 and len(parts[0]) == 4:
+            return s[:10]
+        # Try parsing common formats
+        for fmt in ("%Y/%m/%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y"):
             try:
-                parsed = date(int(y), int(m), int(d))
-                return parsed.isoformat()
+                return _datetime.strptime(s, fmt).date().isoformat()
             except ValueError:
-                return None
-        return None
-
-    @staticmethod
-    def _normalize_report_pay_values(value: object) -> list[str]:
-        """Normalize pay filters to accepted report values."""
-        allowed = {"cash", "credit", "card", "point", "brandpay"}
-
-        if value is None:
-            return sorted(allowed)
-
-        raw_items: list[str] = []
-        if isinstance(value, str):
-            text = value.strip().lower()
-            if text in {"", "all", "*"}:
-                return sorted(allowed)
-            raw_items = [item.strip().lower() for item in text.split(",") if item.strip()]
-        elif isinstance(value, list):
-            for item in value:
-                if isinstance(item, str) and item.strip():
-                    raw_items.append(item.strip().lower())
-
-        normalized: list[str] = []
-        for item in raw_items:
-            mapped = "brandpay" if item == "brandPay" else item
-            if mapped in allowed and mapped not in normalized:
-                normalized.append(mapped)
-
-        return normalized or sorted(allowed)
-
-    def _normalize_report_params(self, params: dict | None) -> dict:
-        """Guarantee required query params for statement-of-use report endpoints."""
-        source = params if isinstance(params, dict) else {}
-        normalized = dict(source)
-
-        today = date.today()
-        default_from = (today - timedelta(days=2)).isoformat()
-        default_to = today.isoformat()
-
-        from_date = (
-            self._normalize_date_yyyy_mm_dd(source.get("fromDate"))
-            or self._normalize_date_yyyy_mm_dd(source.get("from_date"))
-            or default_from
-        )
-        to_date = (
-            self._normalize_date_yyyy_mm_dd(source.get("toDate"))
-            or self._normalize_date_yyyy_mm_dd(source.get("to_date"))
-            or default_to
-        )
-
-        pay = self._normalize_report_pay_values(source.get("pay"))
-
-        normalized["fromDate"] = from_date
-        normalized["toDate"] = to_date
-        normalized["pay"] = pay
-
-        # Normalize orgId: accept orgId or org_id.
-        org_id = source.get("orgId") or source.get("org_id")
-        if org_id is not None:
-            try:
-                normalized["orgId"] = int(org_id)
-            except (TypeError, ValueError):
-                logger.warning("Invalid orgId value %r — ignoring", org_id)
-            normalized.pop("org_id", None)
-
-        # Remove snake_case aliases if present.
-        normalized.pop("from_date", None)
-        normalized.pop("to_date", None)
-
-        return self._clean_query_params(normalized)
-
-    def _normalize_driver_report_params(self, params: dict | None) -> dict:
-        """Normalize params for driver report endpoints (no pay field, requires driverType)."""
-        source = params if isinstance(params, dict) else {}
-        normalized = dict(source)
-
-        today = date.today()
-        default_from = (today - timedelta(days=2)).isoformat()
-        default_to = today.isoformat()
-
-        from_date = (
-            self._normalize_date_yyyy_mm_dd(source.get("fromDate"))
-            or self._normalize_date_yyyy_mm_dd(source.get("from_date"))
-            or default_from
-        )
-        to_date = (
-            self._normalize_date_yyyy_mm_dd(source.get("toDate"))
-            or self._normalize_date_yyyy_mm_dd(source.get("to_date"))
-            or default_to
-        )
-
-        normalized["fromDate"] = from_date
-        normalized["toDate"] = to_date
-        # driverType is required by the backend. Accept caller-supplied value first
-        # (e.g. "externalDriver"), then fall back to "normalDriver".
-        if "driverType" not in normalized:
-            normalized["driverType"] = source.get("driver_type", "normalDriver")
-
-        # Normalize orgId
-        org_id = source.get("orgId") or source.get("org_id")
-        if org_id is not None:
-            try:
-                normalized["orgId"] = int(org_id)
-            except (TypeError, ValueError):
-                logger.warning("Invalid orgId value %r — ignoring", org_id)
-            normalized.pop("org_id", None)
-
-        # Normalize eTaxStatus (accept common aliases, keep canonical API key).
-        etax_status = (
-            source.get("eTaxStatus")
-            or source.get("etaxStatus")
-            or source.get("etax_status")
-            or source.get("e_tax_status")
-        )
-        if etax_status is not None:
-            try:
-                normalized["eTaxStatus"] = int(etax_status)
-            except (TypeError, ValueError):
-                logger.warning("Invalid eTaxStatus value %r — ignoring", etax_status)
-
-        normalized.pop("etaxStatus", None)
-        normalized.pop("etax_status", None)
-        normalized.pop("e_tax_status", None)
-
-        # Driver reports do NOT accept pay — remove if provided.
-        normalized.pop("pay", None)
-        normalized.pop("from_date", None)
-        normalized.pop("to_date", None)
-
-        return self._clean_query_params(normalized)
-
-    @staticmethod
-    def _shape_preview(value: object, *, max_items: int = 8) -> str:
-        """Return a compact, log-friendly shape preview for debugging API payloads."""
-        if value is None:
-            return "None"
-        if isinstance(value, dict):
-            keys = list(value.keys())[:max_items]
-            return f"dict(keys={keys})"
-        if isinstance(value, list):
-            if not value:
-                return "list(len=0)"
-            first = value[0]
-            if isinstance(first, dict):
-                return f"list(len={len(value)}, first=dict(keys={list(first.keys())[:max_items]}))"
-            if isinstance(first, list):
-                sample = first[:max_items]
-                return f"list(len={len(value)}, first=list(len={len(first)}, sample={sample}))"
-            return f"list(len={len(value)}, first={type(first).__name__}, sample={first!r})"
-        return f"{type(value).__name__}({value!r})"
-
-    def _get_report_data(self, path: str, params: dict | None = None) -> dict:
-        """Shared GET wrapper for report endpoints (non-download APIs only)."""
+                continue
+        # Try ISO datetime with time component
         try:
-            normalized_params = self._normalize_report_params(params)
-            payload = self._request("GET", path, params=normalized_params, timeout=self._REPORT_TIMEOUT)
-
-            logger.info(
-                "[ReportDbg ] %s raw payload shape=%s",
-                path,
-                self._shape_preview(payload),
-            )
-
-            # Preserve meta from PagingSuccessResponse before unwrapping.
-            meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
-
-            data = self._unwrap_success_payload(payload)
-            logger.info(
-                "[ReportDbg ] %s unwrapped data shape=%s",
-                path,
-                self._shape_preview(data),
-            )
-            if isinstance(data, dict) and data.get("error"):
-                return data
-
-            # Go marshals empty slices as null → data is None after unwrap.
-            if data is None:
-                return {"rows": [], "count": 0, "total_count": meta.get("totalCount", 0)}
-
-            if isinstance(data, list):
-                logger.info(
-                    "[ReportDbg ] %s list payload first-row shape=%s",
-                    path,
-                    self._shape_preview(data[:1]),
-                )
-                # API returns rows as positional arrays; zip with header metadata into named dicts.
-                headers: list[str] = (
-                    meta.get("additionalData", {}).get("header")
-                    or meta.get("additionalData", {}).get("headers")
-                    or []
-                )
-                if headers and data and isinstance(data[0], list):
-                    data = [dict(zip(headers, row)) for row in data]
-                    logger.info("[ReportDbg ] %s mapped %d array-rows to dicts using %d headers", path, len(data), len(headers))
-                rows = truncate_list(data, limit=_REPORT_MAX_LIST_RESULTS)
-                return {"rows": rows, "count": len(rows), "total_count": meta.get("totalCount", len(data))}
-
-            if isinstance(data, dict):
-                column_meta = (
-                    data.get("columns")
-                    or data.get("headers")
-                    or data.get("fields")
-                    or data.get("columnNames")
-                )
-                if column_meta is not None:
-                    logger.info(
-                        "[ReportDbg ] %s column metadata shape=%s",
-                        path,
-                        self._shape_preview(column_meta),
-                    )
-                rows = (
-                    data.get("rows")
-                    or data.get("list")
-                    or data.get("items")
-                    or data.get("data")
-                )
-                if isinstance(rows, list):
-                    logger.info(
-                        "[ReportDbg ] %s extracted rows shape=%s",
-                        path,
-                        self._shape_preview(rows),
-                    )
-                    slim_rows = truncate_list(rows, limit=_REPORT_MAX_LIST_RESULTS)
-                    extras = {
-                        k: v
-                        for k, v in data.items()
-                        if k not in ("rows", "list", "items", "data")
-                    }
-                    return {
-                        "rows": slim_rows,
-                        "count": len(slim_rows),
-                        "total_count": meta.get("totalCount", len(rows)),
-                        **extras,
-                    }
-                return data
-
-            return {"raw": data}
-        except httpx.HTTPStatusError as exc:
-            logger.error(
-                "report endpoint %s HTTP %s — body: %s",
-                path,
-                exc.response.status_code,
-                exc.response.text,
-            )
-            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("report endpoint %s network error — %s", path, exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("report endpoint %s unexpected error — %s: %s", path, type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
-    def _get_driver_report_data(self, path: str, params: dict | None = None) -> dict:
-        """GET wrapper for driver report endpoints (uses driver-specific param normalization)."""
-        try:
-            normalized_params = self._normalize_driver_report_params(params)
-            payload = self._request("GET", path, params=normalized_params, timeout=self._REPORT_TIMEOUT)
-
-            logger.info(
-                "[ReportDbg ] %s raw payload shape=%s",
-                path,
-                self._shape_preview(payload),
-            )
-
-            meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
-
-            data = self._unwrap_success_payload(payload)
-            logger.info(
-                "[ReportDbg ] %s unwrapped data shape=%s",
-                path,
-                self._shape_preview(data),
-            )
-            if isinstance(data, dict) and data.get("error"):
-                return data
-
-            if data is None:
-                return {"rows": [], "count": 0, "total_count": meta.get("totalCount", 0)}
-
-            if isinstance(data, list):
-                logger.info(
-                    "[ReportDbg ] %s list payload first-row shape=%s",
-                    path,
-                    self._shape_preview(data[:1]),
-                )
-                # API returns rows as positional arrays; zip with header metadata into named dicts.
-                headers: list[str] = (
-                    meta.get("additionalData", {}).get("header")
-                    or meta.get("additionalData", {}).get("headers")
-                    or []
-                )
-                if headers and data and isinstance(data[0], list):
-                    data = [dict(zip(headers, row)) for row in data]
-                    logger.info("[ReportDbg ] %s mapped %d array-rows to dicts using %d headers", path, len(data), len(headers))
-                rows = truncate_list(data, limit=_REPORT_MAX_LIST_RESULTS)
-                return {"rows": rows, "count": len(rows), "total_count": meta.get("totalCount", len(data))}
-
-            if isinstance(data, dict):
-                column_meta = (
-                    data.get("columns")
-                    or data.get("headers")
-                    or data.get("fields")
-                    or data.get("columnNames")
-                )
-                if column_meta is not None:
-                    logger.info(
-                        "[ReportDbg ] %s column metadata shape=%s",
-                        path,
-                        self._shape_preview(column_meta),
-                    )
-                rows = (
-                    data.get("rows")
-                    or data.get("list")
-                    or data.get("items")
-                    or data.get("data")
-                )
-                if isinstance(rows, list):
-                    logger.info(
-                        "[ReportDbg ] %s extracted rows shape=%s",
-                        path,
-                        self._shape_preview(rows),
-                    )
-                    slim_rows = truncate_list(rows, limit=_REPORT_MAX_LIST_RESULTS)
-                    extras = {
-                        k: v
-                        for k, v in data.items()
-                        if k not in ("rows", "list", "items", "data")
-                    }
-                    return {
-                        "rows": slim_rows,
-                        "count": len(slim_rows),
-                        "total_count": meta.get("totalCount", len(rows)),
-                        **extras,
-                    }
-                return data
-
-            return {"raw": data}
-        except httpx.HTTPStatusError as exc:
-            logger.error(
-                "driver report endpoint %s HTTP %s — body: %s",
-                path,
-                exc.response.status_code,
-                exc.response.text,
-            )
-            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("driver report endpoint %s network error — %s", path, exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("driver report endpoint %s unexpected error — %s: %s", path, type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+            return _datetime.fromisoformat(s).date().isoformat()
+        except ValueError:
+            return None
 
     # ------------------------------------------------------------------
     # Public API methods (read-only)
@@ -1120,14 +774,15 @@ class OrderServiceClient:
             )
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
-    def get_order_cancel_fee(self, order_id: str) -> dict:
+    def get_order_cancel_fee(self, order_id: str, user_id: int | None = None) -> dict:
         """
         Get the cancellation fee preview for an order.
 
         Endpoint: GET /api/v1/orders/{orderId}/cancel-fee
         """
         try:
-            payload = self._get(f"/orders/{order_id}/cancel-fee")
+            params = self._clean_query_params({"userId": user_id}) if user_id is not None else None
+            payload = self._get(f"/orders/{order_id}/cancel-fee", params=params)
             data = self._unwrap_success_payload(payload)
             if isinstance(data, dict) and data.get("error"):
                 return data
@@ -1150,21 +805,6 @@ class OrderServiceClient:
             )
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
-    def get_statement_of_use_summary(self, params: dict | None = None) -> dict:
-        """GET /api/v1/report/statement-of-use/summary (full-system customer report)."""
-        return self._get_report_data("/report/statement-of-use/summary", params=params)
-
-    def get_statement_of_use_detail(self, params: dict | None = None) -> dict:
-        """GET /api/v1/report/statement-of-use/detail (full-system customer report)."""
-        return self._get_report_data("/report/statement-of-use/detail", params=params)
-
-    def get_statement_of_use_driver_summary(self, params: dict | None = None) -> dict:
-        """GET /api/v1/report/statement-of-use-driver/summary (driver report — no pay param, requires driverType)."""
-        return self._get_driver_report_data("/report/statement-of-use-driver/summary", params=params)
-
-    def get_statement_of_use_driver_detail(self, params: dict | None = None) -> dict:
-        """GET /api/v1/report/statement-of-use-driver/detail (driver report — no pay param, requires driverType)."""
-        return self._get_driver_report_data("/report/statement-of-use-driver/detail", params=params)
 
     def _normalize_admin_panel_params(self, params: dict | None) -> dict:
         """Map Python snake_case params to the camelCase query params expected by /admin/orders."""
@@ -1334,29 +974,6 @@ class OrderServiceClient:
         """POST /api/v1/guest/estimate."""
         return self._call_price_endpoint("/guest/estimate", payload=payload, requires_auth=False)
 
-    def get_tax_invoice_states(self, mgt_keys: list[str]) -> dict:
-        """POST /api/v1/etax/tax-invoice-states — check Barobill/NTS e-tax transmission states."""
-        try:
-            payload = self._post("/etax/tax-invoice-states", json_body={"mgtKeys": mgt_keys}, requires_auth=True)
-            data = self._unwrap_success_payload(payload)
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            if isinstance(data, dict):
-                return data
-            return {"raw": data}
-        except httpx.HTTPStatusError as exc:
-            logger.error(
-                "get_tax_invoice_states HTTP %s — body: %s",
-                exc.response.status_code,
-                exc.response.text,
-            )
-            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("get_tax_invoice_states network error — %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("get_tax_invoice_states unexpected error — %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
     def check_driver_price(self, payload: dict) -> dict:
         """POST /api/v1/guest/check-price-driver."""

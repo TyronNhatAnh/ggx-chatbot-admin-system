@@ -6,11 +6,11 @@ class Settings(BaseSettings):
     # gemini-3-flash-preview is available on Vertex AI in: global, us-central1
     model_name: str = "gemini-3-flash-preview"
 
-    # Optional Pro model for complex queries (reports, codebase analysis).
-    # When set, feature keys "report-summary" and "knowledge-code" are routed here.
+    # Optional Pro model for complex queries (codebase analysis).
+    # When set, feature key "knowledge-code" is routed here.
     # Leave empty to use model_name for all queries.
-    # gemini-3-pro-preview is available on Vertex AI in: global, us-central1
-    pro_model_name: str = "gemini-3-pro-preview"
+    # gemini-3.1-pro-preview is available on Vertex AI in: global, us-central1
+    pro_model_name: str = "gemini-3.1-pro-preview"
 
     # ---------------------------------------------------------------------------
     # Vertex AI service account credentials

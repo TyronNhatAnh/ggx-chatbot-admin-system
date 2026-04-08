@@ -13,25 +13,6 @@ def get_vehicle_prices(order_type: str) -> dict:
     return get_common_client().get_vehicle_prices(order_type=order_type)
 
 
-def get_common_vehicle_pools() -> dict:
-    """List vehicles and vehicle pools (GET /vehicles/vehicle-pools)."""
-    return get_common_client().get_vehicle_pools()
-
-
-def get_services_by_vehicle_pool(
-    order_type: str,
-    vehicle_pool_id: int,
-    region_id: int = 0,
-) -> dict:
-    """Get available services for a vehicle pool (GET /vehicles/services).
-    order_type: HomeMoving, Quick, Delivery. region_id is optional."""
-    return get_common_client().get_services_by_vehicle_pool(
-        order_type=order_type,
-        vehicle_pool_id=vehicle_pool_id,
-        region_id=region_id if region_id > 0 else None,
-    )
-
-
 def get_addresses(
     keyword: str,
     user_id: int = 0,
@@ -70,16 +51,3 @@ def search_api_address_details(keyword: str, jibun_address: str = "") -> dict:
     )
 
 
-def list_guest_ads() -> dict:
-    """List active guest ads (GET /guest/ads)."""
-    return get_common_client().list_guest_ads()
-
-
-def list_home_moving_goods_categories() -> dict:
-    """List home-moving goods categories (GET /guest/home-moving/goods-categories)."""
-    return get_common_client().list_home_moving_goods_categories()
-
-
-def list_home_moving_vehicles() -> dict:
-    """List home-moving vehicles and pools (GET /guest/home-moving/vehicles)."""
-    return get_common_client().list_home_moving_vehicles()

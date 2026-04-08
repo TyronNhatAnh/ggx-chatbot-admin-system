@@ -27,38 +27,6 @@ def search_drivers(
     )
 
 
-def get_driver_location_history(
-    driver_user_id: int,
-    from_time: str,
-    to_time: str,
-) -> dict:
-    """Get driver GPS location history (GET /driver/location-history).
-    Times must be in Seoul timezone, format: YYYY-MM-DD HH:MM:SS (e.g. 2024-01-15 09:00:00).
-    Returns list of lat/lon points with timestamps."""
-    return get_driver_client().get_driver_location_history(
-        driver_user_id=driver_user_id,
-        from_time=from_time,
-        to_time=to_time,
-    )
-
-
-def search_driver_report(
-    driver_type: str,
-    keyword: str,
-    page_index: int = 1,
-    page_size: int = MAX_LIST_RESULTS,
-) -> dict:
-    """Search drivers in driver-report context (GET /driver-report/driver/search).
-    driver_type: 'normalDriver' for platform drivers, 'externalDriver' for vendor/external drivers.
-    Returns id, name, phoneNumber. Paginated."""
-    return get_driver_client().search_driver_report(
-        driver_type=driver_type,
-        keyword=keyword,
-        page_index=page_index,
-        page_size=page_size,
-    )
-
-
 def get_vehicle_pools() -> dict:
     """List all vehicle types and vehicle pools (GET /vehicles/vehicle-pools).
     Returns vehicle pool IDs, names, titles, and associated vehicle info."""

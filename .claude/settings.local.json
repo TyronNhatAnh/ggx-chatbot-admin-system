@@ -3,7 +3,11 @@
     "allow": [
       "WebSearch",
       "Bash(grep -r \"GetOrderHist\\\\|history\" /Users/tyron/Documents/work/Gogox/ggx-kr-order-service/internal/api/http/v1/*.go)",
-      "Bash(python -c \"from app.services.order_service_client import OrderServiceClient; from app.tools.order_tools import get_orders_admin_panel, get_order_history; print\\(''OK''\\)\")"
+      "Bash(python -c \"from app.services.order_service_client import OrderServiceClient; from app.tools.order_tools import get_orders_admin_panel, get_order_history; print\\(''OK''\\)\")",
+      "Bash(python -c \"from app.orchestrator.ai_orchestrator import _detect_feature_key; print\\(_detect_feature_key\\('show detail for this org'\\)\\)\")",
+      "Bash(python -c ':*)",
+      "Bash(python -c \"import app.orchestrator.ai_orchestrator; print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('tests/test_report_e2e.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")"
     ]
   }
 }

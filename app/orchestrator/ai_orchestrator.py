@@ -16,8 +16,7 @@ from google.genai import types
 from app.config import settings
 from app.llm.gemini_client import GeminiChatFactory, create_gemini_model
 from app.llm.vertex_credentials import create_vertex_client
-from app.orchestrator.context_builder import build_context
-from app.orchestrator.context_store import ConversationState
+from app.orchestrator.context_builder import build_history
 from app.orchestrator.memory_service import MemoryService
 from app.orchestrator.summarizer import summarize_conversation
 from app.prompts.builder import build_system_prompt
@@ -29,15 +28,10 @@ MAX_TOOL_LOOPS = 6      # max tool-result round-trips; synthesis fallback is out
 # Prevent false positives like organization names (e.g. "DHLSC").
 ORDER_ID_PATTERN = re.compile(r"\b(?:ORD-[A-Za-z0-9-]{3,}|\d{5,})\b", re.IGNORECASE)
 
-# Pro model only handles report-summary and knowledge-code.
+# Pro model only handles knowledge-code.
 # Give it only the tools it needs to reduce schema tokens (~5k → ~1.5k).
 _PRO_TOOL_NAMES: frozenset[str] = frozenset({
-    # report tools
-    "get_statement_of_use_summary",
-    "get_statement_of_use_detail",
-    "get_statement_of_use_driver_summary",
-    "get_statement_of_use_driver_detail",
-    # org lookup (for report filtering)
+    # org lookup
     "search_organizations",
     "get_organization_by_id",
     # knowledge tools
@@ -67,26 +61,81 @@ _INJECTION_PATTERN = re.compile(r"\[\s*(?:Instruction|Today's date)\s*:", re.IGN
 # Lines that look like model "thinking out loud" leaked into a text part rather than a thought part.
 # Strip them from the final response so admins never see raw internal reasoning.
 _REASONING_LEAK_RE = re.compile(
-    r"^(?:Wait[,.]?\s|I'?ll\s+try\s+to\s|I'?ll\s+assume\s|Also[,.]?\s+I'?ll?\s+try)",
+    r"^(?:"
+    r"Wait[,.]?\s"
+    r"|I'?ll\s+try\s+to\s"
+    r"|I'?ll\s+assume\s"
+    r"|Also[,.]?\s+I'?ll?\s+try"
+    r"|I\s+will\s+make\s+sure\b"
+    r"|I\s+will\s+(?:use|create|write|format|provide|output|include|show|display|map|list|note|add|check|double)\b"
+    r"|Let(?:'s|\s+me)\s+(?:write|check|create|format|provide|output|map|list|make|double|think|look|see|use|show|display)\b"
+    r"|I\s+will\s+also\b"
+    r")",
     re.IGNORECASE,
 )
+# Threshold: a run of this many consecutive meta-commentary lines triggers block removal.
+_REASONING_BLOCK_THRESHOLD = 4
 
 def _sanitize_response(text: str) -> str:
     """Detect and strip pathological response artifacts.
 
     With include_thoughts=True the API routes all internal reasoning into
     thought-flagged parts that _response_text() already filters out before
-    this function is ever called.  The only case that still needs handling
-    here is the echo/parrot loop — a model repetition bug where the same
-    line appears 3+ times in a single response.
+    this function is ever called.  Two residual cases still need handling:
+
+    1. Line-level leaks — individual lines of deliberation that slipped into
+       a non-thought part ("Wait, I'll try...", "I will make sure...", etc.).
+    2. Block-level leaks — a consecutive run of meta-commentary lines; strip
+       from the first line of the block to the end of the block.
+    3. Echo/parrot loop — the same line appears 3+ times.
     """
     if not text:
         return text
 
     lines = text.split("\n")
 
-    # Strip lines that are leaked model reasoning ("Wait, I'll try to...", etc.).
-    # These appear when the model writes its deliberation as plain text instead of thought parts.
+    # --- Pass 1: block-level reasoning dump detection ---
+    # If _REASONING_BLOCK_THRESHOLD or more consecutive lines all look like
+    # internal deliberation, strip the entire block.  Walking the line array
+    # once is enough; we rebuild lines[] at the end if anything was removed.
+    clean_lines: list[str] = []
+    run_start: int | None = None
+    block_stripped = 0
+    for idx, ln in enumerate(lines):
+        stripped = ln.strip()
+        if _REASONING_LEAK_RE.match(stripped):
+            if run_start is None:
+                run_start = idx
+        else:
+            if run_start is not None:
+                run_len = idx - run_start
+                if run_len >= _REASONING_BLOCK_THRESHOLD:
+                    block_stripped += run_len
+                    # Don't append the run — discard it
+                else:
+                    # Short run: keep individual lines (may be legitimate)
+                    clean_lines.extend(lines[run_start:idx])
+                run_start = None
+            clean_lines.append(ln)
+    # Handle a trailing run
+    if run_start is not None:
+        run_len = len(lines) - run_start
+        if run_len >= _REASONING_BLOCK_THRESHOLD:
+            block_stripped += run_len
+        else:
+            clean_lines.extend(lines[run_start:])
+
+    if block_stripped:
+        logger.warning(
+            "[Sanitize ] Stripped %d-line reasoning block from response.",
+            block_stripped,
+        )
+        lines = clean_lines
+        text = "\n".join(lines).strip()
+        if not text or len(text) < 20:
+            return ""
+
+    # --- Pass 2: line-level reasoning leak (short individual lines) ---
     leaked = [ln for ln in lines if _REASONING_LEAK_RE.match(ln.strip())]
     if leaked:
         logger.warning(
@@ -98,6 +147,7 @@ def _sanitize_response(text: str) -> str:
         if not text or len(text) < 20:
             return ""
 
+    # --- Pass 3: echo/parrot loop (same line ≥ 3 times) ---
     line_counts = Counter(ln.strip() for ln in lines if ln.strip())
     repeated = {ln for ln, cnt in line_counts.items() if cnt >= 3}
     if repeated:
@@ -108,6 +158,38 @@ def _sanitize_response(text: str) -> str:
         clean = [ln for ln in lines if ln.strip() not in repeated]
         salvaged = "\n".join(clean).strip()
         return salvaged if salvaged and len(salvaged) > 20 else ""
+
+    # --- Pass 4: intra-text phrase repetition loop ---
+    # Catches patterns like "Foo Bar Baz . X Y Foo Bar Baz . X Y Foo Bar Baz ..."
+    # where a short ngram repeats many times within the text (even on a single line).
+    # This targets model hallucination loops that produce struct-field-like noise.
+    _MD_TABLE_TOKEN_RE = re.compile(r"^[|:\-]+$")  # matches |, :---, ---, :-:, etc.
+    # Count non-separator table data rows to distinguish table column repetition
+    # from hallucination loops (e.g. "| Apr 7," legitimately repeats once per row).
+    _MD_DATA_ROW_RE = re.compile(r"^\s*\|(?![\s|:\-]*\|?\s*$)")
+    table_data_rows = sum(1 for ln in lines if _MD_DATA_ROW_RE.match(ln))
+    words = text.split()
+    if len(words) >= 20:
+        for ngram_size in (3, 4, 5):
+            ngram_counts: Counter[tuple[str, ...]] = Counter(
+                tuple(words[i: i + ngram_size]) for i in range(len(words) - ngram_size + 1)
+            )
+            max_phrase, max_count = ngram_counts.most_common(1)[0]
+            if max_count >= 5:
+                # Don't discard responses where the only repeated ngram is
+                # markdown table alignment syntax (e.g. "| :--- |" in wide tables).
+                if all(_MD_TABLE_TOKEN_RE.match(tok) for tok in max_phrase):
+                    continue
+                # Don't discard table responses where the ngram is a column value
+                # repeating once per data row (e.g., "| Apr 7," in a date column).
+                # A true hallucination loop would repeat far more than one-per-row.
+                if max_phrase[0] == "|" and table_data_rows >= 5 and max_count <= table_data_rows:
+                    continue
+                logger.warning(
+                    "[Sanitize ] Detected phrase-repetition loop (%dx '%s'). Discarding response.",
+                    max_count, " ".join(max_phrase),
+                )
+                return ""
 
     return text
 
@@ -145,13 +227,6 @@ def _response_text(response: types.GenerateContentResponse) -> str:
             texts.append(part.text)
     return "\n".join(texts).strip()
 
-
-def _trim_text(value: str, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    return f"{value[: limit - 3]}..."
-
-
 def _normalize_order_id(value: str) -> str:
     raw = (value or "").strip()
     if not raw:
@@ -167,65 +242,6 @@ def _normalize_order_id(value: str) -> str:
 
     # Reject alpha-only labels (common org names/shortcodes).
     return ""
-
-
-def _extract_order_id_candidates(message: str) -> list[str]:
-    found = [_normalize_order_id(m.group(0)) for m in ORDER_ID_PATTERN.finditer(message)]
-    unique: list[str] = []
-    seen: set[str] = set()
-    for oid in found:
-        if not oid:
-            continue
-        if oid in seen:
-            continue
-        seen.add(oid)
-        unique.append(oid)
-    return unique
-
-
-def _extract_context_hints(tool_results: dict[str, Any]) -> str:
-    """Extract useful context from previous tool results (report data, orders, etc.)."""
-    if not tool_results:
-        return ""
-
-    hints: list[str] = []
-
-    # Extract organization names + IDs from report results (for follow-up context)
-    for rpt_name in (
-        "get_statement_of_use_summary", "get_statement_of_use_detail",
-        "get_statement_of_use_driver_summary", "get_statement_of_use_driver_detail",
-    ):
-        report_data = tool_results.get(rpt_name)
-        if not isinstance(report_data, dict):
-            continue
-        rows = report_data.get("rows", [])
-        if not isinstance(rows, list):
-            continue
-        org_entries: list[str] = []
-        for row in rows[:5]:  # First 5 orgs
-            if isinstance(row, dict):
-                name = row.get("organizationName") or row.get("기업명") or row.get("기업") or ""
-                oid = row.get("organizationId") or row.get("기업ID") or row.get("기업코드") or ""
-                if name and isinstance(name, str):
-                    label = f"{name} (id:{oid})" if oid else name
-                    if label not in org_entries:
-                        org_entries.append(label)
-        if org_entries:
-            hints.append(f"Organizations in report: {', '.join(org_entries)}")
-
-    # Extract user profile data (for cross-turn reference reuse)
-    for usr_name in ("get_user_profile", "search_users"):
-        user_data = tool_results.get(usr_name)
-        if not isinstance(user_data, dict):
-            continue
-        uid = user_data.get("userId") or user_data.get("id") or user_data.get("사용자ID") or user_data.get("유저ID")
-        uname = user_data.get("name") or user_data.get("userName") or user_data.get("이름") or user_data.get("사용자명")
-        if uid:
-            label = f"{uname} (id:{uid})" if uname else f"id:{uid}"
-            hints.append(f"User in context: {label}")
-
-    return "\n".join(hints) if hints else ""
-
 
 def _increment_fallback_counter(counter_name: str) -> int:
     with _fallback_counter_lock:
@@ -265,110 +281,12 @@ def _log_structured_metrics(
     logger.info("[Metrics  ] %s", json.dumps(payload, sort_keys=True))
 
 
-_REPORT_INTENT_KEYWORDS = (
-    # English
-    "statement",
-    "report",
-    "revenue",
-    "summary",
-    # Korean
-    "통계",
-    "보고서",
-    "매출",
-    "요약",
-    "1 week",
-    "this week",
-    "this month",
-)
-_REPORT_TOOL_NAMES = {
-    "get_statement_of_use_summary",
-    "get_statement_of_use_detail",
-    "get_statement_of_use_driver_summary",
-    "get_statement_of_use_driver_detail",
-    "get_b2b_tracking_service_detail",
-}
-
-_DATE_TOKEN_PATTERN = re.compile(r"\b(?:\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b")
-# Matches "7 days", "7일", "2 weeks", "3 months", "2주", "3달" etc. (English and Korean only)
-_NUMERIC_PERIOD_PATTERN = re.compile(
-    r"\b\d+\s*(?:day|days|week|weeks|month|months|일|주|달|개월)\b",
-    re.IGNORECASE,
-)
-_RELATIVE_DATE_KEYWORDS = (
-    "today",
-    "yesterday",
-    "this week",
-    "last week",
-    "this month",
-    "last month",
-    "this year",
-    "last year",
-    "week",
-    "month",
-    "year",
-    # Korean
-    "오늘",
-    "어제",
-    "이번 주",
-    "지난 주",
-    "이번 달",
-    "지난 달",
-    "이번 년",
-)
-
-
-_DETAIL_INTENT_KEYWORDS = (
-    # English
-    "detail",
-    "order id",
-    "orderid",
-    "per order",
-    "list order",
-    "list orders",
-    # Korean
-    "상세",
-    "주문 목록",
-    "주문 id",
-    "건별",
-)
-
-_DRIVER_REPORT_KEYWORDS = (
-    # English — individual words and phrases
-    "driver",
-    # Korean
-    "기사",
-    "기사 보고서",
-    "기사 리포트",
-    "기사측",
-)
-
-_CUSTOMER_REPORT_KEYWORDS = (
-    # English
-    "customer",
-    "client",
-    "user order",
-    "customer order",
-    # Korean
-    "고객",
-    "사용",
-    "이용",
-)
-
-_SUMMARY_TOOL_NAMES = {
-    "get_statement_of_use_summary",
-    "get_statement_of_use_driver_summary",
-}
 
 # ---------------------------------------------------------------------------
 # Feature detection — keyword-based routing for modular prompt composition.
 # Maps each feature domain to keywords (English + Korean).
 # ---------------------------------------------------------------------------
 _FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "report-summary": (
-        "statement", "report", "revenue", "summary", "statistics", "stat",
-        "doanh thu", "tổng hợp", "báo cáo", "tuần", "tháng", "thống kê",
-        "통계", "보고서", "매출", "요약",
-    ),
     "order-lookup": (
         "order", "delivery", "coupon", "cancel fee", "reorder", "shipping record",
         "price estimate", "pricing", "invoice", "track",
@@ -406,14 +324,15 @@ _FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _detect_feature_key(message: str) -> str | None:
+def _detect_feature_key(message: str) -> tuple[str | None, int]:
     """Detect the most likely feature domain from the user's message.
 
-    Simple keyword scoring — no LLM call. Returns None when no clear match.
+    Simple keyword scoring — no LLM call. Returns (key, score).
+    Score is the number of matching keywords; 0 means no match.
     """
     lower = (message or "").lower()
     if not lower:
-        return None
+        return None, 0
 
     best_key: str | None = None
     best_score = 0
@@ -423,247 +342,7 @@ def _detect_feature_key(message: str) -> str | None:
             best_score = score
             best_key = feature
 
-    return best_key
-
-
-def _looks_like_report_query(message: str) -> bool:
-    normalized = (message or "").lower().strip()
-    if not normalized:
-        return False
-    return any(keyword in normalized for keyword in _REPORT_INTENT_KEYWORDS)
-
-
-def _wants_detail_level(message: str) -> bool:
-    """True when the user's message implies order-level / per-row detail."""
-    normalized = (message or "").lower().strip()
-    if not normalized:
-        return False
-    return any(kw in normalized for kw in _DETAIL_INTENT_KEYWORDS)
-
-
-def _wants_driver_report(message: str) -> bool:
-    """True when the user's message explicitly targets driver-side report data."""
-    normalized = (message or "").lower().strip()
-    if not normalized:
-        return False
-    return any(kw in normalized for kw in _DRIVER_REPORT_KEYWORDS)
-
-
-def _wants_customer_report(message: str) -> bool:
-    """True when the user's message explicitly targets customer-side report data."""
-    normalized = (message or "").lower().strip()
-    if not normalized:
-        return False
-    return any(kw in normalized for kw in _CUSTOMER_REPORT_KEYWORDS)
-
-
-def _message_has_explicit_date_intent(message: str) -> bool:
-    """True when the current user message explicitly specifies a date/time filter."""
-    normalized = (message or "").lower().strip()
-    if not normalized:
-        return False
-
-    if _DATE_TOKEN_PATTERN.search(normalized):
-        return True
-
-    if _NUMERIC_PERIOD_PATTERN.search(normalized):
-        return True
-
-    return any(keyword in normalized for keyword in _RELATIVE_DATE_KEYWORDS)
-
-
-def _sanitize_report_tool_args(tool_name: str, tool_args: dict[str, Any], message: str) -> dict[str, Any]:
-    """Normalize report tool args without clobbering carried-over date ranges.
-
-    Keep prior-turn dates when Gemini already supplied them; this prevents
-    follow-up report queries from silently resetting to backend defaults.
-
-    Also strips the ``pay`` param when it contains all known payment types
-    (functionally identical to omitting it, but costs an unnecessary query-string).
-    """
-    if tool_name not in _REPORT_TOOL_NAMES:
-        return tool_args
-
-    sanitized = dict(tool_args)
-
-    # Strip pay param when it explicitly lists all known types (equivalent to omitting it).
-    # Use == (exact match) so a partial list is preserved and passed to the backend.
-    _ALL_PAY_TYPES = {"brandpay", "card", "cash", "credit", "point"}
-    pay_val = sanitized.get("pay")
-    if isinstance(pay_val, list) and set(v.lower() for v in pay_val) == _ALL_PAY_TYPES:
-        sanitized.pop("pay", None)
-
-    return sanitized
-
-
-def _inject_appointment_dates_from_prior_order(
-    tool_name: str,
-    tool_args: dict[str, Any],
-    tool_results_collected: dict[str, Any],
-) -> dict[str, Any]:
-    """When a report tool has no date args AND get_order_detail was called earlier this turn,
-    inject a \u00b11-day window centred on the order's appointmentAt.
-
-    This prevents the backend from defaulting to 'today \u22122 days' when the user asks a
-    per-order follow-up like 'does this order have etax?'
-    """
-    if tool_name not in _REPORT_TOOL_NAMES:
-        return tool_args
-
-    # Only inject when NO date was already supplied by the LLM.
-    has_date = any(tool_args.get(k) for k in ("from_date", "to_date", "fromDate", "toDate"))
-    if has_date:
-        return tool_args
-
-    order_result = tool_results_collected.get("get_order_detail")
-    if not isinstance(order_result, dict):
-        return tool_args
-
-    appointment_raw = order_result.get("appointmentAt")
-    if not appointment_raw:
-        return tool_args
-
-    try:
-        # appointmentAt may be ISO-8601: "2026-03-17T10:00:00+09:00" or bare "2026-03-17"
-        appt_date = date.fromisoformat(str(appointment_raw)[:10])
-        injected = dict(tool_args)
-        injected["from_date"] = (appt_date - timedelta(days=1)).isoformat()
-        injected["to_date"] = (appt_date + timedelta(days=1)).isoformat()
-        logger.info(
-            "[Tool     ] Injected appointment-based date range for %s: %s to %s (appointmentAt=%s)",
-            tool_name, injected["from_date"], injected["to_date"], str(appointment_raw)[:10],
-        )
-        return injected
-    except (ValueError, TypeError):
-        return tool_args
-
-
-def _build_report_note(
-    rows: list[dict],
-    tool_name: str,
-    *,
-    user_wants_detail: bool = False,
-    org_search_results: dict | None = None,
-    tool_had_org_filter: bool = False,
-    detail_tool_already_called: bool = False,
-) -> str:
-    """Build a smart _note for report tool results.
-
-    Extracts distinct organization names and flags potential ambiguity
-    (e.g. orgs sharing a common prefix) so Gemini can apply entity
-    resolution instead of guessing.
-
-    When a summary tool was called but the user asked for detail-level
-    data, injects a corrective instruction telling Gemini to call the
-    detail variant — UNLESS the detail tool was already called in the
-    same batch.
-
-    When search_organizations was already called but the report tool
-    was called without organization_id, reminds Gemini to answer from
-    the rows it already has (client-side filter by org name).
-    """
-    if not rows:
-        return "Report returned no rows for this filter/date range."
-
-    # Collect distinct orgs from the result set.
-    org_entries: dict[str, str] = {}  # orgName -> orgId
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        name = row.get("organizationName") or row.get("기업명") or row.get("기업") or ""
-        oid = str(row.get("organizationId") or row.get("기업ID") or row.get("기업코드") or "")
-        if name and name not in org_entries:
-            org_entries[name] = oid
-
-    # If summary was called but user wanted detail, do not force a second tool
-    # call in the same turn. Keep responses single-pass and explicitly state
-    # limits of summary rows.
-    is_summary_tool = tool_name in _SUMMARY_TOOL_NAMES
-    if is_summary_tool and user_wants_detail and not detail_tool_already_called:
-        return (
-            f"WARNING: You called {tool_name} (summary) but the user is asking for "
-            "detail-level data (order IDs, per-order payment, etc.). "
-            "Summary rows do NOT contain orderId or per-order fields. "
-            "Answer from summary data now and clearly state which detail fields "
-            "are unavailable in this result set. Do NOT call another report tool "
-            "in this turn."
-        )
-    
-    # If summary tool was called AND the detail variant was already called/collected,
-    # remind Gemini that detail data is available and should NOT be called again.
-    if is_summary_tool and detail_tool_already_called:
-        return (
-            "Both summary and detail results are now available. "
-            "Use the detail rows (which contain orderId, paymentMethod, etc.) "
-            "to answer questions about individual orders. "
-            "Do NOT call the detail tool again — use the data you already have."
-        )
-
-    parts = [
-        "Present these rows as a table NOW. Do NOT reason about column indices in your response.",
-    ]
-
-    # If search_organizations was called but report was not filtered by org_id,
-    # instruct Gemini to filter the rows client-side instead of re-calling.
-    if org_search_results and not tool_had_org_filter:
-        searched_orgs = org_search_results.get("organizations", [])
-        if isinstance(searched_orgs, list) and searched_orgs:
-            org_hints = []
-            for o in searched_orgs[:5]:
-                if isinstance(o, dict):
-                    oname = o.get("organizationName") or o.get("name") or o.get("기업명") or o.get("기업") or ""
-                    oid = o.get("organizationId") or o.get("id") or o.get("기업ID") or o.get("기업코드") or ""
-                    if oname:
-                        org_hints.append(f"{oname} (id:{oid})")
-            if org_hints:
-                parts.append(
-                    "IMPORTANT: You already searched for organizations and found: "
-                    + ", ".join(org_hints)
-                    + ". The report data above contains ALL organizations. "
-                    "Filter rows by matching organizationName/기업명/기업 or organizationId/기업ID/기업코드 to the user's query. "
-                    "Do NOT re-call this report tool — answer from these rows now."
-                )
-
-    if org_entries:
-        # Detect groups of similar names using multiple strategies:
-        # 1. Shared prefix (>=3 chars)
-        # 2. Case-insensitive substring containment
-        names = sorted(org_entries.keys())
-        similar_groups: list[list[str]] = []
-        used: set[str] = set()
-        for i, a in enumerate(names):
-            if a in used:
-                continue
-            group = [a]
-            a_lower = a.lower()
-            prefix_a = a_lower[:3]
-            for b in names[i + 1:]:
-                if b in used:
-                    continue
-                b_lower = b.lower()
-                # Match on shared prefix OR one name is a substring of the other
-                if b_lower[:3] == prefix_a or a_lower in b_lower or b_lower in a_lower:
-                    group.append(b)
-            if len(group) > 1:
-                similar_groups.append(group)
-                used.update(group)
-
-        org_list = ", ".join(f"{n} (id:{org_entries[n]})" for n in names[:15])
-        parts.append(f"Distinct organizations in result: {org_list}.")
-
-        if similar_groups:
-            warnings = []
-            for grp in similar_groups:
-                items = " vs ".join(f'"{n}" (id:{org_entries[n]})' for n in grp)
-                warnings.append(items)
-            parts.append(
-                "AMBIGUITY WARNING — similar organization names detected: "
-                + "; ".join(warnings)
-                + ". These are DIFFERENT entities. Try exact match first, then case-insensitive match. "
-                "If user query does not match exactly one name, list all candidates and ask user to clarify."
-            )
-
-    return " ".join(parts)
+    return best_key, best_score
 
 
 class AIOrchestrator:
@@ -689,16 +368,16 @@ class AIOrchestrator:
         # Flash model — low latency, all tools, deterministic.
         # include_thoughts=True causes the API to route internal reasoning into
         # thought-flagged parts; _response_text() filters those out, so they
-        # never reach the user.  Capped at 8 000 tokens — enough for complex
-        # tool selection and response planning without burning 20+ seconds on
-        # formatting decisions.
+        # never reach the user.  Budget capped at 1 024 tokens — sufficient for
+        # tool selection and response planning; 8 000 caused 30+ second latency
+        # on simple lookups (model exhausted the budget even for trivial decisions).
         logger.info("[Orchestrator] Loading Flash model (%s) with %d tools...", settings.model_name, len(ALL_TOOL_FUNCTIONS))
         self._model = create_gemini_model(
             ALL_TOOL_FUNCTIONS,
             client=shared_client,
             temperature=0.0,
             max_output_tokens=4096,
-            thinking_config=types.ThinkingConfig(include_thoughts=True, thinking_budget=8000),
+            thinking_config=types.ThinkingConfig(include_thoughts=True, thinking_budget=1024),
         )
 
         # Pro model — deeper reasoning, scoped tool set, thinking enabled.
@@ -706,7 +385,7 @@ class AIOrchestrator:
         self._pro_model: "GeminiChatFactory | None" = None
         if not settings.pro_model_name:
             logger.warning(
-                "[Orchestrator] PRO_MODEL_NAME not set — report-summary and knowledge-code "
+                "[Orchestrator] PRO_MODEL_NAME not set — knowledge-code "
                 "will use Flash instead.",
             )
         if settings.pro_model_name:
@@ -724,6 +403,18 @@ class AIOrchestrator:
             )
             logger.info("[Orchestrator] Pro model ready. Dual-model routing enabled.")
 
+        # Bare Flash model — no tools, thinking disabled — used for conversational
+        # turns (feature_key=None). Eliminates 38 tool schema tokens + 8k thinking
+        # budget overhead when the admin sends a greeting or an unmatched question.
+        logger.info("[Orchestrator] Loading bare Flash model for conversational turns...")
+        self._bare_model = create_gemini_model(
+            [],
+            client=shared_client,
+            temperature=0.0,
+            max_output_tokens=2048,
+            thinking_config=types.ThinkingConfig(include_thoughts=False, thinking_budget=0),
+        )
+
         store = None
         if settings.chat_history_db:
             from app.persistence.chat_store import ChatStore
@@ -731,11 +422,12 @@ class AIOrchestrator:
 
         self._memory = MemoryService(store=store)
         logger.info(
-            "[Orchestrator] Ready.  Flash=%s (%d tools)  |  Pro=%s (%d tools)  |  Routing=%s",
+            "[Orchestrator] Ready.  Flash=%s (%d tools)  |  Pro=%s (%d tools)  |  Bare=%s (0 tools)  |  Routing=%s",
             settings.model_name,
             len(ALL_TOOL_FUNCTIONS),
             settings.pro_model_name if self._pro_model else "(disabled)",
             len(_PRO_TOOLS) if self._pro_model else 0,
+            settings.model_name,
             "dual-model" if self._pro_model else "flash-only",
         )
 
@@ -770,136 +462,43 @@ class AIOrchestrator:
         # Sanitize before embedding in LLM context to block prompt injection.
         safe_message = _sanitize_user_message(message)
 
-        # Build context using hybrid memory (summary + long-term + recent turns)
-        effective_message = build_context(sid, safe_message, self._memory)
+        # Build native Gemini conversation history from the three memory layers.
+        # History is seeded into the chat session; only the current message is sent fresh.
+        history = build_history(sid, safe_message, self._memory)
         # Always inject today's date so Gemini can compute relative periods ("last 7 days", etc.).
-        # Use a unique sentinel prefix that is hard to spoof via user input.
-        effective_message = f"[SYS:DATE={date.today().isoformat()}]\n\n{effective_message}"
+        effective_message = f"[SYS:DATE={date.today().isoformat()}]\n\n{safe_message}"
 
         # Build a feature-specific system prompt for this request.
         # Re-use the feature key from the first turn if available; re-detect only
         # when the session is new or if the current message clearly signals a new domain.
-        detected_key = _detect_feature_key(message)
-        if session.feature_key and not detected_key:
-            # Follow-up message has no strong signal → keep the prior feature context.
+        detected_key, _ = _detect_feature_key(message)
+        if session.feature_key and (not detected_key or detected_key == session.feature_key):
+            # No new domain detected, or same domain confirmed → treat as follow-up.
             feature_key = session.feature_key
         else:
+            # A different domain was detected (any score ≥ 1) → switch context.
             feature_key = detected_key
         if feature_key and not session.feature_key:
             # First turn with a clear signal → persist for future follow-ups.
             session.feature_key = feature_key
         system_prompt = build_system_prompt(feature_key=feature_key)
 
-        # Add lightweight hints extracted from recent tool results so follow-up
-        # turns can reuse known entities (e.g., organization IDs in report rows).
-        if feature_key == "report-summary":
-            recent_tool_results: dict[str, Any] = {}
-            for turn in reversed(self._memory.get_recent_turns(sid)):
-                if not turn.tool_results:
-                    continue
-                for tool_name, result in turn.tool_results.items():
-                    if tool_name not in recent_tool_results:
-                        recent_tool_results[tool_name] = result
-            context_hints = _extract_context_hints(recent_tool_results)
-            if context_hints:
-                effective_message += (
-                    "\n\n[Recent context hints from prior tool results:\n"
-                    f"{context_hints}\n]"
-                )
-
-        # For report queries: inject a direct tool instruction into the user message.
-        # This prevents the costly pattern of: Gemini answers text → retry call → lookup_enum call → report call.
-        # By hinting upfront, Gemini calls the right report tool on the very first try.
-        if feature_key == "report-summary":
-            is_driver = _wants_driver_report(message)
-            is_customer = _wants_customer_report(message)
-            is_detail = _wants_detail_level(message)
-            # If detection is ambiguous (both False), inherit scope from prior turn
-            if not is_driver and not is_customer and session.report_scope:
-                prior_scope = session.report_scope
-                if prior_scope == "driver":
-                    is_driver = True
-                elif prior_scope == "customer":
-                    is_customer = True
-                elif prior_scope == "both":
-                    is_driver = True
-                    is_customer = True
-            if is_driver and not is_customer:
-                # Driver-only signal
-                if is_detail:
-                    effective_message += (
-                        "\n\n[Instruction: Call get_statement_of_use_driver_detail immediately. "
-                        "etax_status=14 to include all. Do NOT call customer tools. "
-                        "Do not call lookup_enum or any other tool first.]"
-                    )
-                else:
-                    effective_message += (
-                        "\n\n[Instruction: Call get_statement_of_use_driver_summary immediately. "
-                        "etax_status=14 to include all. Do NOT call customer tools. "
-                        "Do not call lookup_enum or any other tool first.]"
-                    )
-            elif is_customer and not is_driver:
-                # Customer-only signal
-                if is_detail:
-                    effective_message += (
-                        "\n\n[Instruction: Call get_statement_of_use_detail immediately. "
-                        "Omit pay param to include all types. Do NOT call driver tools. "
-                        "Do not call lookup_enum or any other tool first.]"
-                    )
-                else:
-                    effective_message += (
-                        "\n\n[Instruction: Call get_statement_of_use_summary immediately. "
-                        "Omit pay param to include all types. Do NOT call driver tools. "
-                        "Do not call lookup_enum or any other tool first.]"
-                    )
-            elif is_customer and is_driver:
-                # Both signals explicitly present
-                if is_detail:
-                    effective_message += (
-                        "\n\n[Instruction: Call get_statement_of_use_detail AND "
-                        "get_statement_of_use_driver_detail. etax_status=14. "
-                        "Omit pay param. Do not call lookup_enum first.]"
-                    )
-                else:
-                    effective_message += (
-                        "\n\n[Instruction: Call get_statement_of_use_summary AND "
-                        "get_statement_of_use_driver_summary. etax_status=14. "
-                        "Omit pay param. Do not call lookup_enum first.]"
-                    )
-            else:
-                # Ambiguous — no explicit customer/driver signal AND no prior scope. Default to both.
-                effective_message += (
-                    "\n\n[Instruction: This report query has no customer/driver signal. "
-                    "Call BOTH get_statement_of_use_summary (customer) AND "
-                    "get_statement_of_use_driver_summary (etax_status=14, all statuses) "
-                    "for the requested date range. Present results as two sections: "
-                    "Customer Report and Driver Report. Do not call lookup_enum first.]"
-                )
-                is_driver = True
-                is_customer = True
-            # Persist detected scope for follow-up requests
-            if is_driver and is_customer:
-                session.report_scope = "both"
-            elif is_driver:
-                session.report_scope = "driver"
-            elif is_customer:
-                session.report_scope = "customer"
-
         # A fresh session per request keeps state isolated between users.
-        # Route report-summary and knowledge-code to the Pro model for deeper
-        # reasoning; fall back to Flash when Pro is not configured.
+        # Route knowledge-code to the Pro model for deeper reasoning;
+        # fall back to Flash when Pro is not configured.
         use_pro = (
             self._pro_model is not None
-            and feature_key in ("report-summary", "knowledge-code")
+            and feature_key == "knowledge-code"
         )
-        active_model = self._pro_model if use_pro else self._model
+        use_bare = not use_pro and feature_key is None
+        active_model = self._pro_model if use_pro else (self._bare_model if use_bare else self._model)
         logger.info("[Model    ] Using %s for feature_key=%s", active_model.model_name, feature_key)
 
         # Flash model: restrict to feature-scoped tool subset via ToolConfig.allowed_function_names.
         # Pro model skips this — it already uses a scoped tool list from _PRO_TOOLS.
         # No feature_key or unknown key → all tools remain available (safe fallback).
         allowed_names: list[str] | None = None
-        if not use_pro and feature_key and feature_key in FLASH_TOOL_SETS:
+        if not use_pro and not use_bare and feature_key and feature_key in FLASH_TOOL_SETS:
             allowed_names = sorted(FLASH_TOOL_SETS[feature_key])
             logger.info(
                 "[Model    ] Flash tool scoping: feature_key=%s allowed=%d/%d tools",
@@ -911,6 +510,7 @@ class AIOrchestrator:
             system_instruction=system_prompt,
             feature_key=feature_key,
             allowed_function_names=allowed_names,
+            history=history or None,
         )
 
         # Step 1 — send the user message to Gemini
@@ -928,9 +528,6 @@ class AIOrchestrator:
         gemini_elapsed_total = first_gemini_elapsed
         tool_elapsed_total = 0.0
         seen_calls: set[tuple[str, str]] = set()
-        # If Gemini tries to answer a report query without tools on the first pass,
-        # force one retry that explicitly asks for a report tool call.
-        report_tool_retry_used = False
 
         # Tool-calling loop — Gemini may request tools before producing a final answer.
         while True:
@@ -955,61 +552,6 @@ class AIOrchestrator:
 
             # No tool calls → Gemini produced the final answer
             if not function_calls:
-                if (
-                    not tools_called
-                    and loop == 1
-                    and not report_tool_retry_used
-                    and _looks_like_report_query(message)
-                ):
-                    report_tool_retry_used = True
-                    logger.warning(
-                        "[Step %d  ] Report-like query answered without tools on first pass. Forcing one tool-call retry.",
-                        loop,
-                    )
-                    gemini_calls += 1
-                    t = time.perf_counter()
-                    is_driver = _wants_driver_report(message)
-                    is_customer = _wants_customer_report(message)
-                    is_detail = _wants_detail_level(message)
-                    if is_driver and not is_customer:
-                        if is_detail:
-                            retry_msg = (
-                                "This is a driver detail-level report query. "
-                                "Call get_statement_of_use_driver_detail IMMEDIATELY (etax_status=14 for all). "
-                                "Do NOT call customer tools or lookup_enum."
-                            )
-                        else:
-                            retry_msg = (
-                                "This is a driver report query. "
-                                "Call get_statement_of_use_driver_summary IMMEDIATELY (etax_status=14 for all). "
-                                "Do NOT call customer tools or lookup_enum."
-                            )
-                    elif is_customer and not is_driver:
-                        if is_detail:
-                            retry_msg = (
-                                "This is a customer detail-level report query. "
-                                "Call get_statement_of_use_detail IMMEDIATELY. "
-                                "Omit pay to include all types. Do NOT call driver tools or lookup_enum."
-                            )
-                        else:
-                            retry_msg = (
-                                "This is a customer report query. "
-                                "Call get_statement_of_use_summary IMMEDIATELY. "
-                                "Omit pay to include all types. Do NOT call driver tools or lookup_enum."
-                            )
-                    else:
-                        retry_msg = (
-                            "This is a report query with no customer/driver signal. "
-                            "Call BOTH get_statement_of_use_summary AND "
-                            "get_statement_of_use_driver_summary (etax_status=14) for the requested date range. "
-                            "Present as two sections. Do NOT call lookup_enum first."
-                        )
-                    response = chat_session.send_message(retry_msg)
-                    gemini_elapsed = time.perf_counter() - t
-                    gemini_elapsed_total += gemini_elapsed
-                    logger.info("[Step %d  ] Gemini retry response  elapsed=%.3fs", loop, gemini_elapsed)
-                    continue
-
                 elapsed = time.perf_counter() - total_start
                 logger.info(
                     "[Step %d  ] Gemini returned final answer  tools_called=%s  gemini_calls=%d  total_elapsed=%.3fs",
@@ -1052,16 +594,6 @@ class AIOrchestrator:
                             "\nDo NOT call any more tools. Answer the user's question NOW using only the data above.",
                             "If some details are uncertain, say so, but still give your best answer.",
                         ]
-                        if any(t in _REPORT_TOOL_NAMES for t in tools_called):
-                            synth_msg_parts_max += [
-                                "For report-domain responses:",
-                                "- Render only the fields that exist in the rows (do not invent columns)",
-                                "- Use EXACT field names as headers: organizationId, organizationName, serviceType, orderCount, totalRevenue, paymentBreakdown, orderId, revenue, surcharge, paymentMethod, createdAt",
-                                "- Do NOT translate, rename, or localize field names",
-                                "- Include all non-null fields from each row",
-                                "- Add a TOTAL row for numeric columns",
-                                "- NEVER mention row arrays, column indices, index mapping, or internal schema reasoning",
-                            ]
                         synth_msg_max = "\n\n".join(synth_msg_parts_max)
                         synthesis_response = chat_session.send_message(synth_msg_max)
                         synth_elapsed = time.perf_counter() - t
@@ -1097,17 +629,14 @@ class AIOrchestrator:
             tool_response_parts = []
             steering_notes: list[str] = []  # Steering instructions kept separate from tool result data
 
-            # Separate tool calls into cache-servable, parallel-eligible, and deferred
+            # Deduplicate tool calls — same tool+args won't fire twice in a turn.
+            # Track skipped calls so we can send a placeholder function_response for each —
+            # Gemini requires response count to equal call count (400 INVALID_ARGUMENT otherwise).
             dedup_calls: list[tuple[str, dict]] = []  # (tool_name, tool_args)
-            # Track calls skipped by dedup or scope guard so we can still send a
-            # placeholder function_response for each — Gemini requires response count
-            # to equal call count in a turn (400 INVALID_ARGUMENT otherwise).
             skipped_names: list[str] = []
             for fc in function_calls:
                 tool_name = fc.name
                 tool_args = dict(fc.args or {})
-                tool_args = _sanitize_report_tool_args(tool_name, tool_args, message)
-                tool_args = _inject_appointment_dates_from_prior_order(tool_name, tool_args, tool_results_collected)
                 call_key = (tool_name, json.dumps(tool_args, sort_keys=True, default=str))
                 if call_key in seen_calls:
                     logger.warning("[Tool     ] skipping duplicate tool call %s(%s)", tool_name, tool_args)
@@ -1115,50 +644,6 @@ class AIOrchestrator:
                     continue
                 seen_calls.add(call_key)
                 dedup_calls.append((tool_name, tool_args))
-
-            # Scope guard: block report tools that conflict with user intent.
-            # If user said "driver" only, suppress customer report tools and vice versa.
-            # Carry over scope from session if current message is ambiguous.
-            if feature_key == "report-summary":
-                _is_driver = _wants_driver_report(message)
-                _is_customer = _wants_customer_report(message)
-                # Inherit scope from prior turn if ambiguous
-                if not _is_driver and not _is_customer and session.report_scope:
-                    prior_scope = session.report_scope
-                    if prior_scope == "driver":
-                        _is_driver = True
-                    elif prior_scope == "customer":
-                        _is_customer = True
-                    elif prior_scope == "both":
-                        _is_driver = True
-                        _is_customer = True
-                _customer_tools = {"get_statement_of_use_summary", "get_statement_of_use_detail"}
-                _driver_tools = {"get_statement_of_use_driver_summary", "get_statement_of_use_driver_detail"}
-                blocked: set[str] = set()
-                if _is_driver and not _is_customer:
-                    blocked = _customer_tools
-                elif _is_customer and not _is_driver:
-                    blocked = _driver_tools
-                if blocked:
-                    before = len(dedup_calls)
-                    skipped_names.extend(n for n, _ in dedup_calls if n in blocked)
-                    dedup_calls = [(n, a) for n, a in dedup_calls if n not in blocked]
-                    if len(dedup_calls) < before:
-                        logger.info(
-                            "[Tool     ] Scope guard blocked %d out-of-scope tool(s): %s",
-                            before - len(dedup_calls), blocked & {n for n, _ in dedup_calls} or blocked,
-                        )
-                    # Also evict prior-turn results from the wrong scope so they don't
-                    # pollute the context when the user switches from customer→driver or vice versa.
-                    stale_prior = blocked & set(tool_results_collected.keys())
-                    if stale_prior:
-                        for stale_key in stale_prior:
-                            tool_results_collected.pop(stale_key, None)
-                            tool_params_collected.pop(stale_key, None)
-                        logger.info(
-                            "[Tool     ] Scope guard evicted %d stale prior-turn result(s): %s",
-                            len(stale_prior), stale_prior,
-                        )
 
             # Phase 1: execute all pending tools (no cache)
             pending_calls: list[tuple[str, dict]] = list(dedup_calls)
@@ -1220,33 +705,6 @@ class AIOrchestrator:
                     list(result.keys()) if isinstance(result, dict) else type(result).__name__,
                 )
 
-                if tool_name in _REPORT_TOOL_NAMES and isinstance(result, dict):
-                    rows_obj = result.get("rows")
-                    if isinstance(rows_obj, list):
-                        if rows_obj:
-                            first_row = rows_obj[0]
-                            if isinstance(first_row, dict):
-                                logger.info(
-                                    "[ReportDbg ] %s rows shape=list(dict), first_keys=%s",
-                                    tool_name,
-                                    list(first_row.keys())[:12],
-                                )
-                            elif isinstance(first_row, list):
-                                logger.warning(
-                                    "[ReportDbg ] %s rows shape=list(list), first_row_len=%d first_row_sample=%s",
-                                    tool_name,
-                                    len(first_row),
-                                    first_row[:8],
-                                )
-                            else:
-                                logger.info(
-                                    "[ReportDbg ] %s rows first_row_type=%s",
-                                    tool_name,
-                                    type(first_row).__name__,
-                                )
-                        else:
-                            logger.info("[ReportDbg ] %s rows shape=list(len=0)", tool_name)
-
                 # Annotate search_organizations results so Gemini lists matching
                 # candidates with IDs instead of giving a generic "no match" response.
                 if tool_name == "search_organizations" and isinstance(result, dict):
@@ -1262,19 +720,9 @@ class AIOrchestrator:
                                     org_labels.append(f"{oname} (id:{oid})")
                                     org_ids.append(str(oid))
                         if len(org_labels) == 1:
-                            # Determine the exact report tool to call next based on user intent.
-                            _ud = _wants_detail_level(message)
-                            _uc = _wants_customer_report(message) or session.report_scope in ("customer", "both")
-                            _udrv = _wants_driver_report(message) or session.report_scope in ("driver", "both")
-                            if _udrv and not _uc:
-                                _next_tool = "get_statement_of_use_driver_detail" if _ud else "get_statement_of_use_driver_summary"
-                                _extra = " etax_status=14."
-                            else:
-                                _next_tool = "get_statement_of_use_detail" if _ud else "get_statement_of_use_summary"
-                                _extra = " Omit pay param."
                             steering_notes.append(
                                 f"Exactly ONE org match: {org_labels[0]}. "
-                                f"Call {_next_tool} NOW with organization_id={org_ids[0]}.{_extra} "
+                                "Use this organization's ID in your next tool call. "
                                 "Do NOT ask the user to confirm. Do NOT output text first."
                             )
                         elif len(org_labels) > 1:
@@ -1296,32 +744,6 @@ class AIOrchestrator:
                         "Do NOT call it again with different date or sort params. "
                         "Synthesize the final answer from the results already returned above."
                     )
-
-                if tool_name in _REPORT_TOOL_NAMES and isinstance(result, dict):
-                    rows = result.get("rows")
-                    has_rows = isinstance(rows, list) and len(rows) > 0
-                    # Check if search_organizations was already called in this turn
-                    org_search_res = tool_results_collected.get("search_organizations")
-                    had_org_filter = bool(tool_args.get("organization_id") or tool_args.get("orgId"))
-                    # Check if the detail variant of this tool was already called in this batch
-                    # or was collected from a prior turn.
-                    detail_called = False
-                    if tool_name in _SUMMARY_TOOL_NAMES:
-                        detail_tool_name = tool_name.replace("_summary", "_detail")
-                        detail_called = (
-                            detail_tool_name in tool_results_collected
-                            or any(n == detail_tool_name for n, _ in dedup_calls)
-                        )
-                    note = _build_report_note(
-                        rows if has_rows else [],
-                        tool_name,
-                        user_wants_detail=_wants_detail_level(message),
-                        org_search_results=org_search_res,
-                        tool_had_org_filter=had_org_filter,
-                        detail_tool_already_called=detail_called,
-                    )
-                    if note:
-                        steering_notes.append(note)
 
                 tools_called.append(tool_name)
                 # Collect result and params for context injection in next turn
@@ -1352,7 +774,7 @@ class AIOrchestrator:
                 _skip_kwargs: dict[str, Any] = {
                     "function_response": types.FunctionResponse(
                         name=skipped_name,
-                        response={"result": json.dumps({"note": "duplicate or out-of-scope — prior result applies"}, default=str)},
+                        response={"result": json.dumps({"note": "duplicate call — prior result applies"}, default=str)},
                     ),
                 }
                 if _tsig is not None:
@@ -1361,8 +783,8 @@ class AIOrchestrator:
 
             # Append steering instructions as a dedicated text Part — clearly separate
             # from tool result data so the LLM reads them as directives, not as data.
-            # Deduplicate identical notes (e.g. multiple report tools may produce the
-            # same "present as table" instruction).
+            # Deduplicate identical steering notes (e.g. parallel tools may produce the
+            # same instruction).
             if steering_notes and tool_response_parts:
                 seen: set[str] = set()
                 unique_notes: list[str] = []
@@ -1396,10 +818,10 @@ class AIOrchestrator:
 
             # Send all tool results back to Gemini in one message
             gemini_calls += 1
-            n_tool_results = len(tools_called) - (len(tools_called) - len([p for p in tool_response_parts if not p.text]))
+            n_tool_results = len([p for p in tool_response_parts if not p.text])
             logger.info(
                 "[Step %d  ] Sending %d tool result(s)%s back to Gemini...  (gemini_calls so far: %d/%d)",
-                loop, len(tools_called), f" + {len(steering_notes)} steering note(s)" if steering_notes else "",
+                loop, n_tool_results, f" + {len(steering_notes)} steering note(s)" if steering_notes else "",
                 gemini_calls, MAX_TOOL_LOOPS + 1,
             )
             t = time.perf_counter()
@@ -1426,19 +848,6 @@ class AIOrchestrator:
                     json.dumps(tool_results_collected, indent=2, default=str)[:5000],  # Cap at 5k chars
                     "\nDo NOT call any more tools. Provide a clear, concise response for the admin.",
                 ]
-                # Only add report-specific formatting instructions when report tools were called.
-                # Adding them for non-report queries (e.g. search_organizations) causes Gemini to
-                # look for report fields that don't exist and fail to present the actual data.
-                if any(t in _REPORT_TOOL_NAMES for t in tools_called):
-                    synth_msg_parts += [
-                        "For report-domain responses:",
-                        "- Render only the fields that exist in the rows (do not invent columns)",
-                        "- Use EXACT field names as headers: organizationId, organizationName, serviceType, orderCount, totalRevenue, paymentBreakdown, orderId, revenue, surcharge, paymentMethod, createdAt",
-                        "- Do NOT translate, rename, or localize field names",
-                        "- Include all non-null fields from each row",
-                        "- Add a TOTAL row for numeric columns",
-                        "- NEVER mention row arrays, column indices, index mapping, or internal schema reasoning",
-                    ]
                 synth_msg = "\n\n".join(synth_msg_parts)
                 synth_response = chat_session.send_message(synth_msg)
                 synth_elapsed = time.perf_counter() - t

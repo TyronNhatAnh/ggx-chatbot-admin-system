@@ -1,198 +1,77 @@
 """
-Context builder — assembles the final LLM input from the three memory layers.
+Context builder — converts the three memory layers into native Gemini conversation history.
 
-Returned message list:
-  1. System prompt          (handled externally by GeminiChatFactory)
-  2. Conversation summary   (if exists)
-  3. Retrieved long-term memory (top 3, if relevant)
-  4. Last 3-5 recent turns
-  5. Current user message
+Returns a list of Content objects to pass as ``history=`` to ``chats.create()``.
+The current user message is NOT included — it is sent separately via ``send_message()``.
 
-Token-aware: the builder enforces a budget and truncates/drops gracefully.
+Memory layout injected as history:
+  1. Preamble turn  (user):  conversation summary + top-5 retrieved long-term facts
+  2. Preamble ack   (model): "Understood." — maintains required user/model alternation
+  3. Recent verbatim turns   (user/model pairs, last N turns from short-term memory)
 """
 
 import logging
-from dataclasses import dataclass
 
-from app.orchestrator.memory_service import MemoryItem, MemoryService, Turn
+from google.genai import types
+
+from app.orchestrator.memory_service import MemoryService
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Token budget
-# ---------------------------------------------------------------------------
-# Gemini 3 Flash/Pro support 1M token context.  We use 200K as a practical
-# cap — large enough for long conversation history while staying well within
-# limits.  85% goes to conversation context; the remaining 15% is reserved
-# for the system prompt, tool schemas, and output.
-MAX_CONTEXT_TOKENS = 200_000
-INPUT_TOKEN_BUDGET = int(MAX_CONTEXT_TOKENS * 0.85)       # ~170K
 
-# Rough chars-per-token ratios.
-# English/ASCII averages ~4 chars per token; CJK (Korean, Chinese, Japanese)
-# averages ~1.5 chars per token due to multi-byte encoding and subword splits.
-# We use conservative (lower) values so token estimates are higher — this means
-# we drop context sooner rather than risk exceeding the actual token limit.
-CHARS_PER_TOKEN_ASCII = 3.5
-CHARS_PER_TOKEN_CJK = 1.2
-
-# CJK Unicode ranges for detection
-_CJK_RANGES = (
-    (0x3000, 0x9FFF),    # CJK Unified, Hiragana, Katakana, Bopomofo, etc.
-    (0xAC00, 0xD7AF),    # Hangul Syllables
-    (0xF900, 0xFAFF),    # CJK Compatibility Ideographs
-    (0x1100, 0x11FF),    # Hangul Jamo
-)
-
-
-def _is_cjk(ch: str) -> bool:
-    cp = ord(ch)
-    return any(lo <= cp <= hi for lo, hi in _CJK_RANGES)
-
-
-# Safety: never drop the latest N turns regardless of budget.
-MIN_PROTECTED_TURNS = 2
-
-
-@dataclass
-class ContextBlock:
-    """One block injected into LLM context."""
-    label: str        # for logging only
-    text: str
-    priority: int     # lower = more important; protected turns = 0
-
-
-def estimate_tokens(text: str) -> int:
-    """Estimate token count with CJK-aware heuristic."""
-    cjk_chars = sum(1 for ch in text if _is_cjk(ch))
-    ascii_chars = len(text) - cjk_chars
-    tokens = ascii_chars / CHARS_PER_TOKEN_ASCII + cjk_chars / CHARS_PER_TOKEN_CJK
-    return max(1, int(tokens))
-
-
-def build_context(
+def build_history(
     session_id: str,
     current_message: str,
     memory_service: MemoryService,
-) -> str:
-    """Assemble a single context string to prepend to the user's message.
+) -> list[types.Content]:
+    """Build native Gemini conversation history from the three memory layers.
 
-    Returns a string that should be prepended (or used as system context)
-    before the current user query when calling the LLM.
+    Returns a (possibly empty) list of Content objects for ``chats.create(history=...)``.
     """
-    blocks: list[ContextBlock] = []
+    history: list[types.Content] = []
 
-    # 1. Conversation summary
+    # --- Preamble: summary + retrieved long-term memory ---
+    preamble_parts: list[str] = []
+
     summary = memory_service.get_summary(session_id)
     if summary:
-        blocks.append(ContextBlock(
-            label="summary",
-            text=f"Conversation summary (prior context):\n{summary}",
-            priority=2,
-        ))
+        preamble_parts.append(f"Conversation summary (prior context):\n{summary}")
 
-    # 2. Long-term memory retrieval
-    retrieved = memory_service.retrieve_memory(session_id, current_message, limit=3)
+    retrieved = memory_service.retrieve_memory(session_id, current_message, limit=5)
     if retrieved:
-        mem_text = _format_memory_items(retrieved)
-        blocks.append(ContextBlock(
-            label="long_term_memory",
-            text=f"Remembered facts:\n{mem_text}",
-            priority=3,
+        mem_lines = "\n".join(f"- [{item.type.value}] {item.content}" for item in retrieved)
+        preamble_parts.append(f"Remembered facts:\n{mem_lines}")
+
+    if preamble_parts:
+        history.append(types.Content(
+            role="user",
+            parts=[types.Part.from_text(text="\n\n".join(preamble_parts))],
+        ))
+        history.append(types.Content(
+            role="model",
+            parts=[types.Part.from_text(text="Understood.")],
         ))
 
-    # 3. Recent turns (short-term memory)
+    # --- Recent verbatim turns ---
     recent_turns = memory_service.get_recent_turns(session_id)
-    for i, turn in enumerate(recent_turns):
-        is_protected = i >= len(recent_turns) - MIN_PROTECTED_TURNS
-        blocks.append(ContextBlock(
-            label=f"turn_{i}_{turn.role}",
-            text=_format_turn(turn),
-            priority=0 if is_protected else 1,
+    for turn in recent_turns:
+        role = "model" if turn.role == "assistant" else "user"
+        if not turn.content:
+            continue
+        text = turn.content
+        # Append tool hint on model turns so the model knows what data was retrieved
+        if turn.tools_called and role == "model":
+            text = f"[Tools used: {', '.join(turn.tools_called)}]\n{text}"
+        history.append(types.Content(
+            role=role,
+            parts=[types.Part.from_text(text=text)],
         ))
-
-    # 4. Enforce token budget — drop lowest-priority blocks first
-    blocks = _fit_budget(blocks, INPUT_TOKEN_BUDGET)
-
-    if not blocks:
-        return current_message
-
-    context_parts = [b.text for b in blocks]
-    context_str = "\n\n".join(context_parts)
 
     logger.debug(
-        "[ContextBuilder] session=%s blocks=%d tokens≈%d",
-        session_id, len(blocks), estimate_tokens(context_str),
+        "[ContextBuilder] session=%s history_items=%d (preamble=%s, recent_turns=%d)",
+        session_id,
+        len(history),
+        bool(preamble_parts),
+        len(recent_turns),
     )
-
-    return (
-        f"{context_str}\n\n"
-        "Current user message (highest priority):\n"
-        f"{current_message}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-_REPORT_TOOL_NAMES = frozenset({
-    "get_statement_of_use_summary",
-    "get_statement_of_use_detail",
-    "get_statement_of_use_driver_summary",
-    "get_statement_of_use_driver_detail",
-})
-
-
-def _format_turn(turn: Turn) -> str:
-    role_label = turn.role.capitalize()
-    # For report turns: skip the assistant's formatted table body — only the tool name
-    # and date range matter for continuity. The table can be hundreds of chars and just bloats context.
-    is_report_turn = bool(turn.tools_called and any(t in _REPORT_TOOL_NAMES for t in turn.tools_called))
-    if role_label == "Assistant" and is_report_turn:
-        # Extract the date range used so the LLM can reuse it in follow-up queries.
-        date_hint = ""
-        for t_name in turn.tools_called:
-            if t_name in _REPORT_TOOL_NAMES:
-                params = turn.tool_params.get(t_name, {})
-                from_d = params.get("from_date") or params.get("fromDate") or ""
-                to_d = params.get("to_date") or params.get("toDate") or ""
-                if from_d or to_d:
-                    date_hint = f" [dates: {from_d} to {to_d}]"
-                    break
-        line = f"- {role_label}: [report result delivered{date_hint}]"
-    else:
-        line = f"- {role_label}: {turn.content[:500]}"
-    if turn.tools_called:
-        line += f"\n  Tools: {', '.join(turn.tools_called)}"
-    return line
-
-
-def _format_memory_items(items: list[MemoryItem]) -> str:
-    return "\n".join(f"- [{item.type.value}] {item.content}" for item in items)
-
-
-def _fit_budget(blocks: list[ContextBlock], token_budget: int) -> list[ContextBlock]:
-    """Drop lowest-priority (highest number) blocks until within budget.
-
-    Never drops blocks with priority == 0 (protected recent turns).
-    """
-    total = sum(estimate_tokens(b.text) for b in blocks)
-    if total <= token_budget:
-        return blocks
-
-    # Sort by priority descending so we drop least-important first
-    droppable = sorted(
-        [(i, b) for i, b in enumerate(blocks) if b.priority > 0],
-        key=lambda x: -x[1].priority,
-    )
-
-    dropped_indices: set[int] = set()
-    for idx, block in droppable:
-        if total <= token_budget:
-            break
-        total -= estimate_tokens(block.text)
-        dropped_indices.add(idx)
-        logger.debug("[ContextBuilder] Dropped block '%s' (priority=%d)", block.label, block.priority)
-
-    return [b for i, b in enumerate(blocks) if i not in dropped_indices]
+    return history

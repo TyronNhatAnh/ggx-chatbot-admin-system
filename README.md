@@ -102,7 +102,7 @@ The assistant answers questions about orders, drivers, organizations, and indexe
 └──────┬──────────────────────────────────────────────┘
        │
 ┌──────▼──────────────────────────────────────────────┐
-│  app/tools/  (54 registered tools)                  │
+│  app/tools/  (38 registered tools)                  │
 │                                                     │
 │  order_tools.py   — orders, pricing, reports        │
 │  user_tools.py    — users, orgs, branches, roles    │
@@ -256,7 +256,7 @@ Optional but commonly used:
 
 ```env
 MODEL_NAME=gemini-3-flash-preview
-PRO_MODEL_NAME=gemini-3-pro-preview
+PRO_MODEL_NAME=gemini-3.1-pro-preview
 VERTEX_AI_SA_KEY=gemini-kr-sa-staging
 VERTEX_AI_LOCATION=global
 CHAT_AUTH_ENABLED=true
@@ -297,12 +297,12 @@ Swagger: `http://localhost:8000/docs`
 
 ## Tool Inventory (Current)
 
-Total registered tools: **54**
+Total registered tools: **38**
 
-- Order/report tools: 14
-- User/admin tools: 13
-- Common tools: 9
-- Driver tools: 6
+- Order tools: 6
+- User/admin tools: 12
+- Common tools: 4
+- Driver tools: 4
 - Docs tools: 3
 - Knowledge tools: 9
 

@@ -14,6 +14,7 @@ Requirements:
     Aliases like "gemini-3.0-flash" are not supported for explicit caching.
 """
 
+import hashlib
 import logging
 import threading
 import time
@@ -52,19 +53,25 @@ class ContextCacheManager:
         self._entries: dict[str | None, _CacheEntry] = {}
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _cache_key(system_instruction: str, feature_key: str | None) -> str:
+        h = hashlib.sha256(system_instruction.encode()).hexdigest()[:8]
+        return f"{feature_key}:{h}"
+
     def get_cache_name(self, system_instruction: str, feature_key: str | None) -> str | None:
         """Return a valid cache name, creating one if missing or near-expiry.
 
         Returns None when cache creation fails so the caller falls back to the
         uncached path transparently.
         """
+        key = self._cache_key(system_instruction, feature_key)
         with self._lock:
-            entry = self._entries.get(feature_key)
+            entry = self._entries.get(key)
             if entry is not None and entry.is_fresh():
                 return entry.name
-            return self._create(system_instruction, feature_key)
+            return self._create(system_instruction, feature_key, key)
 
-    def _create(self, system_instruction: str, feature_key: str | None) -> str | None:
+    def _create(self, system_instruction: str, feature_key: str | None, key: str) -> str | None:
         """Create a new CachedContent. Caller must hold self._lock."""
         try:
             cache = self._client.caches.create(
@@ -75,7 +82,7 @@ class ContextCacheManager:
                     ttl=f"{_CACHE_TTL_SECONDS}s",
                 ),
             )
-            self._entries[feature_key] = _CacheEntry(name=cache.name)
+            self._entries[key] = _CacheEntry(name=cache.name)
             logger.info(
                 "[ContextCache] Cache created  feature_key=%r  name=%s",
                 feature_key, cache.name,

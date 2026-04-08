@@ -80,8 +80,6 @@ class SessionState:
     summarization_in_progress: bool = False
     # Detected feature key from the first turn — persists across follow-ups
     feature_key: str | None = None
-    # Report scope from prior turn ("customer", "driver", or "both") — persists for follow-up detail requests
-    report_scope: str | None = None
     # Housekeeping
     updated_at: float = field(default_factory=time.time)
 
@@ -364,8 +362,9 @@ class MemoryService:
 # Helpers
 # ---------------------------------------------------------------------------
 def _ngrams(text: str, n: int) -> set[str]:
-    """Return a set of character n-grams from *text* (lowercased)."""
-    return {text[i : i + n] for i in range(len(text) - n + 1)} if len(text) >= n else set()
+    """Return a set of word n-grams from *text* (lowercased)."""
+    words = text.split()
+    return {" ".join(words[i : i + n]) for i in range(len(words) - n + 1)} if len(words) >= n else set()
 
 
 def _compact_tool_results(results: dict[str, Any]) -> dict[str, Any]:
