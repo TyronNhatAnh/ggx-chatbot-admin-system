@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class TurnResponse(BaseModel):
@@ -63,6 +63,20 @@ class ChatRequest(BaseModel):
         ),
         examples=["Bearer eyJhbGciOi..."],
     )
+
+    @field_validator("service_token")
+    @classmethod
+    def _validate_service_token(cls, v: str) -> str:
+        raw = v.strip()
+        if raw.lower().startswith("bearer "):
+            raw = raw[7:].strip()
+        if not raw:
+            raise ValueError("service_token must not be empty after stripping 'Bearer' prefix")
+        if any(c in raw for c in ("\n", "\r", " ", "\t")):
+            raise ValueError(
+                "service_token contains illegal whitespace; expected a compact JWT bearer token, not a curl command"
+            )
+        return v
 
 
 class ChatResponse(BaseModel):

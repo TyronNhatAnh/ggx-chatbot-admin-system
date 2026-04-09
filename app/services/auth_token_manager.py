@@ -30,6 +30,10 @@ def set_request_service_token(token: str) -> Token:
         normalized = normalized[7:].strip()
     if not normalized:
         raise ValueError("service_token must not be empty")
+    # Reject tokens containing whitespace — a multiline curl command or any
+    # value with newlines/spaces would produce an illegal HTTP header value.
+    if any(c in normalized for c in ("\n", "\r", " ", "\t")):
+        raise ValueError("service_token contains illegal whitespace characters; expected a JWT bearer token")
     return _REQUEST_ADMIN_TOKEN.set(normalized)
 
 

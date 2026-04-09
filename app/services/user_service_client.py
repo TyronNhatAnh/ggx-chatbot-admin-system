@@ -158,28 +158,6 @@ class UserServiceClient:
             logger.error("search_users unexpected error - %s: %s", type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
-    def get_user_driver(self, user_id: int) -> dict:
-        """GET /api/v1/user-driver?id={user_id}."""
-        try:
-            payload = self._request("GET", "/user-driver", params={"id": user_id}, requires_auth=True)
-            data = self._unwrap_success_payload(payload)
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            if isinstance(data, dict):
-                return data
-            return {"raw": data}
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return {"error": "USER_NOT_FOUND", "user_id": user_id}
-            logger.error("get_user_driver HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "USER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("get_user_driver network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("get_user_driver unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
     def search_branches(
         self,
         *,

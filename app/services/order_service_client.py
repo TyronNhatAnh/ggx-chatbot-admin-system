@@ -514,54 +514,6 @@ class OrderServiceClient:
         return normalized
 
     @staticmethod
-    def _slim_price_result(data: dict | list | object) -> dict:
-        """Normalize estimate/calc-price payloads into a compact stable shape."""
-        if not isinstance(data, dict):
-            return {"error": "ORDER_SERVICE_ERROR", "detail": "Invalid price payload format"}
-
-        body = data.get("order") if isinstance(data.get("order"), dict) else data
-        calculation = body.get("calculationPrice") if isinstance(body, dict) else None
-
-        base_price = (
-            body.get("basePrice")
-            or body.get("price")
-            or body.get("total")
-            or body.get("amount")
-            or (calculation.get("total") if isinstance(calculation, dict) else None)
-        )
-
-        raw_rows = (
-            body.get("breakdown")
-            or body.get("priceList")
-            or body.get("fees")
-            or body.get("priceFees")
-            or []
-        )
-        breakdown: list[dict] = []
-        if isinstance(raw_rows, list):
-            for row in raw_rows[:12]:
-                slim = OrderServiceClient._normalize_price_row(row)
-                if slim:
-                    breakdown.append(slim)
-
-        result: dict = {
-            "basePrice": base_price,
-            "breakdown": breakdown,
-        }
-
-        if isinstance(data.get("driverInfo"), dict):
-            driver = data["driverInfo"]
-            result["driver"] = {
-                "driverId": driver.get("driverId") or driver.get("id"),
-                "name": driver.get("driverName") or driver.get("name"),
-            }
-
-        if body.get("currency"):
-            result["currency"] = body.get("currency")
-
-        return result
-
-    @staticmethod
     def _unwrap_success_payload(payload: dict | list | object) -> dict | list | object:
         """Unwrap {success,data,errors} envelopes while preserving failures."""
         if not isinstance(payload, dict):
@@ -1108,32 +1060,6 @@ class OrderServiceClient:
             },
         )
 
-    def estimate_guest(self, payload: dict) -> dict:
-        """POST /api/v1/guest/estimate."""
-        return self._call_price_endpoint("/guest/estimate", payload=payload, requires_auth=False)
-
-
-    def check_driver_price(self, payload: dict) -> dict:
-        """POST /api/v1/guest/check-price-driver."""
-        return self._call_price_endpoint(
-            "/guest/check-price-driver",
-            payload=payload,
-            requires_auth=False,
-        )
-
-    def calc_guest_order_price(self, order_id: str, user_id: int | None = None) -> dict:
-        """POST /api/v1/guest/orders/calc-price/{orderId}."""
-        if user_id is None:
-            return {
-                "error": "REQUEST_INVALID",
-                "detail": "user_id is required for /guest/orders/calc-price/{orderId}",
-            }
-        return self._call_price_endpoint(
-            f"/guest/orders/calc-price/{order_id}",
-            payload={"userID": user_id, "userId": user_id},
-            requires_auth=False,
-        )
-
     def submit_order(self, payload: dict) -> dict:
         """POST /api/v1/admin/orders/submit — create and submit a new order as an admin."""
         try:
@@ -1153,37 +1079,6 @@ class OrderServiceClient:
             return {"error": "NETWORK_ERROR", "detail": str(exc)}
         except Exception as exc:  # noqa: BLE001
             logger.error("submit_order unexpected error — %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
-    def estimate_guest_home_moving(self, payload: dict) -> dict:
-        """POST /api/v1/guest/home-moving/estimate."""
-        return self._call_price_endpoint(
-            "/guest/home-moving/estimate",
-            payload=payload,
-            requires_auth=False,
-        )
-
-    def _call_price_endpoint(self, path: str, payload: dict, requires_auth: bool) -> dict:
-        """Shared wrapper for estimate/check-price endpoints."""
-        try:
-            raw = self._post(path, json_body=payload, requires_auth=requires_auth)
-            data = self._unwrap_success_payload(raw)
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            return self._slim_price_result(data)
-        except httpx.HTTPStatusError as exc:
-            logger.error(
-                "price endpoint %s HTTP %s — body: %s",
-                path,
-                exc.response.status_code,
-                exc.response.text,
-            )
-            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("price endpoint %s network error — %s", path, exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("price endpoint %s unexpected error — %s: %s", path, type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
 

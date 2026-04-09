@@ -120,40 +120,6 @@ class DriverServiceClient:
             logger.error("search_drivers unexpected error - %s: %s", type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
-    def get_driver_location_history(
-        self,
-        *,
-        driver_user_id: int,
-        from_time: str,
-        to_time: str,
-    ) -> dict:
-        """GET /api/v1/driver/location-history?driverUserId=&fromTime=&toTime=.
-
-        Times must be in Seoul timezone, format: 2006-01-02 15:04:05.
-        """
-        params: dict[str, object] = {
-            "driverUserId": driver_user_id,
-            "fromTime": from_time,
-            "toTime": to_time,
-        }
-        try:
-            payload = self._request("GET", "/driver/location-history", params=params, requires_auth=True)
-            data = self._unwrap_success_payload(payload)
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            return data if isinstance(data, dict) else {"raw": data}
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return {"error": "DRIVER_NOT_FOUND", "driver_user_id": driver_user_id}
-            logger.error("get_driver_location_history HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "DRIVER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("get_driver_location_history network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("get_driver_location_history unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
     def get_driver_price(
         self,
         *,
@@ -180,52 +146,6 @@ class DriverServiceClient:
             return {"error": "NETWORK_ERROR", "detail": str(exc)}
         except Exception as exc:  # noqa: BLE001
             logger.error("get_driver_price unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
-    def search_driver_report(
-        self,
-        *,
-        driver_type: str,
-        keyword: str,
-        page_index: int = 1,
-        page_size: int = MAX_LIST_RESULTS,
-    ) -> dict:
-        """GET /api/v1/driver-report/driver/search?type=&keyword=&pageIndex=&pageSize=.
-
-        driver_type must be one of: normalDriver, externalDriver.
-        """
-        params: dict[str, object] = {
-            "type": driver_type,
-            "keyword": keyword,
-            "pageIndex": page_index,
-            "pageSize": clamp_list_limit(page_size, default=MAX_LIST_RESULTS),
-        }
-        try:
-            payload = self._request(
-                "GET",
-                "/driver-report/driver/search",
-                params=params,
-                requires_auth=True,
-            )
-            if isinstance(payload, dict) and payload.get("success") is False:
-                return {"error": "DRIVER_SERVICE_ERROR", "detail": payload.get("errors")}
-            data = payload.get("data") if isinstance(payload, dict) else payload
-            rows = truncate_list(data)
-            meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
-            return {
-                "drivers": rows,
-                "count": len(rows),
-                "total_count": meta.get("totalCount", len(data) if isinstance(data, list) else len(rows)),
-                "query": params,
-            }
-        except httpx.HTTPStatusError as exc:
-            logger.error("search_driver_report HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "DRIVER_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("search_driver_report network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("search_driver_report unexpected error - %s: %s", type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
     def get_vehicle_pools(self) -> dict:

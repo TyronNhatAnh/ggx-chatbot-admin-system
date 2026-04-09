@@ -6,6 +6,7 @@ from app.tools.driver_tools import (
 )
 from app.tools.common_tools import (
     get_addresses,
+    get_vehicle_goods,
     get_vehicle_prices,
     search_api_address_details,
     search_api_addresses,
@@ -76,6 +77,7 @@ ALL_TOOL_FUNCTIONS: list = [
     get_addresses,
     search_api_addresses,
     search_api_address_details,
+    get_vehicle_goods,
     # driver tools — read-only driver-service queries
     get_driver,
     search_drivers,
@@ -142,6 +144,7 @@ FLASH_TOOL_SETS: dict[str, frozenset[str]] = {
         "search_branches",
         "search_organizations", "list_admin_roles", "list_admin_departments",
         "list_admin_menus", "get_admin_permissions", "get_accessible_menu_tree",
+        "verify_biz_registration_number",
     }),
     "common-data": frozenset({
         "get_vehicle_prices",
@@ -150,17 +153,18 @@ FLASH_TOOL_SETS: dict[str, frozenset[str]] = {
         "lookup_enum", "explain_status",
     }),
     "email-dispatch": frozenset({
-        # order read + submit
-        "get_order_detail", "get_order_history", "get_orders_admin_panel",
+        # order submit only — read tools not needed for dispatch flow
         "submit_order",
         # user/org/branch resolution (Step A)
         "search_users",
-        # address geocoding (Step B)
-        "search_api_address_details", "search_api_addresses",
+        # address geocoding (Step B) — use details variant only (returns lat/lon/regionId)
+        "search_api_address_details",
         # vehicle pool ID resolution (Step C)
         "get_vehicle_pools",
         # driver resolution from callback info (Step D)
         "search_drivers",
+        # goods type lookup — admin endpoint (Step F)
+        "get_vehicle_goods",
     }),
     "knowledge-code": frozenset({
         # org lookup

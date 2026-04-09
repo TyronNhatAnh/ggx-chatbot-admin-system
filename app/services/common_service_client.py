@@ -87,55 +87,6 @@ class CommonServiceClient:
             logger.error("get_vehicle_prices unexpected error - %s: %s", type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
-    def get_vehicle_pools(self) -> dict:
-        """GET /api/v1/vehicles/vehicle-pools."""
-        try:
-            payload = self._request("GET", "/vehicles/vehicle-pools", requires_auth=True)
-            data = self._unwrap_success_payload(payload, "COMMON_SERVICE_ERROR")
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            return data if isinstance(data, dict) else {"vehicle_pools": truncate_list(data)}
-        except httpx.HTTPStatusError as exc:
-            logger.error("get_vehicle_pools HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "COMMON_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("get_vehicle_pools network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("get_vehicle_pools unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
-    def get_services_by_vehicle_pool(
-        self,
-        *,
-        order_type: str,
-        vehicle_pool_id: int,
-        region_id: int | None = None,
-    ) -> dict:
-        """GET /api/v1/vehicles/services?orderType=&vehiclePoolId=&regionId=."""
-        params: dict[str, object] = {
-            "orderType": order_type,
-            "vehiclePoolId": vehicle_pool_id,
-        }
-        if region_id is not None:
-            params["regionId"] = region_id
-
-        try:
-            payload = self._request("GET", "/vehicles/services", params=params, requires_auth=True)
-            data = self._unwrap_success_payload(payload, "COMMON_SERVICE_ERROR")
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            return data if isinstance(data, dict) else {"services": truncate_list(data), "query": params}
-        except httpx.HTTPStatusError as exc:
-            logger.error("get_services_by_vehicle_pool HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "COMMON_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("get_services_by_vehicle_pool network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("get_services_by_vehicle_pool unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
     def get_addresses(
         self,
         *,
@@ -232,60 +183,34 @@ class CommonServiceClient:
             logger.error("search_api_address_details unexpected error - %s: %s", type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
-    def list_guest_ads(self) -> dict:
-        """GET /api/v1/guest/ads."""
+    def get_vehicle_goods(self, *, vehicle_id: int, vehicle_service_id: int, org_id: int) -> dict:
+        """GET /api/v1/admin/vehicles/{vehicleId}/goods/{vehicleServiceId}?orgId=."""
         try:
-            payload = self._request("GET", "/guest/ads", requires_auth=False)
+            path = f"/admin/vehicles/{vehicle_id}/goods/{vehicle_service_id}"
+            payload = self._request("GET", path, params={"orgId": org_id}, requires_auth=True)
             data = self._unwrap_success_payload(payload, "COMMON_SERVICE_ERROR")
             if isinstance(data, dict) and data.get("error"):
                 return data
-            rows = truncate_list(data)
-            return {"ads": rows, "count": len(rows)}
+            # API may return a list directly or a dict wrapping the list (e.g. {"goods": [...]})
+            if isinstance(data, list):
+                rows = truncate_list(data)
+            elif isinstance(data, dict):
+                # Try common wrapper keys; fall back to returning the dict as-is
+                inner = data.get("goods") or data.get("items") or data.get("data")
+                rows = truncate_list(inner) if isinstance(inner, list) else None
+                if rows is None:
+                    return data  # return the whole dict so the AI can still read it
+            else:
+                rows = []
+            return {"goods_types": rows, "count": len(rows)}
         except httpx.HTTPStatusError as exc:
-            logger.error("list_guest_ads HTTP %s - %s", exc.response.status_code, exc.response.text)
+            logger.error("get_vehicle_goods HTTP %s - %s", exc.response.status_code, exc.response.text)
             return {"error": "COMMON_SERVICE_ERROR", "detail": str(exc)}
         except httpx.RequestError as exc:
-            logger.error("list_guest_ads network error - %s", exc)
+            logger.error("get_vehicle_goods network error - %s", exc)
             return {"error": "NETWORK_ERROR", "detail": str(exc)}
         except Exception as exc:  # noqa: BLE001
-            logger.error("list_guest_ads unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
-    def list_home_moving_goods_categories(self) -> dict:
-        """GET /api/v1/guest/home-moving/goods-categories."""
-        try:
-            payload = self._request("GET", "/guest/home-moving/goods-categories", requires_auth=False)
-            data = self._unwrap_success_payload(payload, "COMMON_SERVICE_ERROR")
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            rows = truncate_list(data)
-            return {"goods_categories": rows, "count": len(rows)}
-        except httpx.HTTPStatusError as exc:
-            logger.error("list_home_moving_goods_categories HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "COMMON_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("list_home_moving_goods_categories network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("list_home_moving_goods_categories unexpected error - %s: %s", type(exc).__name__, exc)
-            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
-
-    def list_home_moving_vehicles(self) -> dict:
-        """GET /api/v1/guest/home-moving/vehicles."""
-        try:
-            payload = self._request("GET", "/guest/home-moving/vehicles", requires_auth=False)
-            data = self._unwrap_success_payload(payload, "COMMON_SERVICE_ERROR")
-            if isinstance(data, dict) and data.get("error"):
-                return data
-            return data if isinstance(data, dict) else {"vehicles": truncate_list(data)}
-        except httpx.HTTPStatusError as exc:
-            logger.error("list_home_moving_vehicles HTTP %s - %s", exc.response.status_code, exc.response.text)
-            return {"error": "COMMON_SERVICE_ERROR", "detail": str(exc)}
-        except httpx.RequestError as exc:
-            logger.error("list_home_moving_vehicles network error - %s", exc)
-            return {"error": "NETWORK_ERROR", "detail": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("list_home_moving_vehicles unexpected error - %s: %s", type(exc).__name__, exc)
+            logger.error("get_vehicle_goods unexpected error - %s: %s", type(exc).__name__, exc)
             return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
 
 

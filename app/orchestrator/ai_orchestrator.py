@@ -23,7 +23,8 @@ from app.prompts.builder import build_system_prompt
 from app.tools import ALL_TOOL_FUNCTIONS, FLASH_TOOL_SETS, TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
-MAX_TOOL_LOOPS = 6      # max tool-result round-trips; synthesis fallback is outside this cap (MAX_TOOL_LOOPS+2 worst case)
+MAX_TOOL_LOOPS = 8      # max tool-result round-trips; synthesis fallback is outside this cap (MAX_TOOL_LOOPS+2 worst case)
+                        # email-dispatch needs up to 4 loops minimum (A → B/C/D → F → submit); 8 gives headroom for ambiguous users/addresses
 # Accept explicit ORD-* IDs or numeric IDs only.
 # Prevent false positives like organization names (e.g. "DHLSC").
 ORDER_ID_PATTERN = re.compile(r"\b(?:ORD-[A-Za-z0-9-]{3,}|\d{5,})\b", re.IGNORECASE)
@@ -31,8 +32,14 @@ ORDER_ID_PATTERN = re.compile(r"\b(?:ORD-[A-Za-z0-9-]{3,}|\d{5,})\b", re.IGNOREC
 # Pro model only handles knowledge-code.
 # Give it only the tools it needs to reduce schema tokens (~5k → ~1.5k).
 _PRO_TOOL_NAMES: frozenset[str] = frozenset({
-    # org lookup
+    # org/branch lookup (used by report + knowledge-code)
     "search_organizations",
+    "search_branches",
+    # report tools — Statement of Use (customer + driver)
+    "get_customer_statement_summary",
+    "get_customer_statement_detail",
+    "get_driver_statement_summary",
+    "get_driver_statement_detail",
     # knowledge tools
     "lookup_enum",
     "explain_status",
@@ -306,23 +313,24 @@ _FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
     # report is placed before user-admin so it wins score ties — "org" appears in
     # report queries as a filter param, giving user-admin a spurious match.
+    # IMPORTANT: keep keywords multi-word or report-specific only.
+    # Single ambiguous words like "commission", "settled", "settlement", "payout",
+    # "quarterly" also appear in order/driver queries and cause mis-routing.
     "report": (
-        "report", "statement of use", "statement-of-use", "settlement report",
+        "statement of use", "statement-of-use", "settlement report",
         "usage report", "fare report", "customer report", "driver report",
         "customer statement", "driver statement", "driver settlement",
         "usage summary", "customer usage summary", "statement summary",
-        "customer statement summary", "total customer fare", "total fare",
-        "customerfare", "payment method", "payment methods", "all payment methods",
-        "payment credit", "payment cash",
-        "credit payment", "cash payment",  # natural English order
-        "paytodriver", "pay to driver", "payout", "settled", "settlement",
-        "commission", "commissionprice", "commission price",
-        "q1 ", "q2 ", "q3 ", "q4 ", "quarterly",
+        "customer statement summary", "total customer fare",
+        "customerfare", "all payment methods",
+        "paytodriver", "pay to driver", "commissionprice", "commission price",
         "báo cáo", "sao kê",
-        "정산", "이용내역", "정산서", "이용 내역", "기사 정산", "고객 정산",
+        "이용내역", "정산서", "이용 내역", "기사 정산", "고객 정산",
         "이용 요약", "이용요약", "고객 이용 요약", "고객 이용현황", "이용 현황",
         "결제 방법", "결제방법", "결제수단", "전체 결제", "고객 요금", "총 요금",
         "고객 이용내역", "고객 정산 요약", "정산 요약",
+        # "정산" alone is kept — specific enough in Korean admin context
+        "정산",
     ),
     "user-admin": (
         "user profile", "organization", "org", "branch", "admin role", "permission",
@@ -344,6 +352,8 @@ _FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
     "email-dispatch": (
         "상차", "하차", "도착지", "수령인", "배차", "박스", "카고", "eta",
+        "배달지", "픽업", "픽업지", "출발지", "상차지", "하차지", "납품지", "발송지",
+        "운송장", "차량 배치", "appointment",
         "dispatch email", "email dispatch", "parse email", "email order",
         "make order", "create order", "submit order", "place order",
         "origin address", "pickup address", "from email",
@@ -549,7 +559,8 @@ class AIOrchestrator:
 
         # A fresh session per request keeps state isolated between users.
         # knowledge-code is handled by Flash (faster, sufficient for endpoint/handler lookup).
-        use_pro = False
+        # Report queries use Pro — complex multi-step aggregation benefits from the stronger model.
+        use_pro = self._pro_model is not None and feature_key == "report"
         # Bare conversational model is only for pure greetings.
         # If a non-greeting query fails feature detection, keep tools enabled.
         use_bare = not use_pro and feature_key is None and is_greeting_only

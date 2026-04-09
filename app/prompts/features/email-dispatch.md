@@ -83,6 +83,7 @@ If no user is found, ask the admin to provide the IDs directly.
 If the admin already supplied all three IDs directly, skip this step.
 
 Once Step A is done, run Steps B, C, and D **in parallel**.
+Once C returns `vehiclePoolId`, run Step F immediately (do not wait for B or D).
 
 ### Step B — Geocode each address (run in parallel with Step C)
 
@@ -121,16 +122,22 @@ Prefer phone number over name for accuracy. From the result, extract the driver'
 B2B dispatch emails default to **corporate credit** — use `pay: "credit"`.
 Override only if the email explicitly states a different payment method.
 
-### Step F — Goods info (no lookup required)
+### Step F — Goods info (run after Step A and Step C complete)
 
-Extract goods from the email and build a structured `goods` array on **each destination waypoint (arrangement ≥ 2)**. Waypoint 1 (pickup) does NOT carry goods.
+Call the admin goods API to fetch the valid goods type codes for this vehicle and organisation:
+```
+get_vehicle_goods(vehicle_id=vehiclePoolId, vehicle_service_id=0, org_id=organizationId)
+```
+Use the `type` / code values returned by the API to populate the goods items.
+
+Then build a structured `goods` array on **each destination waypoint (arrangement ≥ 2)** using the email text. Waypoint 1 (pickup) does NOT carry goods.
 
 Each goods item requires three fields:
 - **name**: the item type ONLY — strip numbers and counters. e.g. `"박스 8개"` → name=`"박스"`, `"팔레트 5개"` → name=`"팔레트"`. Never include the quantity in the name.
 - **quantity**: the integer count extracted separately from the email text (e.g. `8` from `"박스 8개"`, `5` from `"팔레트 5개"`).
-- **type**: goods category string. Use the closest match:
+- **type**: use the matching code from the `get_vehicle_goods` response. If no match found, fall back to the closest value from this table:
 
-| Goods description | type value |
+| Goods description | fallback type value |
 |---|---|
 | Food / 식품 | `ah.goods.food` |
 | Clothing / 의류 | `ah.goods.clothes` |
@@ -138,9 +145,9 @@ Each goods item requires three fields:
 | Electronics / 전자제품 | `ah.goods.electronics` |
 | General / 일반 화물 | `ah.goods.general` |
 
-If the goods type is unclear or not in the table, use `ah.goods.general` and note the original description in `remark`.
+If the API call fails or returns no data, fall back to the table above. Note the fallback in the confirmation table.
 
-No ID lookup is needed. Delivery deadline, fragile/special handling notes, and any residual info go into the top-level `remark` field — NOT in goods, NOT driver info.
+Delivery deadline, fragile/special handling notes, and any residual info go into the top-level `remark` field — NOT in goods, NOT driver info.
 Example remark: `"배달 마감: 오후6시 이전. 취급주의."`
 
 ---
@@ -173,10 +180,18 @@ Step 2 — CHECK MISSING: Identify what's absent — start waypoint address, app
            **appointmentAt validation: if the time from the email is in the past or within 15 minutes
            of now, flag it as invalid here and ask the admin for a new time before continuing.**
            **Do NOT call any tools yet. Wait for the admin's reply before continuing.**
-Step 3 — RESOLVE: Run Step A (search_users for user/org/branch if needed), then Steps B–C in parallel
-           (address geocoding + vehicle pool). Extract goods info (Step E) from the email text — no API call needed.
+Step 3 — RESOLVE:
+           3a. Run Step A (search_users) first. If it returns multiple matches, STOP and ask the admin
+               to pick one before doing anything else. Do NOT start B, C, D, or F until a single
+               userID / organizationId / branchId is confirmed.
+           3b. Once Step A is done (single user confirmed), run Steps B, C, and D in parallel
+               (address geocoding, vehicle pool, driver lookup).
+           3c. Once C returns vehiclePoolId, immediately run Step F (get_vehicle_goods) —
+               F cannot start before C finishes.
 Step 4 — PRESENT: Display the **full confirmation table** (see format below) showing every
            resolved value including IDs, coordinates, vehiclePoolId, goods, and payment method.
+           For goods, show the exact type code that will be submitted (e.g. `ah.goods.general`), not
+           a description — this is the value that was resolved in Step F and will be used verbatim in submit_order.
            If `appointmentAt` is in the past or less than 15 minutes from now, display it as
            **⚠️ [INVALID — time has passed or too soon, please provide a new appointment time]**
            and do NOT proceed to Step 6 until the admin supplies a valid future time.
@@ -188,9 +203,9 @@ Step 5 — WAIT: Only proceed on unambiguous confirmation ("yes", "confirm", "�
 Step 6 — SUBMIT: Before calling submit_order, verify `appointmentAt` is still at least 15 minutes in the
            future at the moment of the call. If it has since expired (admin took too long to reply),
            abort, inform the admin, and ask for a new appointment time.
-           Call submit_order(payload) exactly once with the confirmed, valid payload.
-Step 7 - Get Goods Info: If the email contains goods information (e.g. "박스 8개 (의류)"), extract it and include it in the `remark` field of the payload.
-Step 8 — REPORT: Show the returned order ID and key fields. On error, report it without retrying.
+           Use the goods type codes exactly as shown in the confirmation table — do NOT re-derive
+           them from the fallback table. Call submit_order(payload) exactly once with the confirmed payload.
+Step 7 — REPORT: Show the returned order ID and key fields. On error, report it without retrying.
 
 Never call submit_order speculatively. Never call it more than once per confirmation turn.
 
@@ -203,7 +218,7 @@ Never call submit_order speculatively. Never call it more than once per confirma
   "userID": 354154,
   "organizationId": 17,
   "branchId": 21,
-  "driverId": 225324,
+  // "driverId": 225324,  // OPTIONAL — include only when a driver callback was resolved via search_drivers; omit entirely otherwise
   "appointmentAt": "2026-03-23T10:00:00+09:00",
   "externalOrderId": "LVN_4000056976",
   "orderType": "Default",

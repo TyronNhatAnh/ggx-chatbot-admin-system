@@ -51,3 +51,14 @@ def search_api_address_details(keyword: str, jibun_address: str = "") -> dict:
     )
 
 
+def get_vehicle_goods(vehicle_id: int, vehicle_service_id: int, org_id: int) -> dict:
+    """Get available goods types for a vehicle and organisation (GET /admin/vehicles/{vehicleId}/goods/{vehicleServiceId}?orgId=).
+    Use vehiclePoolId as vehicle_id, 0 as vehicle_service_id, and the order's organizationId as org_id.
+    Returns the list of valid goods type codes to use in waypoint goods items."""
+    return get_common_client().get_vehicle_goods(
+        vehicle_id=vehicle_id,
+        vehicle_service_id=vehicle_service_id,
+        org_id=org_id,
+    )
+
+

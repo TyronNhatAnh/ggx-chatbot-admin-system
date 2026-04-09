@@ -44,6 +44,9 @@ Tool calls (parallel — Steps B, C, D):
 - get_vehicle_pools()
 - search_drivers(keyword="010-4669-3992")
 
+After C returns vehiclePoolId=3, Step F:
+- get_vehicle_goods(vehicle_id=3, vehicle_service_id=0, org_id=<organizationId from Step A>)
+
 Good response (after tools resolve):
 
 | Field | Value |
@@ -63,7 +66,7 @@ Good response (after tools resolve):
 | Recipient phone | 010-8430-1003 |
 | Vehicle | 1톤 카고 → `1ton` (vehiclePoolId: 3) |
 | Appointment time | 2026-03-23T10:00:00+09:00 |
-| Goods (waypoint 2) | 박스 8개 → `{name: "박스", quantity: 8, type: "ah.goods.general"}` (의류 → ah.goods.clothes 로 변경 필요시 확인) |
+| Goods (waypoint 2) | 박스 8개 → `{name: "박스", quantity: 8, type: "ah.goods.clothes"}` ← type resolved via get_vehicle_goods; fallback to `ah.goods.general` if no match |
 | Remark | (없음 — goods는 waypoint goods 배열에 포함) |
 | Payment | credit (B2B default) |
 | Driver ID | 225324 (김명섭 / 인천82바4354) ← resolved via search_drivers |
@@ -76,6 +79,26 @@ Bad response (puts driver info in remark):
 
 Bad response (auto-fills driver info into the payload without resolving):
 → Driver callback is reference only until resolved via search_drivers. Always look up the driverId first.
+
+---
+
+=== FEW-SHOT: Admin confirms with "yes" — call submit_order immediately ===
+
+Context: The confirmation table was shown in the previous turn. Admin replies "yes".
+
+Good response (call submit_order right away — do NOT re-display the table):
+→ Call submit_order(payload) with the confirmed payload from the previous turn.
+→ After the tool returns, show only the result: order ID and key fields.
+
+Example good output after submit_order returns successfully:
+"주문이 접수되었습니다. Order ID: **12345678**"
+
+Bad response (re-lists all fields before calling the tool):
+→ Do NOT repeat "- **User ID:**", "- **Organization ID:**", etc. before calling submit_order.
+   Go straight to the tool call. The admin has already reviewed the table.
+
+Bad response (asks for re-confirmation):
+→ "yes" is an unambiguous confirmation. Do NOT ask again. Call submit_order immediately.
 
 ---
 
