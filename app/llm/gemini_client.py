@@ -67,11 +67,16 @@ class GeminiChatFactory:
             if allowed_set else self.tools
         )
 
-        if self.cache_manager is not None:
+        if self.cache_manager is not None and not allowed_set:
+            # Only use cached content when NO tool scoping is needed.
+            # The cache stores all tools — there is no way to restrict which cached tools
+            # the model may call without ToolConfig mode=ANY, which forces a tool call on
+            # every turn (including tool-result turns) and causes an infinite loop.
+            # When tool scoping is active (allowed_set is non-empty), fall through to the
+            # uncached path so effective_tools filtering takes effect.
             cache_name = self.cache_manager.get_cache_name(effective_instruction, feature_key)
             if cache_name:
-                # When using cached content, system_instruction and tools are already
-                # stored in the cache — do not pass them again.
+                # system_instruction and tools are already stored in the cache.
                 config = types.GenerateContentConfig(
                     cached_content=cache_name,
                     temperature=self.temperature,

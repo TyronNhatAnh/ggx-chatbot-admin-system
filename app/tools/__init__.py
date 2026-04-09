@@ -24,6 +24,10 @@ from app.tools.knowledge_tools import (
     # traverse_graph,  # s18 — temporarily disabled
 )
 from app.tools.order_tools import (
+    get_customer_statement_detail,
+    get_customer_statement_summary,
+    get_driver_statement_detail,
+    get_driver_statement_summary,
     get_order_cancel_fee,
     get_order_detail,
     get_order_history,
@@ -52,6 +56,11 @@ ALL_TOOL_FUNCTIONS: list = [
     get_order_history,
     get_orders_admin_panel,
     submit_order,
+    # report tools — Statement of Use (customer + driver)
+    get_customer_statement_summary,
+    get_customer_statement_detail,
+    get_driver_statement_summary,
+    get_driver_statement_detail,
     # user tools — read-only user-service queries
     search_users,
     search_branches,
@@ -164,5 +173,14 @@ FLASH_TOOL_SETS: dict[str, frozenset[str]] = {
         "list_available_docs",
         # "search_endpoints",  # s16 — temporarily disabled
         # "get_handler_context",  # s16 — temporarily disabled
+    }),
+    "report": frozenset({
+        "get_customer_statement_summary",
+        "get_customer_statement_detail",
+        "get_driver_statement_summary",
+        "get_driver_statement_detail",
+        # org/branch resolution for filter parameters
+        "search_organizations",
+        "search_branches",
     }),
 }

@@ -970,6 +970,144 @@ class OrderServiceClient:
     # Price estimation API methods (read-only business operations)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Report API methods — Statement of Use (이용내역/정산)
+    # ------------------------------------------------------------------
+
+    def _get_report(self, path: str, params: dict) -> dict:
+        """Shared GET helper for all 4 report endpoints. Returns {data, meta} envelope."""
+        try:
+            cleaned = self._clean_query_params(params)
+            payload = self._get(path, params=cleaned)
+            if isinstance(payload, dict):
+                if not payload.get("success", True):
+                    errors = payload.get("errors") or []
+                    msg = errors[0].get("message") if errors else "unknown error"
+                    return {"error": "ORDER_SERVICE_ERROR", "detail": msg}
+                return {
+                    "data": payload.get("data") or [],
+                    "meta": payload.get("meta") or {},
+                }
+            return {"data": [], "meta": {}}
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "report %s HTTP %s — body: %s",
+                path, exc.response.status_code, exc.response.text,
+            )
+            return {"error": "ORDER_SERVICE_ERROR", "detail": str(exc)}
+        except httpx.RequestError as exc:
+            logger.error("report %s network error — %s", path, exc)
+            return {"error": "NETWORK_ERROR", "detail": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            logger.error("report %s unexpected error — %s: %s", path, type(exc).__name__, exc)
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc)}
+
+    def get_customer_statement_summary(
+        self,
+        from_date: str,
+        to_date: str,
+        pay: list[str],
+        org_id: int | None = None,
+        businessline_cd: int | None = None,
+        branch: list[str] | None = None,
+    ) -> dict:
+        """GET /api/v1/admin/report/statement-of-use/summary — customer usage summary per org."""
+        return self._get_report(
+            "/admin/report/statement-of-use/summary",
+            {
+                "fromDate": from_date,
+                "toDate": to_date,
+                "pay": pay,
+                "orgId": org_id,
+                "businesslineCd": businessline_cd,
+                "branch": branch,
+            },
+        )
+
+    def get_customer_statement_detail(
+        self,
+        from_date: str,
+        to_date: str,
+        pay: list[str],
+        org_id: int | None = None,
+        businessline_cd: int | None = None,
+        page_size: int = 10,
+        page_index: int = 1,
+    ) -> dict:
+        """GET /api/v1/admin/report/statement-of-use/detail — customer usage detail per order."""
+        return self._get_report(
+            "/admin/report/statement-of-use/detail",
+            {
+                "fromDate": from_date,
+                "toDate": to_date,
+                "pay": pay,
+                "orgId": org_id,
+                "businesslineCd": businessline_cd,
+                "pageSize": page_size,
+                "pageIndex": page_index,
+            },
+        )
+
+    def get_driver_statement_summary(
+        self,
+        from_date: str,
+        to_date: str,
+        driver_type: str = "normalDriver",
+        org_id: int | None = None,
+        driver_id: int | None = None,
+        driver_org: int | None = None,
+        tax_player_cd: list[int] | None = None,
+        e_tax_status: list[str] | None = None,
+        is_revised: bool | None = None,
+    ) -> dict:
+        """GET /api/v1/admin/report/statement-of-use-driver/summary — driver settlement summary per driver."""
+        return self._get_report(
+            "/admin/report/statement-of-use-driver/summary",
+            {
+                "fromDate": from_date,
+                "toDate": to_date,
+                "driverType": driver_type,
+                "orgId": org_id,
+                "driverId": driver_id,
+                "driverOrg": driver_org,
+                "taxPlayerCd": tax_player_cd,
+                "eTaxStatus": e_tax_status,
+                "isRevised": is_revised,
+            },
+        )
+
+    def get_driver_statement_detail(
+        self,
+        from_date: str,
+        to_date: str,
+        driver_type: str = "normalDriver",
+        org_id: int | None = None,
+        driver_id: int | None = None,
+        driver_org: int | None = None,
+        tax_player_cd: list[int] | None = None,
+        e_tax_status: list[str] | None = None,
+        is_revised: bool | None = None,
+        page_size: int = 10,
+        page_index: int = 1,
+    ) -> dict:
+        """GET /api/v1/admin/report/statement-of-use-driver/detail — driver settlement detail per order."""
+        return self._get_report(
+            "/admin/report/statement-of-use-driver/detail",
+            {
+                "fromDate": from_date,
+                "toDate": to_date,
+                "driverType": driver_type,
+                "orgId": org_id,
+                "driverId": driver_id,
+                "driverOrg": driver_org,
+                "taxPlayerCd": tax_player_cd,
+                "eTaxStatus": e_tax_status,
+                "isRevised": is_revised,
+                "pageSize": page_size,
+                "pageIndex": page_index,
+            },
+        )
+
     def estimate_guest(self, payload: dict) -> dict:
         """POST /api/v1/guest/estimate."""
         return self._call_price_endpoint("/guest/estimate", payload=payload, requires_auth=False)

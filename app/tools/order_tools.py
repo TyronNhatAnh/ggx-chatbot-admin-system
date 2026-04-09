@@ -144,4 +144,162 @@ def get_order_history(
     )
 
 
+def get_customer_statement_summary(
+    from_date: str,
+    to_date: str,
+    pay: list[str],
+    org_id: int | None = None,
+    businessline_cd: int | None = None,
+    branch: list[str] | None = None,
+) -> dict:
+    """Customer Statement-of-Use summary: one row per org/business-line with aggregated order counts and fares.
+    Endpoint: GET /admin/report/statement-of-use/summary
+
+    Returns StatementOfUseDataSummary rows plus meta.additionalData totals (totalCustomerFare, totalOrderCount).
+    Summary returns ALL matching rows without pagination.
+
+    Args:
+        from_date: Start date (YYYY-MM-DD). Required.
+        to_date: End date (YYYY-MM-DD). Required.
+        pay: Payment method filter. Required. Valid values: "Credit" (후불), "Cash" (현금).
+             Pass ["Credit", "Cash"] to include all payments.
+        org_id: Filter by organization ID.
+        businessline_cd: Filter by business line code.
+        branch: Filter by branch codes (list of strings).
+    """
+    return get_order_client().get_customer_statement_summary(
+        from_date=from_date,
+        to_date=to_date,
+        pay=pay,
+        org_id=org_id,
+        businessline_cd=businessline_cd,
+        branch=branch,
+    )
+
+
+def get_customer_statement_detail(
+    from_date: str,
+    to_date: str,
+    pay: list[str],
+    org_id: int | None = None,
+    businessline_cd: int | None = None,
+    page_size: int = 10,
+    page_index: int = 1,
+) -> dict:
+    """Customer Statement-of-Use detail: one row per order with full fare breakdown and driver info.
+    Endpoint: GET /admin/report/statement-of-use/detail
+
+    Returns StatementOfUseDataDetail rows. Paginated — use page_size + page_index.
+    Nullable fields serialize as {"Float64": <val>, "Valid": <bool>} — treat as null when Valid=false.
+
+    Args:
+        from_date: Start date (YYYY-MM-DD). Required.
+        to_date: End date (YYYY-MM-DD). Required.
+        pay: Payment method filter. Required. Valid values: "Credit" (후불), "Cash" (현금).
+             Pass ["Credit", "Cash"] to include all payments.
+        org_id: Filter by organization ID.
+        businessline_cd: Filter by business line code.
+        page_size: Rows per page (default 10).
+        page_index: Page number, 1-based (default 1).
+    """
+    return get_order_client().get_customer_statement_detail(
+        from_date=from_date,
+        to_date=to_date,
+        pay=pay,
+        org_id=org_id,
+        businessline_cd=businessline_cd,
+        page_size=page_size,
+        page_index=page_index,
+    )
+
+
+def get_driver_statement_summary(
+    from_date: str,
+    to_date: str,
+    driver_type: str = "normalDriver",
+    org_id: int | None = None,
+    driver_id: int | None = None,
+    driver_org: int | None = None,
+    tax_player_cd: list[int] | None = None,
+    e_tax_status: list[str] | None = None,
+    is_revised: bool | None = None,
+) -> dict:
+    """Driver Statement-of-Use summary: one row per driver with aggregated settlement data for the period.
+    Endpoint: GET /admin/report/statement-of-use-driver/summary
+
+    Returns DriverDataSummary rows plus meta.additionalData.totalDriverCount.
+    Summary returns ALL matching rows without pagination.
+    Note: residentRegistrationNumber and phoneNumber are masked in API responses.
+
+    Args:
+        from_date: Start date (YYYY-MM-DD). Required.
+        to_date: End date (YYYY-MM-DD). Required.
+        driver_type: Must be "normalDriver" (the only supported value). Required.
+        org_id: Filter by customer organization ID.
+        driver_id: Filter by specific driver user ID.
+        driver_org: Filter by driver's organization ID.
+        tax_player_cd: Filter by tax player type codes (list of ints).
+        e_tax_status: Filter by e-tax status values (list of strings).
+        is_revised: Filter revised records only.
+    """
+    return get_order_client().get_driver_statement_summary(
+        from_date=from_date,
+        to_date=to_date,
+        driver_type=driver_type,
+        org_id=org_id,
+        driver_id=driver_id,
+        driver_org=driver_org,
+        tax_player_cd=tax_player_cd,
+        e_tax_status=e_tax_status,
+        is_revised=is_revised,
+    )
+
+
+def get_driver_statement_detail(
+    from_date: str,
+    to_date: str,
+    driver_type: str = "normalDriver",
+    org_id: int | None = None,
+    driver_id: int | None = None,
+    driver_org: int | None = None,
+    tax_player_cd: list[int] | None = None,
+    e_tax_status: list[str] | None = None,
+    is_revised: bool | None = None,
+    page_size: int = 10,
+    page_index: int = 1,
+) -> dict:
+    """Driver Statement-of-Use detail: one row per order per driver with full financial breakdown.
+    Endpoint: GET /admin/report/statement-of-use-driver/detail
+
+    Superset of driver summary fields plus order-level info and e-tax fields. Paginated.
+    Note: The incentive field has JSON key "CustomerFare" (capital C) — known naming inconsistency.
+
+    Args:
+        from_date: Start date (YYYY-MM-DD). Required.
+        to_date: End date (YYYY-MM-DD). Required.
+        driver_type: Must be "normalDriver" (the only supported value). Required.
+        org_id: Filter by customer organization ID.
+        driver_id: Filter by specific driver user ID.
+        driver_org: Filter by driver's organization ID.
+        tax_player_cd: Filter by tax player type codes (list of ints).
+        e_tax_status: Filter by e-tax status values (list of strings).
+        is_revised: Filter revised records only.
+        page_size: Rows per page (default 10).
+        page_index: Page number, 1-based (default 1).
+    """
+    return get_order_client().get_driver_statement_detail(
+        from_date=from_date,
+        to_date=to_date,
+        driver_type=driver_type,
+        org_id=org_id,
+        driver_id=driver_id,
+        driver_org=driver_org,
+        tax_player_cd=tax_player_cd,
+        e_tax_status=e_tax_status,
+        is_revised=is_revised,
+        page_size=page_size,
+        page_index=page_index,
+    )
+
+
 

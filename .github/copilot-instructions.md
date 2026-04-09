@@ -70,7 +70,7 @@ make clean          # Delete .venv
 
 ## Tools
 
-- 6 tool files: `order_tools.py` · `user_tools.py` · `driver_tools.py` · `common_tools.py` · `docs_tools.py` · `knowledge_tools.py` — 38 functions total
+- 6 tool files: `order_tools.py` · `user_tools.py` · `driver_tools.py` · `common_tools.py` · `docs_tools.py` · `knowledge_tools.py` — 42 functions total
 - Keep `ALL_TOOL_FUNCTIONS`, `TOOL_REGISTRY`, and `FLASH_TOOL_SETS` in sync (`app/tools/__init__.py`); `_validate_unique_tool_names()` asserts uniqueness at startup
 - `FLASH_TOOL_SETS` maps each `feature_key` to its scoped tool list (reduces schema tokens for Flash model); must be updated when tools are added or removed
 - `get_delayed_orders` stays unregistered (overlaps `get_orders_admin_panel(status_cd=[4])`)

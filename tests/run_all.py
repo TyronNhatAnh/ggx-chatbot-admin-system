@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Run all 20 sessions in sequence.
+"""Run all 25 sessions in sequence.
+   exceptions:
+     - If a session 16-20
 
 Usage:
   python tests/run_all.py            # run all
@@ -10,7 +12,9 @@ import subprocess
 from pathlib import Path
 
 TESTS_DIR = Path(__file__).parent
-sessions = [f"session_{i:02d}.py" for i in range(1, 21)]
+# skip session 16-20 since they use a different dataset and would require extra setup
+sessions = [f"session_{i:02d}.py" for i in range(1, 26) if i not in range(16, 21)]
+
 
 # Filter to specific sessions if passed as args
 if len(sys.argv) > 1:

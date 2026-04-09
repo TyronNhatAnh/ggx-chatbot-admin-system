@@ -166,6 +166,45 @@ Email dispatch excluded.
 
 ---
 
+## REPORT TOOLS
+
+### Session 21 — Customer Statement Summary (`get_customer_statement_summary`)
+1. Show me the customer usage summary for January 2025 — all payment methods
+2. How many orders did org ID 4347 place in January 2025? What was the total customer fare?
+3. Give me the customer statement summary for org 17, Credit payment only, last month (March 2026)
+4. Which organization had the highest total fare in Q1 2025 (Jan–Mar)? Use payment Credit + Cash
+5. *(follow-up)* What was the totalCustomerFare across all orgs for that period?
+
+### Session 22 — Customer Statement Detail (`get_customer_statement_detail`)
+1. Show me the order-level customer statement detail for org 4347, January 2025, Credit payment
+2. List individual orders in the customer statement for org 17, March 2026, all payment types — page 1
+3. *(follow-up)* Show page 2 of those results
+4. For org 4347 in January 2025 (Credit), which order had the highest totalPrice?
+5. Which orders in the customer statement for org 17 in March 2026 had VAT applied?
+
+### Session 23 — Driver Statement Summary (`get_driver_statement_summary`)
+1. Show me the driver settlement summary for January 2025, org ID 17
+2. What is the total payToDriver amount across all drivers for org 17 in January 2025?
+3. Which driver had the highest finalPrice in January 2025 for org 17?
+4. Show me the driver summary for driver ID 9921 in January 2025
+5. How many distinct drivers settled orders for org 17 in January 2025?
+
+### Session 24 — Driver Statement Detail (`get_driver_statement_detail`)
+1. Show me the per-order driver settlement detail for driver ID 9921, January 2025
+2. List driver payout records for org 17 in January 2025 — page 1, 20 rows
+3. *(follow-up)* Show page 2 of those results
+4. For driver 9921 in January 2025, which order had the highest commissionPrice?
+5. Show driver settled orders for org 17 in January 2025 with e-tax status "발급완료"
+
+### Session 25 — Report Multi-turn & Edge Cases
+1. Give me both the summary and detail for customer org 17, March 2026, Credit payment
+2. I need a driver settlement report for org 17 last month — summary first, then detail breakdown for the top earner
+3. *(follow-up from Q2)* What was the payToDriver amount for that driver?
+4. What does the "CustomerFare" field mean in the driver detail report?
+5. Why are the residentRegistrationNumber and phoneNumber masked in driver reports?
+
+---
+
 ## Coverage Map
 
 | Session | Tools Covered |
@@ -190,3 +229,8 @@ Email dispatch excluded.
 | 18 | `find_api_consumers`, `traverse_graph`, `get_knowledge_stats` |
 | 19 | Cross-domain multi-tool |
 | 20 | Memory / context follow-up |
+| 21 | `get_customer_statement_summary` |
+| 22 | `get_customer_statement_detail` |
+| 23 | `get_driver_statement_summary` |
+| 24 | `get_driver_statement_detail` |
+| 25 | Report multi-turn & edge cases |

@@ -176,11 +176,21 @@ def _sanitize_response(text: str) -> str:
                 # markdown table alignment syntax (e.g. "| :--- |" in wide tables).
                 if all(_MD_TABLE_TOKEN_RE.match(tok) for tok in max_phrase):
                     continue
-                # Don't discard table responses where the ngram is a column value
-                # repeating once per data row (e.g., "| Apr 7," in a date column).
-                # A true hallucination loop would repeat far more than one-per-row.
-                if max_phrase[0] == "|" and table_data_rows >= 5 and max_count <= table_data_rows:
-                    continue
+                # Don't discard legitimate table responses. For single pipe-enclosed
+                # cell values (e.g. "| 0 |"), the 3-gram appears N_rows × N_columns
+                # times across a wide table — scale the allowed count accordingly.
+                if table_data_rows >= 5:
+                    if max_count <= table_data_rows:
+                        continue  # once-per-row column values (e.g. "2026 | 완료")
+                    if max_phrase[0] == "|":
+                        if len(max_phrase) == 3 and max_phrase[2] == "|":
+                            # pipe-value-pipe cell pattern: allow up to rows × columns
+                            max_cols = max(
+                                (ln.count("|") for ln in lines if _MD_DATA_ROW_RE.match(ln)),
+                                default=1,
+                            )
+                            if max_count <= table_data_rows * max_cols:
+                                continue
                 logger.warning(
                     "[Sanitize ] Detected phrase-repetition loop (%dx '%s'). Discarding response.",
                     max_count, " ".join(max_phrase),
@@ -287,29 +297,50 @@ _FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "order", "delivery", "coupon", "cancel fee", "reorder", "shipping record",
         "price estimate", "pricing", "invoice", "track",
         "đơn hàng", "đơn", "giao hàng", "vận chuyển", "hóa đơn", "mã đơn",
-        "주문", "배달", "배송", "쿠폰", "취소",
+        "주문", "배달", "배송", "쿠폰", "취소", "주문번호", "주문조회", "배송현황",
     ),
     "driver-tracking": (
         "driver", "route", "tracking", "location", "fare", "online driver",
         "tài xế", "tài_xế", "vị trí", "lộ trình", "cước phí",
-        "기사", "운전", "배차", "위치",
+        "기사", "운전", "배차", "위치", "기사조회", "기사정보", "운전자",
+    ),
+    # report is placed before user-admin so it wins score ties — "org" appears in
+    # report queries as a filter param, giving user-admin a spurious match.
+    "report": (
+        "report", "statement of use", "statement-of-use", "settlement report",
+        "usage report", "fare report", "customer report", "driver report",
+        "customer statement", "driver statement", "driver settlement",
+        "usage summary", "customer usage summary", "statement summary",
+        "customer statement summary", "total customer fare", "total fare",
+        "customerfare", "payment method", "payment methods", "all payment methods",
+        "payment credit", "payment cash",
+        "credit payment", "cash payment",  # natural English order
+        "paytodriver", "pay to driver", "payout", "settled", "settlement",
+        "commission", "commissionprice", "commission price",
+        "q1 ", "q2 ", "q3 ", "q4 ", "quarterly",
+        "báo cáo", "sao kê",
+        "정산", "이용내역", "정산서", "이용 내역", "기사 정산", "고객 정산",
+        "이용 요약", "이용요약", "고객 이용 요약", "고객 이용현황", "이용 현황",
+        "결제 방법", "결제방법", "결제수단", "전체 결제", "고객 요금", "총 요금",
+        "고객 이용내역", "고객 정산 요약", "정산 요약",
     ),
     "user-admin": (
         "user profile", "organization", "org", "branch", "admin role", "permission",
         "feature flag", "department", "account", "find user", "search user", "user account",
         "tài khoản", "người dùng", "tổ chức", "chi nhánh", "phân quyền", "quyền",
-        "사용자", "조직", "지점", "권한",
+        "사용자", "조직", "지점", "권한", "계정", "회원", "사용자조회", "관리자",
     ),
     "common-data": (
         "vehicle pool", "vehicle service", "vehicle prices", "vehicle type", "address search",
         "home moving", "ads", "common service",
         "xe", "loại xe", "địa chỉ", "chuyển nhà",
-        "차량", "차종", "주소", "이사",
+        "차량", "차종", "주소", "이사", "차량종류", "차량요금",
     ),
     "knowledge-code": (
         "enum", "status code", "struct", "handler", "service flow",
         "endpoint", "codebase", "api consumer", "graph", "code", "source", "flow",
         "mã", "luồng", "mã trạng thái",
+        "상태코드", "상태 코드", "열거형", "코드값", "코드 값",
     ),
     "email-dispatch": (
         "상차", "하차", "도착지", "수령인", "배차", "박스", "카고", "eta",
@@ -320,6 +351,15 @@ _FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "order#", "외부주문", "오더번호",
     ),
 }
+
+_GREETING_ONLY_RE = re.compile(
+    r"^\s*(?:"
+    r"hi|hello|hey|yo|good\s+(?:morning|afternoon|evening)|"
+    r"xin\s+ch[aà]o|ch[aà]o|"
+    r"안녕(?:하\s*(?:세요|십니까))?|반가워(?:요)?|좋은\s*(?:아침|오전|오후|저녁)"
+    r")(?:[!.?,\s]+)?$",
+    re.IGNORECASE,
+)
 
 
 def _detect_feature_key(message: str) -> tuple[str | None, int]:
@@ -341,6 +381,11 @@ def _detect_feature_key(message: str) -> tuple[str | None, int]:
             best_key = feature
 
     return best_key, best_score
+
+
+def _is_greeting_only(message: str) -> bool:
+    """Return True only when the message is a standalone greeting."""
+    return bool(_GREETING_ONLY_RE.match((message or "").strip()))
 
 
 class AIOrchestrator:
@@ -471,22 +516,43 @@ class AIOrchestrator:
         # Build a feature-specific system prompt for this request.
         # Re-use the feature key from the first turn if available; re-detect only
         # when the session is new or if the current message clearly signals a new domain.
-        detected_key, _ = _detect_feature_key(message)
+        detected_key, detected_score = _detect_feature_key(message)
+        is_greeting_only = _is_greeting_only(message)
         if session.feature_key and (not detected_key or detected_key == session.feature_key):
             # No new domain detected, or same domain confirmed → treat as follow-up.
             feature_key = session.feature_key
+        elif session.feature_key and detected_key and detected_key != session.feature_key:
+            # Different domain detected — only switch when its score is strictly
+            # higher than the session feature's score on this message.  This
+            # prevents incidental cross-domain terms (e.g. "org", "fare") from
+            # hijacking an active report/order session on a follow-up turn.
+            _lower_msg = (message or "").lower()
+            session_score = sum(
+                1 for kw in _FEATURE_KEYWORDS.get(session.feature_key, ()) if kw in _lower_msg
+            )
+            feature_key = detected_key if detected_score > session_score else session.feature_key
         else:
-            # A different domain was detected (any score ≥ 1) → switch context.
+            # No session feature yet — use detected.
             feature_key = detected_key
         if feature_key and not session.feature_key:
             # First turn with a clear signal → persist for future follow-ups.
             session.feature_key = feature_key
+        logger.info(
+            "[Routing  ] detected_feature=%s score=%d session_feature=%s is_greeting_only=%s effective_feature=%s",
+            detected_key,
+            detected_score,
+            session.feature_key,
+            is_greeting_only,
+            feature_key,
+        )
         system_prompt = build_system_prompt(feature_key=feature_key)
 
         # A fresh session per request keeps state isolated between users.
         # knowledge-code is handled by Flash (faster, sufficient for endpoint/handler lookup).
         use_pro = False
-        use_bare = not use_pro and feature_key is None
+        # Bare conversational model is only for pure greetings.
+        # If a non-greeting query fails feature detection, keep tools enabled.
+        use_bare = not use_pro and feature_key is None and is_greeting_only
         active_model = self._pro_model if use_pro else (self._bare_model if use_bare else self._model)
         logger.info("[Model    ] Using %s for feature_key=%s", active_model.model_name, feature_key)
 
@@ -653,7 +719,12 @@ class AIOrchestrator:
                         "This should not happen — check that all tools are registered."
                     )
                 t0 = time.perf_counter()
-                res = tool_fn(**t_args)
+                try:
+                    res = tool_fn(**t_args)
+                except TypeError as exc:
+                    elapsed = time.perf_counter() - t0
+                    logger.error("[Tool     ] %s called with invalid args %s: %s", t_name, t_args, exc)
+                    return t_name, {"error": "INVALID_TOOL_ARGS", "detail": str(exc)}, elapsed
                 elapsed = time.perf_counter() - t0
                 # Retry once for transient network errors
                 if isinstance(res, dict) and res.get("error") == "NETWORK_ERROR":
@@ -722,11 +793,24 @@ class AIOrchestrator:
                                 "Do NOT ask the user to confirm. Do NOT output text first."
                             )
                         elif len(org_labels) > 1:
-                            steering_notes.append(
-                                f"Multiple organizations match the query. Found: {', '.join(org_labels)}. "
-                                "You MUST list these candidates to the user with their names and IDs, "
-                                "and ask which one they mean. Do NOT pick one on their behalf."
-                            )
+                            if feature_key == "report":
+                                # In report context org_id is optional — the summary endpoint
+                                # returns all orgs when omitted. If the user asked a comparative
+                                # question (highest/top/which org), skip org disambiguation and
+                                # call the summary tool without org_id.
+                                steering_notes.append(
+                                    "You are in report context. org_id is OPTIONAL for report tools. "
+                                    "Do NOT ask the user to pick an org. "
+                                    "Call get_customer_statement_summary (or the relevant summary tool) "
+                                    "WITHOUT org_id to retrieve data for all organizations, "
+                                    "then identify the answer from the returned data[] rows."
+                                )
+                            else:
+                                steering_notes.append(
+                                    f"Multiple organizations match the query. Found: {', '.join(org_labels)}. "
+                                    "You MUST list these candidates to the user with their names and IDs, "
+                                    "and ask which one they mean. Do NOT pick one on their behalf."
+                                )
                     elif isinstance(orgs, list) and len(orgs) == 0:
                         steering_notes.append(
                             "No organizations matched the search query. "
@@ -899,8 +983,12 @@ class AIOrchestrator:
         # Auto-extract entities from assistant reply
         self._memory.extract_and_store_entities(session_id, assistant_reply)
 
-        # Summarize synchronously to avoid race conditions where a subsequent
-        # message arrives before the summary is applied, causing stale context.
+        # Run summarization in a background thread so the HTTP response is
+        # returned to the client immediately.  The summarization_in_progress
+        # flag (begin_summarization / end_summarization) already prevents a
+        # concurrent follow-up message from starting a second summarization
+        # before this one finishes; at worst the follow-up uses the previous
+        # summary which is still valid context.
         if self._memory.needs_summarization(session_id):
             session = self._memory.get_session(session_id)
             if session:
@@ -909,14 +997,19 @@ class AIOrchestrator:
                 # Skip trivial summaries — wait until there's enough to compress
                 if len(older_turns) >= 2 and self._memory.begin_summarization(session_id):
                     existing_summary = session.summary
+                    turns_snapshot = list(older_turns)
                     logger.info(
-                        "[Memory] Running synchronous summarization of %d older turns for session %s",
-                        len(older_turns), session_id,
+                        "[Memory] Scheduling background summarization of %d older turns for session %s",
+                        len(turns_snapshot), session_id,
                     )
-                    try:
-                        new_summary = summarize_conversation(list(older_turns), existing_summary)
-                        self._memory.apply_summary(session_id, new_summary)
-                    except Exception:
-                        logger.exception("[Memory] Summarization failed for session %s", session_id)
-                    finally:
-                        self._memory.end_summarization(session_id)
+
+                    def _run_summarization() -> None:
+                        try:
+                            new_summary = summarize_conversation(turns_snapshot, existing_summary)
+                            self._memory.apply_summary(session_id, new_summary)
+                        except Exception:
+                            logger.exception("[Memory] Summarization failed for session %s", session_id)
+                        finally:
+                            self._memory.end_summarization(session_id)
+
+                    threading.Thread(target=_run_summarization, daemon=True).start()
