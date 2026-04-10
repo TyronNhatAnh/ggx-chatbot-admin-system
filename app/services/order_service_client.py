@@ -850,11 +850,9 @@ class OrderServiceClient:
         if group_type_cd:
             out["groupTypeCD"] = group_type_cd
 
-        # Safety net: if no date filter AND no targeted ID/keyword filter, default to last 7 days
-        # on appointmentFrom/To to prevent full-table scans that time out on large datasets.
+        # appointmentFrom/To is required by the API — always default to current week if omitted.
         _has_date = any(k in out for k in ("appointmentFrom", "appointmentTo"))
-        _has_targeted = any(k in out for k in ("orderRequestId", "userId", "driverId", "keyword"))
-        if not _has_date and not _has_targeted:
+        if not _has_date:
             today = date.today()
             out["appointmentFrom"] = (today - timedelta(days=7)).isoformat()
             out["appointmentTo"] = today.isoformat()

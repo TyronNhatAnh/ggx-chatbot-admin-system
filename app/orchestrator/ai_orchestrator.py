@@ -316,12 +316,23 @@ _FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
     # IMPORTANT: keep keywords multi-word or report-specific only.
     # Single ambiguous words like "commission", "settled", "settlement", "payout",
     # "quarterly" also appear in order/driver queries and cause mis-routing.
+    # Exceptions: "report" (specific enough in admin context) and multi-word phrases
+    # like "summary and detail" that have no overlap with other domains.
     "report": (
         "statement of use", "statement-of-use", "settlement report",
         "usage report", "fare report", "customer report", "driver report",
         "customer statement", "driver statement", "driver settlement",
         "usage summary", "customer usage summary", "statement summary",
         "customer statement summary", "total customer fare",
+        # "report" alone: disambiguates "driver report summary" from "driver" keyword
+        # (driver-tracking). Gives report feature score=2 whenever "driver report",
+        # "customer report", etc. appear — beating driver-tracking's score=1 from "driver".
+        "report",
+        # "summary and detail": catches combined-request queries that lack "report"/"statement".
+        "summary and detail",
+        # aggregation/period phrases: "total fare in Q1", "highest total fare", quarterly reports
+        "total fare", "highest fare", "fare breakdown", "fare by org", "fare by organization",
+        "q1", "q2", "q3", "q4",
         "customerfare", "all payment methods",
         "paytodriver", "pay to driver", "commissionprice", "commission price",
         "báo cáo", "sao kê",
@@ -560,7 +571,7 @@ class AIOrchestrator:
         # A fresh session per request keeps state isolated between users.
         # knowledge-code is handled by Flash (faster, sufficient for endpoint/handler lookup).
         # Report queries use Pro — complex multi-step aggregation benefits from the stronger model.
-        use_pro = self._pro_model is not None and feature_key == "report"
+        use_pro = False
         # Bare conversational model is only for pure greetings.
         # If a non-greeting query fails feature detection, keep tools enabled.
         use_bare = not use_pro and feature_key is None and is_greeting_only
