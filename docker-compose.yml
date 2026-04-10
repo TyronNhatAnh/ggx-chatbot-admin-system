@@ -14,13 +14,12 @@ services:
     build: .
     ports:
       - "8000:8000"
-    env_file:
-      - .env
     environment:
+      - APP_ENV=local
       - REDIS_URL=redis://redis:6379/0
     volumes:
-      # Mount credentials file at runtime — never bake secrets into the image.
-      - ./app/config/vertex-ai.json:/app/app/config/vertex-ai.json:ro
+      # Mount local credentials at runtime — never bake secrets into the image.
+      - ./app/config/local/vertex-ai.json:/app/app/config/local/vertex-ai.json:ro
     depends_on:
       redis:
         condition: service_healthy

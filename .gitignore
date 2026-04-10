@@ -5,6 +5,8 @@
 .env
 .env.*
 !.env.example          # Keep the example template — it has no real secrets
+# vertex-ai.json in all env folders — never commit credentials
+app/config/**/vertex-ai.json
 app/config/vertex-ai.json
 
 # =============================================================================
@@ -102,3 +104,5 @@ data/**/*.db-wal
 data/.DS_Store
 
 tests/logs/
+
+.claude/*

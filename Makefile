@@ -3,23 +3,25 @@ APP=app.main:app
 PORT=8000
 VENV=.venv
 PYTHON=python3.11
+# Default to local config; override with: APP_ENV=stag make run
+APP_ENV ?= local
 
 # ===== SETUP =====
 
 install:
 	$(PYTHON) -m venv $(VENV)
-	. $(VENV)/bin/activate && pip install -r requirements.txt
+	$(VENV)/bin/python -m pip install -r requirements.txt
 
 deps:
-	. $(VENV)/bin/activate && pip install -r requirements.txt
+	$(VENV)/bin/python -m pip install -r requirements.txt
 
 # ===== RUN =====
 
 run:
-	. $(VENV)/bin/activate && uvicorn $(APP) --host 0.0.0.0 --port $(PORT)
+	. $(VENV)/bin/activate && APP_ENV=$(APP_ENV) uvicorn $(APP) --host 0.0.0.0 --port $(PORT)
 
 debug:
-	. $(VENV)/bin/activate && uvicorn $(APP) --reload --host 0.0.0.0 --port $(PORT)
+	. $(VENV)/bin/activate && APP_ENV=$(APP_ENV) uvicorn $(APP) --reload --host 0.0.0.0 --port $(PORT)
 
 # ===== CODEBASE INDEXER =====
 
@@ -31,26 +33,27 @@ debug:
 index-service:
 	. $(VENV)/bin/activate && python -m indexer.runner --repo $(SERVICE_REPO) --service $(SERVICE_NAME) $(if $(LANG),--lang $(LANG)) --vectors $(if $(FORCE),--force)
 
-# Shortcuts for pre-configured services (reads repo path from .env)
+# Shortcuts for pre-configured services (reads repo path from shell env vars)
+# Export these in your shell, e.g.: export ORDER_SERVICE_REPO_PATH=/path/to/repo
 # Add FORCE=1 to any target to bypass the incremental hash check and re-index.
 index-order-service:
-	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep ORDER_SERVICE_REPO_PATH | cut -d= -f2)" --service order-service --lang go --vectors $(if $(FORCE),--force)
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$(ORDER_SERVICE_REPO_PATH)" --service order-service --lang go --vectors $(if $(FORCE),--force)
 
 index-user-service:
-	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep USER_SERVICE_REPO_PATH | cut -d= -f2)" --service user-service --lang go --vectors $(if $(FORCE),--force)
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$(USER_SERVICE_REPO_PATH)" --service user-service --lang go --vectors $(if $(FORCE),--force)
 
 index-driver-service:
-	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep DRIVER_SERVICE_REPO_PATH | cut -d= -f2)" --service driver-service --lang go --vectors $(if $(FORCE),--force)
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$(DRIVER_SERVICE_REPO_PATH)" --service driver-service --lang go --vectors $(if $(FORCE),--force)
 
 index-common-service:
-	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep COMMON_SERVICE_REPO_PATH | cut -d= -f2)" --service common-service --lang go --vectors $(if $(FORCE),--force)
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$(COMMON_SERVICE_REPO_PATH)" --service common-service --lang go --vectors $(if $(FORCE),--force)
 
 index-web2:
-	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep WEB2_REPO_PATH | cut -d= -f2)" --service web2 --lang react --vectors $(if $(FORCE),--force)
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$(WEB2_REPO_PATH)" --service web2 --lang react --vectors $(if $(FORCE),--force)
 
 # Java Spring Boot services (web-admin, etc.)
 index-admin-service:
-	. $(VENV)/bin/activate && python -m indexer.runner --repo "$$(cat .env | grep ADMIN_SERVICE_REPO_PATH | cut -d= -f2)" --service admin-service --lang java --vectors $(if $(FORCE),--force)
+	. $(VENV)/bin/activate && python -m indexer.runner --repo "$(ADMIN_SERVICE_REPO_PATH)" --service admin-service --lang java --vectors $(if $(FORCE),--force)
 
 # Cross-service endpoint linking — matches React API calls to Go handlers
 # Run after indexing both backend and frontend services
@@ -82,13 +85,13 @@ docker-build:
 	docker build -t $(IMAGE):$(TAG) .
 	@echo "Built $(IMAGE):$(TAG)"
 
-# Run the container locally — mounts vertex-ai.json and .env from the project root.
-# Requires: app/config/vertex-ai.json and .env to exist.
+# Run the container locally — mounts local vertex-ai.json, passes APP_ENV=local.
+# Requires: app/config/local/vertex-ai.json to exist.
 docker-run-local:
 	docker run --rm \
 		-p $(PORT):8000 \
-		--env-file .env \
-		-v "$$(pwd)/app/config/vertex-ai.json:/app/app/config/vertex-ai.json:ro" \
+		-e APP_ENV=local \
+		-v "$$(pwd)/app/config/local/vertex-ai.json:/app/app/config/local/vertex-ai.json:ro" \
 		$(IMAGE):$(TAG)
 
 # Build then run locally in one step

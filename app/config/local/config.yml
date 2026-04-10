@@ -1,0 +1,43 @@
+# Local development config.
+
+app_env: local
+
+# ---------------------------------------------------------------------------
+# Gemini models
+# ---------------------------------------------------------------------------
+model_name: gemini-3-flash-preview
+pro_model_name: gemini-3.1-pro-preview
+
+# ---------------------------------------------------------------------------
+# Vertex AI
+# ---------------------------------------------------------------------------
+vertex_ai_credentials_file: app/config/local/vertex-ai.json
+vertex_ai_sa_key: gemini-kr-sa-staging
+vertex_ai_location: global
+
+# ---------------------------------------------------------------------------
+# Downstream service URLs
+# ---------------------------------------------------------------------------
+user_service_base_url: https://stag-api.gogox.co.kr/user
+order_service_base_url: https://stag-api.gogox.co.kr/order
+driver_service_base_url: https://stag-api.gogox.co.kr/driver
+common_service_base_url: https://stag-api.gogox.co.kr/common
+
+# ---------------------------------------------------------------------------
+# Chat guardrails
+# ---------------------------------------------------------------------------
+chat_auth_enabled: true
+chat_api_key: 69b768d2-ad24-8321-96e4-86ec1b32d448-1232edmke132e
+chat_rate_limit_enabled: false
+chat_rate_limit_requests: 30
+chat_rate_limit_window_seconds: 60
+
+# ---------------------------------------------------------------------------
+# Session persistence (Redis via Docker)
+# ---------------------------------------------------------------------------
+redis_url: redis://localhost:6379/0
+
+# ---------------------------------------------------------------------------
+# Context caching (requires versioned model name, e.g. gemini-2.0-flash-001)
+# ---------------------------------------------------------------------------
+context_caching_enabled: false

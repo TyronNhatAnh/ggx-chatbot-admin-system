@@ -1,7 +1,33 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+
+class _YamlConfigSource(PydanticBaseSettingsSource):
+    """Load non-secret config from app/config/{APP_ENV}/config.yml."""
+
+    def get_field_value(self, field: Any, field_name: str) -> Any:  # noqa: ANN401
+        return None, field_name, False
+
+    def __call__(self) -> dict[str, Any]:
+        app_env = os.environ.get("APP_ENV", "").strip()
+        if not app_env:
+            return {}
+        yaml_path = Path(__file__).parent / "config" / app_env / "config.yml"
+        if not yaml_path.exists():
+            return {}
+        with yaml_path.open() as f:
+            return yaml.safe_load(f) or {}
 
 
 class Settings(BaseSettings):
+    # Active environment — drives which app/config/{app_env}/config.yml is loaded.
+    # Set via APP_ENV env var (e.g. stag, prod). Leave empty for local/.env-only mode.
+    app_env: str = ""
+
     # Primary model (Flash) — low latency, low cost, good for tool-calling & lookups.
     # gemini-3-flash-preview is available on Vertex AI in: global, us-central1
     model_name: str = "gemini-3-flash-preview"
@@ -53,15 +79,11 @@ class Settings(BaseSettings):
     chat_rate_limit_window_seconds: int = 60
 
     # ---------------------------------------------------------------------------
-    # Chat history persistence
+    # Chat history persistence — Redis required in all environments.
     # ---------------------------------------------------------------------------
-    # Redis URL — preferred for multi-instance (multi-pod) deployments.
-    # When set, Redis is used and CHAT_HISTORY_DB is ignored.
-    # Example: redis://redis-service:6379/0
     redis_url: str = ""
 
-    # SQLite fallback — single-instance only. Ignored when redis_url is set.
-    # Leave empty (default) for in-memory-only behaviour.
+    # SQLite fallback — legacy, not used. Leave empty.
     chat_history_db: str = ""
 
     # ---------------------------------------------------------------------------
@@ -73,9 +95,21 @@ class Settings(BaseSettings):
     # Aliases like "gemini-3-flash-preview" are NOT supported for explicit caching.
     context_caching_enabled: bool = False
 
-    # Allow extra keys in .env (e.g. repo/branch vars used by Makefile only)
-    # without failing Settings validation at runtime.
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # extra="ignore" so Makefile-only vars (repo paths etc.) don't break startup.
+    model_config = SettingsConfigDict(extra="ignore")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Priority (highest → lowest): init kwargs → env vars → YAML config → field defaults
+        # dotenv (.env file) is intentionally excluded — all config comes from YAML.
+        return (init_settings, env_settings, _YamlConfigSource(settings_cls), file_secret_settings)
 
 
 settings = Settings()

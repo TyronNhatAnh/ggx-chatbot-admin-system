@@ -7,6 +7,8 @@ __pycache__/
 # Secrets — never bake into image; mount at runtime
 .env
 .env.*
+# vertex-ai.json in all env folders
+app/config/**/vertex-ai.json
 app/config/vertex-ai.json
 
 # data/knowledge/ is intentionally included (baked into image by Dockerfile)

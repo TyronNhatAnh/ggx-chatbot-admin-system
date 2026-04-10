@@ -64,65 +64,81 @@ class RedisStore:
     # ------------------------------------------------------------------
 
     def load_session(self, session_id: str) -> SessionState | None:
-        meta = self._client.hgetall(self._meta_key(session_id))
-        if not meta:
+        try:
+            meta = self._client.hgetall(self._meta_key(session_id))
+            if not meta:
+                return None
+
+            state = SessionState(session_id=session_id)
+            state.summary = meta.get("summary", "")
+            state.turns_since_summary = int(meta.get("turns_since_summary", 0))
+            state.feature_key = meta.get("feature_key") or None
+            state.updated_at = float(meta.get("updated_at", time.time()))
+            state.turns = self._load_turns(session_id)
+            state.memory = self._load_memory(session_id)
+            return state
+        except Exception as exc:
+            logger.warning("[RedisStore] load_session unavailable — in-memory only: %s", exc)
             return None
 
-        state = SessionState(session_id=session_id)
-        state.summary = meta.get("summary", "")
-        state.turns_since_summary = int(meta.get("turns_since_summary", 0))
-        state.feature_key = meta.get("feature_key") or None
-        state.updated_at = float(meta.get("updated_at", time.time()))
-        state.turns = self._load_turns(session_id)
-        state.memory = self._load_memory(session_id)
-        return state
-
     def save_session_meta(self, state: SessionState) -> None:
-        self._client.hset(
-            self._meta_key(state.session_id),
-            mapping={
-                "summary": state.summary or "",
-                "turns_since_summary": state.turns_since_summary,
-                "feature_key": state.feature_key or "",
-                "updated_at": state.updated_at,
-            },
-        )
-        self._refresh_ttl(state.session_id)
+        try:
+            self._client.hset(
+                self._meta_key(state.session_id),
+                mapping={
+                    "summary": state.summary or "",
+                    "turns_since_summary": state.turns_since_summary,
+                    "feature_key": state.feature_key or "",
+                    "updated_at": state.updated_at,
+                },
+            )
+            self._refresh_ttl(state.session_id)
+        except Exception as exc:
+            logger.warning("[RedisStore] save_session_meta unavailable — session will not persist: %s", exc)
 
     def append_turn(self, session_id: str, turn: Turn) -> None:
-        payload = json.dumps({
-            "role": turn.role,
-            "content": turn.content,
-            "tools_called": turn.tools_called,
-            "tool_results": turn.tool_results,
-            "tool_params": turn.tool_params,
-            "created_at": turn.created_at,
-        })
-        self._client.rpush(self._turns_key(session_id), payload)
-        self._refresh_ttl(session_id)
+        try:
+            payload = json.dumps({
+                "role": turn.role,
+                "content": turn.content,
+                "tools_called": turn.tools_called,
+                "tool_results": turn.tool_results,
+                "tool_params": turn.tool_params,
+                "created_at": turn.created_at,
+            })
+            self._client.rpush(self._turns_key(session_id), payload)
+            self._refresh_ttl(session_id)
+        except Exception as exc:
+            logger.warning("[RedisStore] append_turn unavailable — turn not persisted: %s", exc)
 
     def upsert_memory_item(self, session_id: str, item: MemoryItem) -> None:
-        # Check for duplicates by id before appending
-        raw_list = self._client.lrange(self._memory_key(session_id), 0, -1)
-        for raw in raw_list:
-            existing = json.loads(raw)
-            if existing.get("id") == item.id:
-                return  # already stored — idempotent
-        payload = json.dumps({
-            "id": item.id,
-            "type": item.type.value,
-            "content": item.content,
-            "created_at": item.created_at,
-        })
-        self._client.rpush(self._memory_key(session_id), payload)
-        self._refresh_ttl(session_id)
+        try:
+            # Check for duplicates by id before appending
+            raw_list = self._client.lrange(self._memory_key(session_id), 0, -1)
+            for raw in raw_list:
+                existing = json.loads(raw)
+                if existing.get("id") == item.id:
+                    return  # already stored — idempotent
+            payload = json.dumps({
+                "id": item.id,
+                "type": item.type.value,
+                "content": item.content,
+                "created_at": item.created_at,
+            })
+            self._client.rpush(self._memory_key(session_id), payload)
+            self._refresh_ttl(session_id)
+        except Exception as exc:
+            logger.warning("[RedisStore] upsert_memory_item unavailable: %s", exc)
 
     def delete_older_turns(self, session_id: str, keep_last_n: int) -> None:
-        total = self._client.llen(self._turns_key(session_id))
-        to_remove = total - keep_last_n
-        if to_remove > 0:
-            self._client.ltrim(self._turns_key(session_id), to_remove, -1)
-        self._refresh_ttl(session_id)
+        try:
+            total = self._client.llen(self._turns_key(session_id))
+            to_remove = total - keep_last_n
+            if to_remove > 0:
+                self._client.ltrim(self._turns_key(session_id), to_remove, -1)
+            self._refresh_ttl(session_id)
+        except Exception as exc:
+            logger.warning("[RedisStore] delete_older_turns unavailable: %s", exc)
 
     def purge_expired_sessions(self, ttl_seconds: int) -> None:
         # Redis TTL handles expiry automatically — this is a no-op.
@@ -130,25 +146,33 @@ class RedisStore:
 
     def list_sessions(self, limit: int = 20, offset: int = 0) -> list[dict]:
         """Scan all session meta keys and return sorted by updated_at."""
-        keys = list(self._client.scan_iter("session:*:meta"))
-        sessions = []
-        for key in keys:
-            meta = self._client.hgetall(key)
-            if not meta:
-                continue
-            sid = key.split(":")[1]
-            turn_count = self._client.llen(self._turns_key(sid))
-            sessions.append({
-                "conversation_id": sid,
-                "summary": meta.get("summary", ""),
-                "updated_at": float(meta.get("updated_at", 0)),
-                "turn_count": turn_count,
-            })
-        sessions.sort(key=lambda s: s["updated_at"], reverse=True)
-        return sessions[offset: offset + limit]
+        try:
+            keys = list(self._client.scan_iter("session:*:meta"))
+            sessions = []
+            for key in keys:
+                meta = self._client.hgetall(key)
+                if not meta:
+                    continue
+                sid = key.split(":")[1]
+                turn_count = self._client.llen(self._turns_key(sid))
+                sessions.append({
+                    "conversation_id": sid,
+                    "summary": meta.get("summary", ""),
+                    "updated_at": float(meta.get("updated_at", 0)),
+                    "turn_count": turn_count,
+                })
+            sessions.sort(key=lambda s: s["updated_at"], reverse=True)
+            return sessions[offset: offset + limit]
+        except Exception as exc:
+            logger.warning("[RedisStore] list_sessions unavailable: %s", exc)
+            return []
 
     def count_sessions(self) -> int:
-        return sum(1 for _ in self._client.scan_iter("session:*:meta"))
+        try:
+            return sum(1 for _ in self._client.scan_iter("session:*:meta"))
+        except Exception as exc:
+            logger.warning("[RedisStore] count_sessions unavailable: %s", exc)
+            return 0
 
     # ------------------------------------------------------------------
     # Private helpers
