@@ -1,0 +1,21 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Secrets — never bake into image; mount at runtime
+.env
+.env.*
+app/config/vertex-ai.json
+
+# data/knowledge/ is intentionally included (baked into image by Dockerfile)
+
+# Dev/test artefacts
+.pytest_cache/
+tests/
+docs/
+.github/
+*.md
+.gitignore
+.dockerignore

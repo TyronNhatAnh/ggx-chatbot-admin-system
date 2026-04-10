@@ -98,7 +98,7 @@ The assistant answers questions about orders, drivers, organizations, and indexe
 │                                                     │
 │  Token budget: 8k total / 4.4k input; CJK-aware     │
 │  Session TTL: 30 min inactivity                     │
-│  Persistence: optional SQLite (CHAT_HISTORY_DB)     │
+│  Persistence: Redis (REDIS_URL); SQLite fallback (local dev) │
 └──────┬──────────────────────────────────────────────┘
        │
 ┌──────▼──────────────────────────────────────────────┐
@@ -154,12 +154,12 @@ The assistant answers questions about orders, drivers, organizations, and indexe
 ### Persistence
 
 ```
-app/persistence/chat_store.py  (enabled by CHAT_HISTORY_DB)
+app/persistence/redis_store.py  (enabled by REDIS_URL — preferred, multi-pod safe)
+app/persistence/chat_store.py   (fallback when CHAT_HISTORY_DB is set — local dev only)
   SQLite — WAL mode, FK constraints
   ├── sessions    (session_id, summary, turns_since_summary, updated_at)
   ├── turns       (id, session_id, role, content, tools_called, tool_results, created_at)
   └── memory_items (id, session_id, type, content, created_at)
-  Indexes: idx_turns_session, idx_memory_session
 ```
 
 ### Codebase Indexer Pipeline
@@ -183,10 +183,6 @@ indexer/store.py  →  data/knowledge/knowledge.db  (SQLite)
   ├── code_chunks  (indexed fragments)
   ├── code_chunks_fts  (FTS5 full-text search)
   └── edges  (defines / calls / handles / calls_api / x_calls)
-       │
-       ├──▶ indexer/vector_store.py  →  data/vectordb/  (ChromaDB)
-       │      Embedding: all-MiniLM-L6-v2 (384-dim)
-       │      Collection: code_chunks (cosine similarity)
        │
        └──▶ indexer/linker.py  (cross-service pass)
               React calls_api edges  ╮
@@ -213,7 +209,7 @@ indexer/store.py  →  data/knowledge/knowledge.db  (SQLite)
 lookup_enum / explain_status  →  SQLite enums table  (exact + value match)
 get_struct_definition         →  SQLite struct_definitions table
 trace_service_flow            →  SQLite service_flows table
-search_codebase               →  ChromaDB vector search + FTS5 fallback
+search_codebase               →  FTS5 full-text search (knowledge.db)
 traverse_graph / find_api_consumers / trace_full_stack  →  SQLite edges table
 search_endpoints / get_handler_context  →  SQLite code_chunks (handler source)
 ```
@@ -259,11 +255,11 @@ MODEL_NAME=gemini-3-flash-preview
 PRO_MODEL_NAME=gemini-3.1-pro-preview
 VERTEX_AI_SA_KEY=gemini-kr-sa-staging
 VERTEX_AI_LOCATION=global
+REDIS_URL=redis://localhost:6379/0
 CHAT_AUTH_ENABLED=true
 CHAT_RATE_LIMIT_ENABLED=true
 CHAT_RATE_LIMIT_REQUESTS=30
 CHAT_RATE_LIMIT_WINDOW_SECONDS=60
-CHAT_HISTORY_DB=data/chat_history.db
 CONTEXT_CACHING_ENABLED=false
 ```
 
@@ -336,7 +332,7 @@ Indexer builds offline knowledge (SQLite + vector store) used by docs/knowledge 
 
 **Incremental indexing**: The runner hashes all source files (SHA-256) and skips re-indexing when nothing has changed. Use `--force` to bypass the hash check.
 
-**Embedding model**: Configurable via `EMBEDDING_MODEL` env var (default: `all-MiniLM-L6-v2`).
+**Embedding model**: Vector search is disabled — `data/knowledge/knowledge.db` uses FTS5 full-text search only.
 
 Main commands:
 

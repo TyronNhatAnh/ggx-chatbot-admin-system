@@ -21,7 +21,6 @@ from app.tools.knowledge_tools import (
     # find_api_consumers,  # s18 — temporarily disabled
     # get_knowledge_stats,  # s18 — temporarily disabled
     lookup_enum,
-    # search_codebase,  # s17 — temporarily disabled
     # traverse_graph,  # s18 — temporarily disabled
 )
 from app.tools.order_tools import (
@@ -90,7 +89,6 @@ ALL_TOOL_FUNCTIONS: list = [
     # knowledge tools — indexed codebase knowledge (enums, search)
     lookup_enum,
     explain_status,
-    # search_codebase,  # s17 — temporarily disabled
     # graph traversal tools — cross-service flow tracing
     # traverse_graph,  # s18 — temporarily disabled
     # find_api_consumers,  # s18 — temporarily disabled
@@ -171,7 +169,6 @@ FLASH_TOOL_SETS: dict[str, frozenset[str]] = {
         "search_organizations",
         # knowledge tools
         "lookup_enum", "explain_status",
-        # "search_codebase",  # s17 — temporarily disabled
         # "traverse_graph", "find_api_consumers", "get_knowledge_stats",  # s18 — temporarily disabled
         # docs tools
         "list_available_docs",

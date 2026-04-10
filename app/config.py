@@ -55,9 +55,13 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------------------
     # Chat history persistence
     # ---------------------------------------------------------------------------
-    # Path to the SQLite database file for persisting chat history across
-    # server restarts.  Leave empty (default) to keep the original in-memory-
-    # only behaviour.
+    # Redis URL — preferred for multi-instance (multi-pod) deployments.
+    # When set, Redis is used and CHAT_HISTORY_DB is ignored.
+    # Example: redis://redis-service:6379/0
+    redis_url: str = ""
+
+    # SQLite fallback — single-instance only. Ignored when redis_url is set.
+    # Leave empty (default) for in-memory-only behaviour.
     chat_history_db: str = ""
 
     # ---------------------------------------------------------------------------

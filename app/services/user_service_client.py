@@ -331,6 +331,7 @@ class UserServiceClient:
             return {"error": "NETWORK_ERROR", "detail": str(exc), "role_id": role_id}
         except Exception as exc:  # noqa: BLE001
             logger.error("get_accessible_menu_tree unexpected error - %s: %s", type(exc).__name__, exc)
+            return {"error": "UNEXPECTED_ERROR", "detail": str(exc), "role_id": role_id}
 
     def verify_biz_registration_number(self, biz_number: str, user_id: int | None = None) -> dict:
         """GET /api/v1/guest/etax/verify_biz_registration_number/{biz_number}[?userId=...]"""

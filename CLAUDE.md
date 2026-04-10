@@ -96,8 +96,9 @@ PRO_MODEL_NAME=gemini-3.1-pro-preview    # Pro model for reports/knowledge (leav
 
 **Common optional:**
 ```
-CHAT_HISTORY_DB=data/chat_history.db    # SQLite persistence (omit for in-memory only)
-CONTEXT_CACHING_ENABLED=true            # Vertex AI context cache (requires versioned model name)
+REDIS_URL=redis://localhost:6379/0    # Session persistence (preferred; multi-pod safe)
+CHAT_HISTORY_DB=data/chat_history.db  # SQLite fallback for local dev without Redis
+CONTEXT_CACHING_ENABLED=true          # Vertex AI context cache (requires versioned model name)
 
 ORDER_SERVICE_BASE_URL
 USER_SERVICE_BASE_URL
@@ -119,11 +120,10 @@ Copy `.env.example` to `.env` to get started.
 
 ## Data & Persistence
 
-- `data/chat_history.db` — SQLite WAL, sessions + turns + memory items
-- `data/knowledge/knowledge.db` — Indexer output (enums, structs, flows, edges, FTS5)
-- `data/vectordb/` — ChromaDB collections for semantic search
+- `data/knowledge/knowledge.db` — Indexer output (enums, structs, flows, edges, FTS5). Committed to git, baked into Docker image.
+- Session history — persisted to Redis (`REDIS_URL`); SQLite fallback (`CHAT_HISTORY_DB`) for local dev without Redis.
 
-The `data/` directory is gitignored. Persistence is optional — omit `CHAT_HISTORY_DB` for in-memory-only mode.
+`data/vectordb/` and `data/chat_history.db` are not used — removed.
 
 ---
 

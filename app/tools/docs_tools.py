@@ -10,7 +10,7 @@ Two-tier knowledge structure — always use the lightest tier that answers the q
           Reads the handler source code from indexed code chunks.
           Use for "how does handler Y work?", service call chains.
 
-All data is served from the indexer's SQLite knowledge store.
+All data is served from the indexer's knowledge store (data/knowledge/knowledge.db — baked into image).
 All paths are validated to prevent traversal attacks.
 """
 

@@ -6,6 +6,7 @@ google-genai
 python-dotenv
 httpx
 google-api-core
+redis
 # Feature exploration pipeline (offline scripts only)
 pyyaml
 # AST-based code parsing (indexer falls back to regex if not installed)

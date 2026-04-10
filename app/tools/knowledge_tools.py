@@ -6,7 +6,7 @@ They give Gemini access to:
   - Full-text + semantic code search
   - Graph traversal across indexed services
 
-All reads go through the KnowledgeStore (SQLite) and optionally the VectorStore.
+All reads go through the KnowledgeStore (SQLite knowledge.db — read-only, baked into image).
 """
 
 import logging
@@ -65,32 +65,14 @@ def explain_status(code: str) -> dict:
 
 
 def search_codebase(keyword: str) -> dict:
-    """Search the indexed codebase using natural language or keywords.
-    Searches across functions, enums, structs, and service flows.
+    """Search the indexed codebase using keywords.
+    Searches across functions, enums, structs, and service flows using full-text search (FTS5).
     Use for broad questions like "how is pricing calculated?" or "where is order validation?".
-    Falls back to full-text search if vector search is not available.
     """
     if not keyword or not keyword.strip():
         return {"error": "MISSING_QUERY", "message": "Provide a search keyword."}
 
     query = keyword.strip()
-
-    # Try vector search first (semantic)
-    try:
-        from indexer.vector_store import get_vector_store
-        vs = get_vector_store()
-        if vs and vs.count() > 0:
-            results = vs.search(query, top_k=MAX_LIST_RESULTS)
-            if results:
-                return {
-                    "search_type": "semantic",
-                    "query": query,
-                    "results": truncate_list(results),
-                }
-    except Exception as e:
-        logger.warning("[knowledge_tools] Vector search unavailable, falling back to full-text: %s", e)
-
-    # Fallback to full-text search
     try:
         store = get_knowledge_store()
         payload = store.search_code(query, limit=MAX_LIST_RESULTS)

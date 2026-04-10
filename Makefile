@@ -59,9 +59,10 @@ link:
 
 # Index all configured services + run linker in one command
 # Reads all *_REPO_PATH vars from .env automatically
+# Skips vector embeddings (vectordb/ not used by active tools — saves ~105MB)
 # Use FORCE=1 to bypass incremental hash check: make index-all FORCE=1
 index-all:
-	. $(VENV)/bin/activate && python -m indexer.index_all $(if $(FORCE),--force)
+	. $(VENV)/bin/activate && python -m indexer.index_all --no-vectors $(if $(FORCE),--force)
 
 # Seed persona tags (one-time, run after re-indexing order-service)
 seed-personas:
@@ -69,6 +70,31 @@ seed-personas:
 
 # ===== DOCKER =====
 
+# Image registry + name.  Set IMAGE in your shell or override per-call:
+#   export IMAGE=gcr.io/my-gcp-project/ai-admin-assistant
+#   make docker-release
+IMAGE ?= ai-admin-assistant
+TAG   ?= local
+
+# Build the Docker image with knowledge data baked in.
+# Run `make index-all` first so data/ is populated.
+docker-build:
+	docker build -t $(IMAGE):$(TAG) .
+	@echo "Built $(IMAGE):$(TAG)"
+
+# Run the container locally — mounts vertex-ai.json and .env from the project root.
+# Requires: app/config/vertex-ai.json and .env to exist.
+docker-run-local:
+	docker run --rm \
+		-p $(PORT):8000 \
+		--env-file .env \
+		-v "$$(pwd)/app/config/vertex-ai.json:/app/app/config/vertex-ai.json:ro" \
+		$(IMAGE):$(TAG)
+
+# Build then run locally in one step
+docker-test: docker-build docker-run-local
+
+# Run via Docker Compose (local convenience, uses docker-compose.yml)
 docker-run:
 	docker compose up --build
 

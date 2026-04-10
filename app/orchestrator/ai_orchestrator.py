@@ -43,7 +43,6 @@ _PRO_TOOL_NAMES: frozenset[str] = frozenset({
     # knowledge tools
     "lookup_enum",
     "explain_status",
-    # "search_codebase",  # s17 — temporarily disabled
     # "traverse_graph",  # s18 — temporarily disabled
     # "find_api_consumers",  # s18 — temporarily disabled
     # "get_knowledge_stats",  # s18 — temporarily disabled
@@ -480,7 +479,10 @@ class AIOrchestrator:
         )
 
         store = None
-        if settings.chat_history_db:
+        if settings.redis_url:
+            from app.persistence.redis_store import RedisStore
+            store = RedisStore(settings.redis_url)
+        elif settings.chat_history_db:
             from app.persistence.chat_store import ChatStore
             store = ChatStore(settings.chat_history_db)
 

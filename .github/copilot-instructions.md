@@ -30,7 +30,7 @@ make clean          # Delete .venv
 | Tools | `app/tools/` | Thin schema wrappers only |
 | Services | `app/services/` | External API calls, auth, payload normalization |
 | Prompts | `app/prompts/` | Prompt assembly (`builder.py`) |
-| Persistence | `app/persistence/` | Optional SQLite session store (`CHAT_HISTORY_DB`) |
+| Persistence | `app/persistence/` | Redis session store (`REDIS_URL`); SQLite fallback (`CHAT_HISTORY_DB`) for local dev |
 | Schemas | `app/schemas/` | Pydantic request/response models |
 | Observability | `app/observability/` | Request ID context variable |
 | Indexer | `indexer/` | Offline codebase indexer — do not modify for runtime bugs |
@@ -51,7 +51,7 @@ make clean          # Delete .venv
 - `MAX_TOOL_LOOPS = 6` — do not change
 - Suppress duplicate tool calls per turn; provide fallback reply on unproductive loops
 - Conversation context: in-memory TTL 30 min (`SESSION_TTL_SECONDS = 1800`), process-local (`memory_service.py`)
-- Optionally persisted to SQLite when `CHAT_HISTORY_DB` is set (`persistence/chat_store.py`)
+- Persisted to Redis when `REDIS_URL` is set (`persistence/redis_store.py`); SQLite fallback when `CHAT_HISTORY_DB` is set; in-memory only otherwise
 - Token-budgeted context assembly with CJK-aware estimation (`context_builder.py`)
 - 3-layer memory: `memory_service.py` (FACT / ENTITY / DECISION); short-term 5 turns (`SHORT_TERM_MAX_TURNS`), summarize every 5 new turns (`SUMMARIZE_THRESHOLD`)
 - LLM thinking enabled on both models (`include_thoughts=True`); Flash capped at 1 024 thinking tokens, 4 096 output; Pro uncapped thinking, 8 192 output
@@ -75,7 +75,7 @@ make clean          # Delete .venv
 - `FLASH_TOOL_SETS` maps each `feature_key` to its scoped tool list (reduces schema tokens for Flash model); must be updated when tools are added or removed
 - `get_delayed_orders` stays unregistered (overlaps `get_orders_admin_panel(status_cd=[4])`)
 - Summary tools → aggregate; Detail tools → per-order. Don't call both in one turn unless requested
-- Knowledge/docs tools query `data/vectordb/` (ChromaDB) and `data/knowledge/` — read-only
+- Knowledge/docs tools query `data/knowledge/` (SQLite + FTS5) — read-only, baked into Docker image
 
 ## Auth & Security
 

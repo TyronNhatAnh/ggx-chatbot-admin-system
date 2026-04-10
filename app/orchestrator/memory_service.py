@@ -90,7 +90,7 @@ class SessionState:
 class MemoryService:
     """Thread-safe in-memory session store with three memory layers.
 
-    Pass a ``ChatStore`` instance via ``store=`` to persist sessions to SQLite
+    Pass a ``RedisStore`` or ``ChatStore`` instance via ``store=`` to persist sessions
     so that conversation history survives server restarts.
     """
 

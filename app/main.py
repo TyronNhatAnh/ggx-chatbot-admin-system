@@ -141,11 +141,11 @@ def get_orchestrator() -> AIOrchestrator:
             if _orchestrator is None:
                 logger.info("[Startup] Initialising AIOrchestrator...")
                 _orchestrator = AIOrchestrator()
-                if not settings.chat_history_db:
+                if not settings.redis_url and not settings.chat_history_db:
                     logger.warning(
-                        "[Startup] CHAT_HISTORY_DB is not set — conversation history is in-memory only "
+                        "[Startup] REDIS_URL is not set — conversation history is in-memory only "
                         "and will be lost after %d seconds of inactivity or on server restart. "
-                        "Set CHAT_HISTORY_DB to a file path (e.g. 'data/chat_history.db') to persist.",
+                        "Set REDIS_URL to persist sessions across pod restarts.",
                         1800,
                     )
                 logger.info("[Startup] AIOrchestrator ready.")
@@ -271,7 +271,7 @@ async def list_conversations(
     """
     List all conversations, ordered by most recently active.
 
-    When ``CHAT_HISTORY_DB`` is set, returns persisted sessions (survives restarts).
+    When ``REDIS_URL`` is set, returns persisted sessions (survives restarts).
     Otherwise returns in-memory sessions only (lost on restart).
 
     Query params:
@@ -334,7 +334,7 @@ async def get_conversation(
     orchestrator = get_orchestrator()
     store = orchestrator._memory._store  # type: ignore[attr-defined]
 
-    # Prefer SQLite when available (has full history including summarised turns).
+    # Prefer persistent store (Redis/SQLite) when available.
     # Fall back to the in-memory store (active sessions only).
     if store is not None:
         state = store.load_session(conversation_id)
