@@ -924,8 +924,65 @@ class OrderServiceClient:
     # Report API methods — Statement of Use (이용내역/정산)
     # ------------------------------------------------------------------
 
+    # Valid payment method values accepted by the Statement-of-Use API.
+    _VALID_PAY_VALUES: dict[str, str] = {
+        "credit": "Credit",
+        "cash": "Cash",
+    }
+
+    _MAX_REPORT_DATE_RANGE_DAYS = 93  # ~3 months
+
+    def _validate_report_dates(self, params: dict) -> str | None:
+        """Validate and normalize fromDate/toDate in *params* (mutates in place).
+
+        Returns an error message string if validation fails, else None.
+        """
+        for key in ("fromDate", "toDate"):
+            raw = params.get(key)
+            normalized = self._normalize_date_yyyy_mm_dd(raw)
+            if normalized is None:
+                return f"Invalid or missing date for '{key}': {raw!r}. Expected YYYY-MM-DD."
+            params[key] = normalized
+
+        try:
+            from_d = date.fromisoformat(params["fromDate"])
+            to_d = date.fromisoformat(params["toDate"])
+        except ValueError as exc:
+            return f"Date parse error after normalization: {exc}"
+
+        if from_d > to_d:
+            return f"fromDate ({from_d}) is after toDate ({to_d})."
+        if (to_d - from_d).days > self._MAX_REPORT_DATE_RANGE_DAYS:
+            return (
+                f"Date range too wide ({(to_d - from_d).days} days). "
+                f"Maximum is {self._MAX_REPORT_DATE_RANGE_DAYS} days (~3 months)."
+            )
+        return None
+
+    @staticmethod
+    def _normalize_pay(pay: list | None) -> list[str] | None:
+        """Normalize payment method values to the canonical casing the API expects."""
+        if not pay:
+            return pay
+        result: list[str] = []
+        for v in pay:
+            canonical = OrderServiceClient._VALID_PAY_VALUES.get(str(v).strip().lower())
+            if canonical:
+                result.append(canonical)
+            else:
+                logger.warning("Unknown pay value %r — passing through as-is", v)
+                result.append(str(v))
+        return result or None
+
     def _get_report(self, path: str, params: dict) -> dict:
         """Shared GET helper for all 4 report endpoints. Returns {data, meta} envelope."""
+        # Validate dates before hitting the API.
+        date_err = self._validate_report_dates(params)
+        if date_err:
+            return {"error": "VALIDATION_ERROR", "detail": date_err}
+        # Normalize pay values if present.
+        if "pay" in params and params["pay"] is not None:
+            params["pay"] = self._normalize_pay(params["pay"])
         try:
             cleaned = self._clean_query_params(params)
             payload = self._get(path, params=cleaned)
@@ -934,10 +991,25 @@ class OrderServiceClient:
                     errors = payload.get("errors") or []
                     msg = errors[0].get("message") if errors else "unknown error"
                     return {"error": "ORDER_SERVICE_ERROR", "detail": msg}
-                return {
-                    "data": payload.get("data") or [],
-                    "meta": payload.get("meta") or {},
-                }
+                data = payload.get("data") or []
+                meta = payload.get("meta") or {}
+                result: dict = {"data": data, "meta": meta}
+                # Guard against oversized summary responses that would flood
+                # the LLM context window.  Detail endpoints are paginated so
+                # they're already bounded; summary endpoints are not.
+                _MAX_SUMMARY_ROWS = 200
+                if "summary" in path and len(data) > _MAX_SUMMARY_ROWS:
+                    logger.warning(
+                        "report %s returned %d rows — truncating to %d",
+                        path, len(data), _MAX_SUMMARY_ROWS,
+                    )
+                    result["data"] = data[:_MAX_SUMMARY_ROWS]
+                    result["_warning"] = (
+                        f"Result truncated: {len(data)} rows returned but only "
+                        f"the first {_MAX_SUMMARY_ROWS} are shown. Ask the user "
+                        "to narrow filters (org, date range, branch) for complete data."
+                    )
+                return result
             return {"data": [], "meta": {}}
         except httpx.HTTPStatusError as exc:
             logger.error(

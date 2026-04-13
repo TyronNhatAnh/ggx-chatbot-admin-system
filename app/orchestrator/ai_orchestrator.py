@@ -53,6 +53,17 @@ _PRO_TOOL_NAMES: frozenset[str] = frozenset({
 })
 _PRO_TOOLS: list = [fn for fn in ALL_TOOL_FUNCTIONS if fn.__name__ in _PRO_TOOL_NAMES]
 
+# Report tool guards — used inside the tool-calling loop to prevent
+# auto-pagination (detail) and redundant calls (summary).
+_REPORT_DETAIL_TOOLS: frozenset[str] = frozenset({
+    "get_driver_statement_detail",
+    "get_customer_statement_detail",
+})
+_REPORT_SUMMARY_TOOLS: frozenset[str] = frozenset({
+    "get_driver_statement_summary",
+    "get_customer_statement_summary",
+})
+
 _fallback_counters = {
     "max_tool_loop": 0,
     "repetitive_tool_calls": 0,
@@ -393,11 +404,46 @@ _GREETING_ONLY_RE = re.compile(
 )
 
 
+def _build_keyword_matcher(
+    kw: str,
+) -> re.Pattern[str] | str:
+    """Return a compiled word-boundary regex for short single-word keywords,
+    or the raw string for multi-word / CJK / Vietnamese phrases (substring match).
+
+    Word-boundary matching prevents false positives like "q1" matching "eq1234"
+    or "report" matching "reported".  Multi-word phrases and CJK/Vietnamese
+    strings are already specific enough and don't need boundary anchors.
+    """
+    # Multi-word phrases → substring match (already specific)
+    if " " in kw or "-" in kw:
+        return kw
+    # CJK / Vietnamese characters → substring match (word boundaries don't apply)
+    if re.search(r"[\u3000-\u9fff\uac00-\ud7af\u1100-\u11ff\u00c0-\u024f]", kw):
+        return kw
+    # Short single-word ASCII/Latin keywords → word-boundary regex
+    return re.compile(rf"\b{re.escape(kw)}\b", re.IGNORECASE)
+
+
+# Pre-compile keyword matchers once at import time.
+_FEATURE_MATCHERS: dict[str, list[re.Pattern[str] | str]] = {
+    feature: [_build_keyword_matcher(kw) for kw in keywords]
+    for feature, keywords in _FEATURE_KEYWORDS.items()
+}
+
+
+def _kw_matches(matcher: re.Pattern[str] | str, text: str) -> bool:
+    """Check if a keyword matcher (regex or substring) matches the text."""
+    if isinstance(matcher, str):
+        return matcher in text
+    return matcher.search(text) is not None
+
+
 def _detect_feature_key(message: str) -> tuple[str | None, int]:
     """Detect the most likely feature domain from the user's message.
 
     Simple keyword scoring — no LLM call. Returns (key, score).
     Score is the number of matching keywords; 0 means no match.
+    Short single-word keywords use word-boundary regex to avoid false positives.
     """
     lower = (message or "").lower()
     if not lower:
@@ -405,8 +451,8 @@ def _detect_feature_key(message: str) -> tuple[str | None, int]:
 
     best_key: str | None = None
     best_score = 0
-    for feature, keywords in _FEATURE_KEYWORDS.items():
-        score = sum(1 for kw in keywords if kw in lower)
+    for feature, matchers in _FEATURE_MATCHERS.items():
+        score = sum(1 for m in matchers if _kw_matches(m, lower))
         if score > best_score:
             best_score = score
             best_key = feature
@@ -582,8 +628,8 @@ class AIOrchestrator:
         system_prompt = build_system_prompt(feature_key=feature_key)
 
         # A fresh session per request keeps state isolated between users.
-        # knowledge-code is handled by Flash (faster, sufficient for endpoint/handler lookup).
-        # Report queries use Pro — complex multi-step aggregation benefits from the stronger model.
+        # All features (including reports) use Flash — fast, cheap, and accurate enough.
+        # Pro model infrastructure exists but is disabled; flip this flag when needed.
         use_pro = False
         # Bare conversational model is only for pure greetings.
         # If a non-greeting query fails feature detection, keep tools enabled.
@@ -868,14 +914,6 @@ class AIOrchestrator:
                 # Report tools — guard against auto-pagination and redundant summary/detail calls.
                 # Detail: one call per turn is the rule; a second call means auto-pagination, stop it.
                 # Summary: always returns ALL rows — there is never a reason to call it twice.
-                _REPORT_DETAIL_TOOLS = {
-                    "get_driver_statement_detail",
-                    "get_customer_statement_detail",
-                }
-                _REPORT_SUMMARY_TOOLS = {
-                    "get_driver_statement_summary",
-                    "get_customer_statement_summary",
-                }
                 if tool_name in _REPORT_DETAIL_TOOLS and tool_name in tools_called:
                     _prior = tool_results_collected.get(tool_name, {})
                     if isinstance(_prior, dict) and _prior.get("error"):
