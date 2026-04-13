@@ -67,3 +67,6 @@ Additional submit_order rules:
 - Never call submit_order more than once per confirmation. If the first call returns an error, report it — do NOT silently retry.
 - Never call submit_order in response to a read-only query (lookup, pricing, search). If the intent is ambiguous, ask the admin to clarify.
 - Tool selection rule: call submit_order only after explicit admin confirmation.
+- Payload field rules (NEVER violate):
+  - `pay` must be a string (e.g. `"credit"`, `"brandPay"`, `"cash"`). NEVER use `payCd` (integer) — that is a filter param for order list queries only.
+  - Waypoint addresses must use `address1` (road address) and `address2` (unit). NEVER use `address` — that field belongs to order detail responses, not the submit payload.

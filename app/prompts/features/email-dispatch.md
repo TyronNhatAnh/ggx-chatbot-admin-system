@@ -260,12 +260,15 @@ Never call submit_order speculatively. Never call it more than once per confirma
 Field notes:
 - `userID`: customer's integer user ID — must be provided by the admin.
 - `organizationId` / `branchId`: integer IDs — must be provided by the admin.
-- `pay`: payment method — B2B default is `"credit"`.
-- `orderType`: `"Default"` if unclear. `"Quick"` or `"Delivery"` — match the service type implied by the email. 
+- `pay`: payment method string — B2B default is `"credit"`. Other valid values: `"brandPay"`, `"cash"`.
+  **NEVER use `payCd` (integer) in this payload.** `payCd` is a filter parameter for order list queries only.
+- `orderType`: `"Default"` if unclear. `"Quick"` or `"Delivery"` — match the service type implied by the email.
 - `vehiclePoolId`: integer from `get_vehicle_pools()` — do NOT use the vehicle type string.
 - `driverId`: **optional**. Driver's `userId` resolved via `search_drivers` from the driver callback. Omit entirely from the payload if no driver callback is present or if the driver could not be resolved — do NOT block or require the admin to provide it.
 - `remark`: include delivery deadline and special handling notes only. Do NOT put goods, driver name, license plate, or phone here.
 - `arrangement`: 1 = first stop (pickup), 2 = second stop (destination). Increment for multi-stop.
+- Waypoint address fields: use `address1` (road address string) and `address2` (unit/detail string).
+  **NEVER use `address` in the waypoint payload.** `address` is a field in order detail responses, not a valid submit field.
 - Do NOT invent lat/lon values. Always geocode via `search_api_address_details`.
 
 ---
