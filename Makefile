@@ -99,7 +99,7 @@ docker-test: docker-build docker-run-local
 
 # Run via Docker Compose (local convenience, uses docker-compose.yml)
 docker-run:
-	docker compose up --build
+	docker compose up --build -d
 
 # ===== CLEAN =====
 

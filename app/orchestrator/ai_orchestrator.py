@@ -327,6 +327,12 @@ _FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
         # (driver-tracking). Gives report feature score=2 whenever "driver report",
         # "customer report", etc. appear — beating driver-tracking's score=1 from "driver".
         "report",
+        # "report customer" / "report driver": covers "report customer order/usage/statement"
+        # and "report driver settlement/payout" patterns where word order is inverted
+        # (e.g. "report customer order for 3 days" vs "customer report").
+        # Without this, "order" in the message ties order-lookup and report at score=1,
+        # and order-lookup wins due to dict ordering — causing wrong prompt + wrong param names.
+        "report customer", "report driver",
         # "summary and detail": catches combined-request queries that lack "report"/"statement".
         "summary and detail",
         # aggregation/period phrases: "total fare in Q1", "highest total fare", quarterly reports
@@ -334,6 +340,11 @@ _FEATURE_KEYWORDS: dict[str, tuple[str, ...]] = {
         "q1", "q2", "q3", "q4",
         "customerfare", "all payment methods",
         "paytodriver", "pay to driver", "commissionprice", "commission price",
+        # Multi-word phrases: specific enough to beat driver-tracking's single "driver" keyword.
+        # "driver payout" + "payout records" both match → report scores 2, driver-tracking 1.
+        "driver payout", "payout records",
+        # "driver price records": "driver price" + "price records" both match → report scores 2.
+        "driver price", "price records",
         "báo cáo", "sao kê",
         "이용내역", "정산서", "이용 내역", "기사 정산", "고객 정산",
         "이용 요약", "이용요약", "고객 이용 요약", "고객 이용현황", "이용 현황",
@@ -738,10 +749,15 @@ class AIOrchestrator:
             def _execute_tool(t_name: str, t_args: dict) -> tuple[str, dict, float]:
                 tool_fn = TOOL_REGISTRY.get(t_name)
                 if tool_fn is None:
-                    raise ValueError(
-                        f"LLM requested unknown tool: '{t_name}'. "
-                        "This should not happen — check that all tools are registered."
+                    # Gemini hallucinated a tool name that isn't registered.
+                    # Return an error dict — the tool loop will send it back as a
+                    # FunctionResponse so Gemini can self-correct without crashing.
+                    logger.warning(
+                        "[Tool     ] Unknown tool requested: '%s' — not in TOOL_REGISTRY. "
+                        "Returning error so Gemini can self-correct.",
+                        t_name,
                     )
+                    return t_name, {"error": "TOOL_NOT_FOUND", "message": f"Tool '{t_name}' does not exist. Do not call it again."}, 0.0
                 t0 = time.perf_counter()
                 try:
                     res = tool_fn(**t_args)
@@ -847,6 +863,59 @@ class AIOrchestrator:
                         "You already called get_orders_admin_panel earlier this turn. "
                         "Do NOT call it again with different date or sort params. "
                         "Synthesize the final answer from the results already returned above."
+                    )
+
+                # Report tools — guard against auto-pagination and redundant summary/detail calls.
+                # Detail: one call per turn is the rule; a second call means auto-pagination, stop it.
+                # Summary: always returns ALL rows — there is never a reason to call it twice.
+                _REPORT_DETAIL_TOOLS = {
+                    "get_driver_statement_detail",
+                    "get_customer_statement_detail",
+                }
+                _REPORT_SUMMARY_TOOLS = {
+                    "get_driver_statement_summary",
+                    "get_customer_statement_summary",
+                }
+                if tool_name in _REPORT_DETAIL_TOOLS and tool_name in tools_called:
+                    _prior = tool_results_collected.get(tool_name, {})
+                    if isinstance(_prior, dict) and _prior.get("error"):
+                        # First call errored — allow this retry but cap here.
+                        steering_notes.append(
+                            f"You already attempted {tool_name} this turn and it returned an error "
+                            f"({_prior.get('error')}: {_prior.get('detail', '')}). "
+                            "Do NOT call it a third time. "
+                            "If this call also fails, stop and tell the user the data is unavailable right now."
+                        )
+                    else:
+                        # First call succeeded — no reason to paginate further.
+                        steering_notes.append(
+                            f"You already called {tool_name} this turn and received data. "
+                            "Do NOT call it again — the API is paginated and each call covers one page. "
+                            "Render the data you already received, show the page/total info, "
+                            "and let the user ask for the next page explicitly."
+                        )
+                if tool_name in _REPORT_SUMMARY_TOOLS and tool_name in tools_called:
+                    _prior = tool_results_collected.get(tool_name, {})
+                    if isinstance(_prior, dict) and _prior.get("error"):
+                        steering_notes.append(
+                            f"You already attempted {tool_name} this turn and it returned an error "
+                            f"({_prior.get('error')}: {_prior.get('detail', '')}). "
+                            "Do NOT call it again. Tell the user the report data is unavailable."
+                        )
+                    else:
+                        steering_notes.append(
+                            f"You already called {tool_name} this turn and received data. "
+                            "Summary returns ALL matching rows in one response — do NOT call it again. "
+                            "Synthesize your final answer from the data already returned."
+                        )
+
+                # Steer Gemini away from hallucinated / unregistered tool names.
+                if isinstance(result, dict) and result.get("error") == "TOOL_NOT_FOUND":
+                    available = sorted(TOOL_REGISTRY.keys())
+                    steering_notes.append(
+                        f"Tool '{tool_name}' does not exist and must NOT be called again. "
+                        f"Choose only from the registered tools: {available}. "
+                        "Re-read the system prompt and call the correct tool."
                     )
 
                 tools_called.append(tool_name)

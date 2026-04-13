@@ -414,6 +414,8 @@ async def chat(request: ChatRequest, http_request: Request):
     except ValueError as exc:
         logger.error("[Chat    ] ValueError: %s", exc)
         raise HTTPException(status_code=500, detail="Internal server error")
+    except HTTPException:
+        raise
     except Exception as exc:
         if _is_gemini_quota_error(exc):
             logger.warning("[Chat    ] Gemini quota exhausted: %s", exc)

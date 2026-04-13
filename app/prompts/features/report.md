@@ -43,14 +43,23 @@ Driver endpoints (get_driver_statement_summary, get_driver_statement_detail):
 - from_date, to_date: YYYY-MM-DD format. Ask the user if not provided.
 - driver_type: Always pass "normalDriver" — it is the only supported value. Never ask the user about this.
 
+## Pagination Discipline
+
+- Call Detail tools EXACTLY ONCE per user turn — never auto-paginate.
+- Pass the exact page_index the user requested (default: page_index=1, page_size=10 unless user specified).
+- When the user says "page 2", "next page", etc. → pass that page_index in ONE call, then stop.
+- After any Detail call: render the result and show "Page X of N (Y total rows)" — do NOT call again.
+- If the user says "show all rows": tell them the API is paginated and ask which pages they want.
+
 ## Tool Selection Rules
 
 - Aggregated view (totals per org or driver) → use Summary tool
 - Row-level view (per-order breakdown) → use Detail tool
-- Start with Summary unless the user explicitly requests per-order data
-- Do NOT call both Summary and Detail in the same turn unless explicitly requested
-- If user asks for a single driver's report → pass driver_id filter; if for a single org → pass org_id filter
-- Comparative / ranking questions ("which org had the highest X?", "top org by fare", etc.):
+- Start with Summary ONLY for aggregation/overview requests. NOT for "which order had highest X" type questions.
+- "Which order had the highest/lowest X?" → go directly to Detail with page_size=50. Do NOT call Summary first.
+- Do NOT call both Summary and Detail in the same turn unless explicitly requested.
+- If user asks for a single driver's report → pass driver_id filter; if for a single org → pass org_id filter.
+- Comparative / ranking questions across orgs ("which org had the highest X?", "top org by fare", etc.):
   Do NOT call search_organizations. Call the summary tool without org_id to get ALL orgs,
   then rank/compare from the returned data[] rows.
 
@@ -70,6 +79,12 @@ Fields typed null.Float, null.String, null.Time in the response serialize as JSO
 
 - When Valid=false → treat as null/absent (omit from table cell or show "—").
 - When Valid=true → use the inner value (Float64, String, or Time field).
+
+## Filter Parameter Usage
+
+- e_tax_status: pass as the Korean string directly (e.g. `"발급완료"`). Do NOT call lookup_enum or explain_status first.
+  Valid values include: `"발급완료"` (issued), `"미발급"` (not issued), `"발급대기"` (pending).
+- tax_player_cd: pass as integer list (e.g. `[1]` for 일반과세자법인). Do NOT look up enum codes first.
 
 ## Known Data Inconsistencies
 

@@ -11,6 +11,8 @@ import sys
 import subprocess
 from pathlib import Path
 
+from _runner import LOGS_DIR, summarize_session_logs
+
 TESTS_DIR = Path(__file__).parent
 # skip session 16-20 since they use a different dataset and would require extra setup
 sessions = [f"session_{i:02d}.py" for i in range(1, 26) if i not in range(16, 21)]
@@ -23,6 +25,7 @@ if len(sys.argv) > 1:
 
 python = sys.executable
 failed = []
+existing_logs = set(LOGS_DIR.glob("session_*.md"))
 
 for session_file in sessions:
     path = TESTS_DIR / session_file
@@ -36,7 +39,12 @@ for session_file in sessions:
     if result.returncode != 0:
         failed.append(session_file)
 
+new_logs = sorted(p for p in LOGS_DIR.glob("session_*.md") if p not in existing_logs)
+summary_path = summarize_session_logs(new_logs, output_dir=LOGS_DIR)
+
 print(f"\n{'=' * 64}")
+if summary_path is not None:
+    print(f"Summary log saved → {summary_path.relative_to(TESTS_DIR.parent)}")
 if failed:
     print(f"FAILED sessions: {', '.join(failed)}")
     sys.exit(1)
